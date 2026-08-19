@@ -2509,16 +2509,47 @@ static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FStri
 	if (!FFileHelper::SaveArrayToFile(ZipBytes, *ZipPath)) { Notify(TEXT("Could not write the update file.")); return; }
 
 	const uint32 Pid = FPlatformProcess::GetCurrentProcessId();
+	const FString ApplyLog  = FPaths::Combine(UpdateDir, TEXT("apply_update.log"));
+	const FString EditorExe = FPlatformProcess::ExecutablePath();
+
+	// The apply script logs every step to apply_update.log so a failed update
+	// on a tester's machine is diagnosable, and it ALWAYS relaunches the editor
+	// at the end - the pending.txt verdict on next launch reports the outcome.
 	FString Ps;
-	Ps += FString::Printf(TEXT("try { Wait-Process -Id %u -ErrorAction SilentlyContinue } catch {}\r\n"), Pid);
-	Ps += TEXT("Start-Sleep -Seconds 2\r\n");
-	Ps += FString::Printf(TEXT("Remove-Item -Recurse -Force \"%s\" -ErrorAction SilentlyContinue\r\n"), *Staging);
-	Ps += FString::Printf(TEXT("Expand-Archive -Path \"%s\" -DestinationPath \"%s\" -Force\r\n"), *ZipPath, *Staging);
+	Ps += FString::Printf(TEXT("$log = \"%s\"\r\n"), *ApplyLog);
+	Ps += TEXT("function Log($m) { Add-Content -Path $log -Value ((Get-Date -Format s) + '  ' + $m) }\r\n");
+	Ps += FString::Printf(TEXT("Set-Content -Path $log -Value ((Get-Date -Format s) + '  applying update %s')\r\n"), *Tag);
+	Ps += TEXT("try {\r\n");
+	Ps += FString::Printf(TEXT("  try { Wait-Process -Id %u -ErrorAction SilentlyContinue } catch {}\r\n"), Pid);
+	Ps += TEXT("  Start-Sleep -Seconds 2\r\n");
+	Ps += TEXT("  Log 'editor closed'\r\n");
+	Ps += FString::Printf(TEXT("  Remove-Item -Recurse -Force \"%s\" -ErrorAction SilentlyContinue\r\n"), *Staging);
+	Ps += TEXT("  try {\r\n");
+	Ps += FString::Printf(TEXT("    Expand-Archive -Path \"%s\" -DestinationPath \"%s\" -Force -ErrorAction Stop\r\n"), *ZipPath, *Staging);
+	Ps += TEXT("    Log 'unzipped (Expand-Archive)'\r\n");
+	Ps += TEXT("  } catch {\r\n");
+	Ps += TEXT("    Log ('Expand-Archive failed: ' + $_.Exception.Message)\r\n");
+	Ps += TEXT("    Add-Type -AssemblyName System.IO.Compression.FileSystem\r\n");
+	Ps += FString::Printf(TEXT("    [System.IO.Compression.ZipFile]::ExtractToDirectory(\"%s\", \"%s\")\r\n"), *ZipPath, *Staging);
+	Ps += TEXT("    Log 'unzipped (ZipFile fallback)'\r\n");
+	Ps += TEXT("  }\r\n");
 	// the zip may carry a BF6UnrealSDK/ root folder or the plugin files directly
-	Ps += FString::Printf(TEXT("$src = Join-Path \"%s\" \"BF6UnrealSDK\"\r\n"), *Staging);
-	Ps += TEXT("if (-not (Test-Path $src)) { $src = \"") + Staging + TEXT("\" }\r\n");
-	Ps += FString::Printf(TEXT("robocopy $src \"%s\" /E /NFL /NDL /NJH /NJS\r\n"), *PluginDir);
-	Ps += FString::Printf(TEXT("Start-Process \"%s\"\r\n"), *Project);
+	Ps += FString::Printf(TEXT("  $src = Join-Path \"%s\" \"BF6UnrealSDK\"\r\n"), *Staging);
+	Ps += TEXT("  if (-not (Test-Path $src)) { $src = \"") + Staging + TEXT("\" }\r\n");
+	// bounded retries: robocopy's default is a million 30s retries on a locked
+	// file, which reads as "the update silently did nothing" to the user
+	Ps += FString::Printf(TEXT("  robocopy $src \"%s\" /E /R:5 /W:2 /NFL /NDL /NJH /NJS | Out-Null\r\n"), *PluginDir);
+	Ps += TEXT("  Log ('robocopy exit ' + $LASTEXITCODE)\r\n");
+	Ps += FString::Printf(TEXT("  if ((Get-Content \"%s\" -Raw) -match '\"VersionName\"\\s*:\\s*\"([^\"]+)\"') { Log ('plugin is now v' + $Matches[1]) }\r\n"),
+		*FPaths::Combine(PluginDir, TEXT("BF6UnrealSDK.uplugin")));
+	Ps += TEXT("} catch {\r\n");
+	Ps += TEXT("  Log ('APPLY FAILED: ' + $_.Exception.Message)\r\n");
+	Ps += TEXT("}\r\n");
+	Ps += TEXT("Log 'relaunching the editor'\r\n");
+	// launch the editor binary directly: Start-Process on the .uproject relies
+	// on a file association that is missing on some machines
+	Ps += FString::Printf(TEXT("Start-Process \"%s\" -ArgumentList '\"%s\"'\r\n"), *EditorExe, *Project);
+	Ps += TEXT("Log 'done'\r\n");
 	FFileHelper::SaveStringToFile(Ps, *Script);
 
 	// Marker for the next launch: if the plugin version then matches this tag
@@ -2596,7 +2627,7 @@ static void BF6_ReportUpdateOutcome()
 	else
 	{
 		FNotificationInfo Info(FText::FromString(FString::Printf(
-			TEXT("The update to %s did not apply. You are still on v%s. Close the editor and unzip the plugin package from github.com/TabbedScamper/BF6_Unreal_SDK/releases over Plugins/BF6UnrealSDK."),
+			TEXT("The update to %s did not apply. You are still on v%s. Close the editor and unzip the plugin package from github.com/TabbedScamper/BF6_Unreal_SDK/releases over Plugins/BF6UnrealSDK. When reporting this, attach Saved/BF6UnrealSDK/update/apply_update.log."),
 			*Tag, *Local)));
 		Info.ExpireDuration = 20.0f;
 		TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(Info);
