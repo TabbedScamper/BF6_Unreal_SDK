@@ -93,7 +93,11 @@ namespace BF6Api
 	// download, driving the SDK's bundled Godot headlessly. No 7GB distribution.
 	bool    IsDataInstalled();                  // do we have models to build with?
 	bool    ValidateSdkRoot(const FString& Path, FString& OutError);
-	void    StartSdkImport(const FString& SdkRoot);
+	// bFullResync wipes the converted data first, so CHANGED SDK content is
+	// reconverted too (the default incremental sync only adds what's new).
+	void    StartSdkImport(const FString& SdkRoot, bool bFullResync = false);
+	// Bring the SDK Setup screen up (used by the new-SDK-version startup prompt).
+	void    ShowSdkSetup();
 	bool    IsImporting();
 	FText   ImportStatus();                     // progress line for the setup screen
 	float   ImportFrac();                       // 0..1 across the whole import

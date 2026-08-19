@@ -26,6 +26,7 @@
 #include "Containers/Ticker.h"
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
+#include "Misc/MessageDialog.h"
 #include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
@@ -679,6 +680,19 @@ public:
 						]
 						+ SHorizontalBox::Slot().AutoWidth().Padding(8, 0, 0, 0)
 						[
+							// wipe + reconvert: needed when an SDK update CHANGES existing
+							// content (the normal import only adds what's new)
+							SNew(SBox).Visibility_Lambda([]{ return (!BF6Api::IsImporting() && BF6Api::IsDataInstalled()) ? EVisibility::Visible : EVisibility::Collapsed; })
+							[ MakeToolButton(TEXT("Full re-sync"), [this]
+							{
+								if (!PathBox.IsValid()) return;
+								if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(
+									TEXT("Delete all converted models and map meshes, then reconvert everything from the SDK?\n\nThis takes as long as the first import. Use it after a big SDK update, when existing content may have changed."))) == EAppReturnType::Yes)
+									BF6Api::StartSdkImport(PathBox->GetText().ToString(), true);
+							}) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(8, 0, 0, 0)
+						[
 							// data already there (re-sync visit): let the user back out
 							SNew(SBox).Visibility_Lambda([]{ return (!BF6Api::IsImporting() && BF6Api::IsDataInstalled()) ? EVisibility::Visible : EVisibility::Collapsed; })
 							[ MakeToolButton(TEXT("Back"), [this]{ OnDone.ExecuteIfBound(); }) ]
@@ -747,6 +761,13 @@ public:
 	void ShowSelector() { RebuildSelector(); if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0); }
 	bool IsBuildScreen() const { return Switcher.IsValid() && Switcher->GetActiveWidgetIndex() == 1; }
 
+	void ShowSetup()
+	{
+		if (!SelectorHost.IsValid()) return;
+		SelectorHost->SetContent(SNew(SBF6SetupScreen).OnDone_Lambda([this]{ RebuildSelector(); }));
+		if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0);
+	}
+
 private:
 	TSharedPtr<SWidgetSwitcher> Switcher;
 	TSharedPtr<SBox> SelectorHost;
@@ -763,13 +784,6 @@ private:
 			.OnImport_Lambda([this]{ if (BF6Api::ImportSpatial()) ShowBuild(); })
 			.OnSdkSetup_Lambda([this]{ ShowSetup(); })
 		);
-	}
-
-	void ShowSetup()
-	{
-		if (!SelectorHost.IsValid()) return;
-		SelectorHost->SetContent(SNew(SBF6SetupScreen).OnDone_Lambda([this]{ RebuildSelector(); }));
-		if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0);
 	}
 };
 
@@ -932,6 +946,7 @@ void BF6Api::DetachUI()
 
 void BF6Api::ShowBuildOverlay() { if (GRoot.IsValid()) GRoot->ShowBuild(); }
 void BF6Api::HideBuildOverlay() { if (GRoot.IsValid()) GRoot->ShowSelector(); }
+void BF6Api::ShowSdkSetup()     { if (GRoot.IsValid()) GRoot->ShowSetup(); }
 
 bool BF6Api::IsBuildOverlayActive() { return GRoot.IsValid() && GRoot->IsBuildScreen(); }
 

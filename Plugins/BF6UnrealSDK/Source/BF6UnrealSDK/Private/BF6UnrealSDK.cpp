@@ -2183,11 +2183,19 @@ namespace BF6Api
 		return true;
 	}
 
-	void StartSdkImport(const FString& SdkRoot)
+	void StartSdkImport(const FString& SdkRoot, bool bFullResync)
 	{
 		if (IsImporting()) return;
 		FString Err;
 		if (!ValidateSdkRoot(SdkRoot, Err)) { Notify(Err); return; }
+
+		if (bFullResync)
+		{
+			// wipe the converted data so CHANGED SDK content reconverts too
+			IFileManager::Get().DeleteDirectory(*(BF6_DataDir() / TEXT("objmodels")), false, true);
+			IFileManager::Get().DeleteDirectory(*(BF6_DataDir() / TEXT("mapmesh")),   false, true);
+			IFileManager::Get().DeleteDirectory(*(BF6_DataDir() / TEXT("basesetup")), false, true);
+		}
 
 		g_imp = FBF6Import();
 		g_imp.SdkRoot  = SdkRoot.TrimStartAndEnd();
@@ -2332,12 +2340,33 @@ namespace BF6Api
 
 	TArray<FString> AllLevels()
 	{
-		TArray<FString> Out; for (int i=0;i<GBF6MapCardCount;i++) Out.Add(GBF6MapCards[i].Code); return Out;
+		// The LIVE list from the imported catalogue, so a new SDK's new maps show
+		// up without a code change. Curated manifest order first, then any levels
+		// the manifest doesn't know yet (new maps), sorted.
+		TArray<FString> Live;
+		if (g_ctx && g_lvlcnt && g_lvlname)
+			for (int i = 0, n = g_lvlcnt(g_ctx); i < n; i++) Live.Add(UTF8_TO_TCHAR(g_lvlname(g_ctx, i)));
+		TArray<FString> Out;
+		if (Live.Num() == 0)
+		{
+			for (int i = 0; i < GBF6MapCardCount; i++) Out.Add(GBF6MapCards[i].Code);
+			return Out;
+		}
+		for (int i = 0; i < GBF6MapCardCount; i++) if (Live.Contains(GBF6MapCards[i].Code)) Out.Add(GBF6MapCards[i].Code);
+		TArray<FString> Extra;
+		for (const FString& L : Live) if (!Out.Contains(L)) Extra.Add(L);
+		Extra.Sort();
+		Out.Append(Extra);
+		return Out;
 	}
 	FString DisplayName(const FString& Level)
 	{
 		for (int i=0;i<GBF6MapCardCount;i++) if (Level == GBF6MapCards[i].Code) return GBF6MapCards[i].Name;
-		return Level;
+		// unknown (new) map: prettify the codename until the manifest learns it
+		FString S = Level;
+		S.RemoveFromStart(TEXT("MP_"));
+		S = S.Replace(TEXT("_"), TEXT(" "));
+		return S;
 	}
 	int32 PlaceableTotal(const FString& Level) { return PlaceableCount(Level); }
 	TArray<FString> SavesFor(const FString& Level) { return ListSaves(Level); }
@@ -2488,6 +2517,30 @@ void FBF6UnrealSDKModule::StartupModule()
 		BF6Api::InstallInputHandler();
 		BF6Api::ShowStartupUI();
 		BF6Api::CheckForUpdates(false);   // silent unless a newer release exists
+
+		// New-SDK detection: if the remembered SDK folder now holds a different
+		// version than our data was built from, offer an incremental re-sync.
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+		{
+			const FString Stamped = BF6_ReadSdkVersion(BF6_DataDir() / TEXT("sdk.version.json"));
+			const FString Root = BF6Api::StoredSdkRoot();
+			if (!Stamped.IsEmpty() && !Root.IsEmpty() && !BF6Api::IsImporting())
+			{
+				const FString Cur = BF6_ReadSdkVersion(Root / TEXT("sdk.version.json"));
+				if (!Cur.IsEmpty() && Cur != Stamped)
+				{
+					const EAppReturnType::Type Choice = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(
+						TEXT("Your SDK folder now holds Portal SDK %s, but this tool's data was built from %s.\n\nRe-sync now? Only new content is converted (use Full re-sync on the SDK Setup screen after big updates)."),
+						*Cur, *Stamped)));
+					if (Choice == EAppReturnType::Yes)
+					{
+						BF6Api::ShowSdkSetup();
+						BF6Api::StartSdkImport(Root);
+					}
+				}
+			}
+			return false;   // one-shot
+		}), 5.0f);
 	};
 	if (MainFrame.IsWindowInitialized())
 	{
