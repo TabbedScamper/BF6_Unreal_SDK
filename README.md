@@ -12,8 +12,9 @@ Open the project and the editor becomes a map builder:
 - **Base setup**: every map loads with its shipped gameplay layout, including HQs, spawn points (with correct facings), deploy cameras, and the combat area volume, plus the low-poly terrain and asset meshes so you always know where you are.
 - **Placement**: aim anywhere on the map and press **Space**. A radial menu opens with the object categories (Architecture, Props, Nature, Gameplay, and so on). Pick a category, search it, hover an object for a live 3D preview of its model, and double click to place it right where you aimed. All 9,700+ SDK low-poly models are supported.
 - **Physics budget**: a live budget bar sits on top of the viewport, tracking the same per-map physics cost limit the SDK's memory tool enforces. It fills from blue to red as you build and can be hidden.
-- **Save / resume**: name your custom map, save it, and pick it back up later from the map selector.
-- **Export**: writes your map to `<map>.spatial.json` in the SDK's Portal format, with [PortalSpatialMinifier](https://github.com/dfanz0r/PortalSpatialMinifier)-style name minification built in so it fits Portal's upload size limits. Drop the file into an SDK mod folder and run the SDK's experience exporter to package it for Portal.
+- **Gameplay editing**: select any gameplay object and press **Space** for its context radial. Edit the full attribute suite (HQ teams, MCOM settings, combat area timers, vehicle spawner types, and more, with real dropdowns from the SDK data), link spawn points and volumes with a pick mode, and edit zone polygons Godot-style: points appear on selection, drag to move, right click an edge to add.
+- **Save / resume**: name your custom map, save it, and pick it back up later from the map selector. Sessions autosave every 60 seconds and the tool asks before you leave unsaved work.
+- **Export**: writes your map to `<map>.spatial.json` in the SDK's Portal format, verified against shipped Portal experiences. Export with readable names, or minified ([PortalSpatialMinifier](https://github.com/dfanz0r/PortalSpatialMinifier)-style) so it fits Portal's upload size limits. Drop the file into an SDK mod folder and run the SDK's experience exporter to package it for Portal.
 - **Import**: load any `.spatial.json` (your own exports or SDK samples) straight back into the editor as an editable project. The tool detects which map the file belongs to and opens it there.
 
 ## Requirements
@@ -43,11 +44,18 @@ When a new SDK version drops, unzip it and run **SDK Setup** again from the map 
 
 ## Roadmap
 
-- Property panel for gameplay objects (spawner teams, objective IDs, volume points)
-- Object links (HQ areas, spawn groups, capture zones)
-- Volume editing
-- Auto-detect a new SDK version and prompt for a re-sync
+- Model colors and materials, so the low poly models look as good as they do in the Godot SDK
+- Drag objects straight from the library into the world
+- A wide-screen hotkey build mode for faster placement
 - High-poly overlay as a separate add-on plugin: full-detail meshes, materials, and extended terrain decoded from the game itself
+
+## Testing and feedback
+
+The tool is in open beta and every report helps.
+
+- **Bugs**: open an [issue](../../issues). Include what you did, what happened, and the log from `Saved/Logs/BF6_High_Poly.log` (attach the file, or the last 50 lines). If the editor crashed, the crash folder under `Saved/Crashes` is gold.
+- **Ideas and suggestions**: open an issue with the feature request template, or start a [discussion](../../discussions).
+- **Updates**: the tool checks this repo's releases on launch. When a new version is out you can install it from inside the editor.
 
 ## Credits
 

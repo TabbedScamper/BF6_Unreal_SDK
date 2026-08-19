@@ -1,0 +1,24 @@
+name: Feature request
+description: An idea, a workflow improvement, or something the Godot SDK does that this tool should too
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What should the tool do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it helps
+      description: What were you trying to build when you wanted this?
+  - type: dropdown
+    id: godot-parity
+    attributes:
+      label: Does the official Godot SDK already do this?
+      options:
+        - "Yes, this is a parity gap"
+        - "No, this would be new"
+        - "Not sure"

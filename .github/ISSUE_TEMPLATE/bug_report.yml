@@ -1,0 +1,45 @@
+name: Bug report
+description: Something broke, crashed, or looked wrong
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Tool version
+      description: Shown on the map selector, bottom corner (for example 0.2.0).
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: map
+    attributes:
+      label: Map
+      description: Which map were you on, if any?
+      placeholder: "Manhattan Bridge"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what went wrong? Steps to reproduce are the fastest path to a fix.
+      placeholder: |
+        1. Opened Manhattan Bridge
+        2. Selected the combat area and dragged a point
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: Attach `Saved/Logs/BF6_High_Poly.log` from your project folder, or paste the last 50 lines. If the editor crashed, also zip and attach the newest folder under `Saved/Crashes`.
+      render: text
+  - type: input
+    id: sdk
+    attributes:
+      label: Portal SDK version
+      description: The SDK download you imported data from, if you know it.
+      placeholder: "1.4.2.0"
