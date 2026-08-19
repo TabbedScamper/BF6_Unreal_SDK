@@ -1735,7 +1735,352 @@ static bool BF6_ImportSpatialDialog()
 }
 
 // ============================================================================
-// Versioning + updates. GitHub releases are the update channel; a compiled
+// SDK data import. The tool's data packs are generated from the user's own
+// unzipped Portal SDK download: catalogue jsons are copied, base setups are
+// parsed natively from levels/*.tscn, and the mesh packs are extracted by
+// driving the SDK's own bundled Godot headlessly with generated scripts
+// (skip-existing + capped batches + relaunch-on-crash, the proven recipe).
+// ============================================================================
+#include "Internationalization/Regex.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Containers/Ticker.h"
+
+static FString BF6_DataDir() { return FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data")); }
+
+struct FBF6Import
+{
+	enum class EPhase { Idle, Objects, Maps, Done, Failed };
+	EPhase  Phase = EPhase::Idle;
+	FString SdkRoot, GodotExe;
+	FProcHandle Proc;
+	int32   ObjTotal = 0, MapTotal = 0, LastCount = 0, Stagnant = 0;
+	FString Status;
+	float   Frac = 0.f;
+	FTSTicker::FDelegateHandle Tick;
+};
+static FBF6Import g_imp;
+
+static int32 BF6_CountFiles(const FString& Dir, const TCHAR* Pattern)
+{
+	TArray<FString> Files;
+	IFileManager::Get().FindFiles(Files, *(Dir / Pattern), true, false);
+	return Files.Num();
+}
+
+static FString BF6_ReadSdkVersion(const FString& JsonPath)
+{
+	FString In, Ver;
+	if (!FFileHelper::LoadFileToString(In, *JsonPath)) return Ver;
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
+	if (FJsonSerializer::Deserialize(R, Root) && Root.IsValid()) Root->TryGetStringField(TEXT("version"), Ver);
+	return Ver;
+}
+
+// Find the Godot exe the SDK ships at its root (name carries the version).
+static FString BF6_FindSdkGodot(const FString& SdkRoot)
+{
+	TArray<FString> Found;
+	IFileManager::Get().FindFiles(Found, *(SdkRoot / TEXT("Godot*win64*.exe")), true, false);
+	// prefer the non-console build
+	for (const FString& F : Found) if (!F.Contains(TEXT("console"))) return SdkRoot / F;
+	return Found.Num() ? SdkRoot / Found[0] : FString();
+}
+
+// ---- base setups: parse levels/MP_*.tscn into <map>.base.json (native port of
+// the extraction script - plain text parsing, no Godot needed) ----
+static void BF6_ExtractBaseSetups(const FString& SdkRoot)
+{
+	const FString LevelsDir = SdkRoot / TEXT("GodotProject/levels");
+	const FString OutDir    = BF6_DataDir() / TEXT("basesetup");
+	IFileManager::Get().MakeDirectory(*OutDir, true);
+	TArray<FString> Files;
+	IFileManager::Get().FindFiles(Files, *(LevelsDir / TEXT("MP_*.tscn")), true, false);
+
+	const FRegexPattern ExtPat(TEXT("\\[ext_resource[^\\]]*path=\"res://([^\"]+)\"[^\\]]*id=\"([^\"]+)\""));
+	const FRegexPattern KeyValPat(TEXT("^([A-Za-z_][A-Za-z0-9_]*) = (.+)$"));
+
+	auto Nums = [](const FString& S)
+	{
+		TArray<FString> Parts; S.ParseIntoArray(Parts, TEXT(","));
+		TArray<double> Out; for (FString& P : Parts) Out.Add(FCString::Atod(*P.TrimStartAndEnd()));
+		return Out;
+	};
+	auto Between = [](const FString& S, const FString& A, const FString& B, int32 From = 0) -> FString
+	{
+		const int32 i = S.Find(A, ESearchCase::CaseSensitive, ESearchDir::FromStart, From);
+		if (i == INDEX_NONE) return FString();
+		const int32 j = S.Find(B, ESearchCase::CaseSensitive, ESearchDir::FromStart, i + A.Len());
+		if (j == INDEX_NONE) return FString();
+		return S.Mid(i + A.Len(), j - i - A.Len());
+	};
+
+	for (const FString& File : Files)
+	{
+		const FString Level = FPaths::GetBaseFilename(File);
+		FString Text;
+		if (!FFileHelper::LoadFileToString(Text, *(LevelsDir / File))) continue;
+
+		// ext_resource id -> type leaf (the placeable type the node instances)
+		TMap<FString, FString> Ext;
+		FRegexMatcher EM(ExtPat, Text);
+		while (EM.FindNext()) Ext.Add(EM.GetCaptureGroup(2), FPaths::GetBaseFilename(EM.GetCaptureGroup(1)));
+
+		// split into [node ...] blocks
+		TArray<FString> Lines; Text.ParseIntoArrayLines(Lines, false);
+		TArray<TSharedPtr<FJsonValue>> Objects;
+		for (int32 li = 0; li < Lines.Num(); li++)
+		{
+			if (!Lines[li].StartsWith(TEXT("[node "))) continue;
+			const FString Header = Lines[li];
+			FString Body;
+			for (int32 bj = li + 1; bj < Lines.Num() && !Lines[bj].StartsWith(TEXT("[node ")); bj++)
+				Body += Lines[bj] + TEXT("\n");
+
+			const FString Name   = Between(Header, TEXT("name=\""), TEXT("\""));
+			const FString Inst   = Between(Header, TEXT("instance=ExtResource(\""), TEXT("\")"));
+			const FString BType  = Between(Header, TEXT("type=\""), TEXT("\""));
+			const FString Parent = Between(Header, TEXT("parent=\""), TEXT("\""));
+			FString Type = !Inst.IsEmpty() && Ext.Contains(Inst) ? Ext[Inst] : (!BType.IsEmpty() ? BType : TEXT("Node3D"));
+			if (Name == TEXT("Static") || Name.EndsWith(TEXT("_Terrain")) || Name.EndsWith(TEXT("_Assets"))) continue;
+
+			TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetStringField(TEXT("name"), Name);
+			O->SetStringField(TEXT("type"), Type);
+			if (!Parent.IsEmpty()) O->SetStringField(TEXT("parent"), Parent);
+
+			const FString Xf = Between(Body, TEXT("transform = Transform3D("), TEXT(")"));
+			if (!Xf.IsEmpty())
+			{
+				const TArray<double> V = Nums(Xf);
+				if (V.Num() == 12)
+				{
+					TArray<TSharedPtr<FJsonValue>> B9, P3;
+					for (int32 k = 0; k < 9; k++)  B9.Add(MakeShared<FJsonValueNumber>(V[k]));
+					for (int32 k = 9; k < 12; k++) P3.Add(MakeShared<FJsonValueNumber>(V[k]));
+					O->SetArrayField(TEXT("basis"), B9);
+					O->SetArrayField(TEXT("pos"), P3);
+				}
+			}
+			const FString Pts = Between(Body, TEXT("points = PackedVector2Array("), TEXT(")"));
+			if (!Pts.IsEmpty())
+			{
+				TArray<TSharedPtr<FJsonValue>> PA;
+				for (double d : Nums(Pts)) PA.Add(MakeShared<FJsonValueNumber>(d));
+				O->SetArrayField(TEXT("points"), PA);
+			}
+			// scalar + link properties (raw strings, like the original extractor)
+			TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
+			FRegexMatcher PM(KeyValPat, Body);
+			while (PM.FindNext())
+			{
+				const FString K = PM.GetCaptureGroup(1);
+				if (K == TEXT("transform") || K == TEXT("points") || K.StartsWith(TEXT("metadata"))) continue;
+				Props->SetStringField(K, PM.GetCaptureGroup(2).TrimStartAndEnd());
+			}
+			O->SetObjectField(TEXT("props"), Props);
+			Objects.Add(MakeShared<FJsonValueObject>(O));
+		}
+
+		TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetStringField(TEXT("level"), Level);
+		Root->SetArrayField(TEXT("objects"), Objects);
+		FString Out;
+		TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
+		FJsonSerializer::Serialize(Root.ToSharedRef(), W);
+		FFileHelper::SaveStringToFile(Out, *(OutDir / (Level + TEXT(".base.json"))));
+	}
+	UE_LOG(LogBF6, Warning, TEXT("Base setups extracted for %d levels."), Files.Num());
+}
+
+// ---- the generated Godot extraction scripts (skip-existing, so re-sync after
+// an SDK update only converts what's new) ----
+static FString BF6_ObjectScript(const FString& OutDir)
+{
+	FString S = TEXT(
+		"extends SceneTree\n"
+		"func _initialize():\n"
+		"\tvar OUT := \"__OUT__\"\n"
+		"\tDirAccess.make_dir_recursive_absolute(OUT)\n"
+		"\tvar d := DirAccess.open(\"res://raw/models\")\n"
+		"\tif d == null: print(\"no raw/models\"); quit(); return\n"
+		"\tvar names: Array[String] = []\n"
+		"\tfor f in d.get_files():\n"
+		"\t\tif f.ends_with(\".glb.import\"): names.append(f.substr(0, f.length() - 7))\n"
+		"\trandomize(); names.shuffle()\n"
+		"\tvar did := 0\n"
+		"\tfor gname in names:\n"
+		"\t\tvar outp := \"%s/%s.bf6mesh\" % [OUT, gname.get_basename()]\n"
+		"\t\tif FileAccess.file_exists(outp): continue\n"
+		"\t\tvar path := \"res://raw/models/\" + gname\n"
+		"\t\tif not ResourceLoader.exists(path): continue\n"
+		"\t\tvar ps: PackedScene = ResourceLoader.load(path, \"\", ResourceLoader.CACHE_MODE_IGNORE)\n"
+		"\t\tif ps == null: continue\n"
+		"\t\tvar root := ps.instantiate()\n"
+		"\t\t_dump(root, outp, false)\n"
+		"\t\troot.free()\n"
+		"\t\tdid += 1\n"
+		"\t\tif did >= 1200: print(\"BATCH\"); quit(); return\n"
+		"\tprint(\"DONE\"); quit()\n");
+	S += TEXT(
+		"func _dump(root: Node, out_path: String, use_global: bool) -> bool:\n"
+		"\tvar meshes: Array = []\n"
+		"\t_collect(root, meshes)\n"
+		"\tvar surfaces: Array = []\n"
+		"\tfor mi in meshes:\n"
+		"\t\tvar m: Mesh = mi.mesh\n"
+		"\t\tif m == null: continue\n"
+		"\t\tvar xf: Transform3D = mi.global_transform if use_global else mi.transform\n"
+		"\t\tfor si in m.get_surface_count(): surfaces.append([m.surface_get_arrays(si), xf])\n"
+		"\tif surfaces.is_empty(): return false\n"
+		"\tvar sp := StreamPeerBuffer.new()\n"
+		"\tsp.big_endian = false\n"
+		"\tsp.put_u32(0x42463653); sp.put_u32(1); sp.put_u32(surfaces.size())\n"
+		"\tfor pair in surfaces:\n"
+		"\t\tvar arr: Array = pair[0]\n"
+		"\t\tvar xf: Transform3D = pair[1]\n"
+		"\t\tvar verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]\n"
+		"\t\tvar norms = arr[Mesh.ARRAY_NORMAL]\n"
+		"\t\tvar uvs = arr[Mesh.ARRAY_TEX_UV]\n"
+		"\t\tvar idx = arr[Mesh.ARRAY_INDEX]\n"
+		"\t\tvar vc := verts.size()\n"
+		"\t\tvar indices: PackedInt32Array\n"
+		"\t\tif idx == null:\n"
+		"\t\t\tindices = PackedInt32Array(); indices.resize(vc)\n"
+		"\t\t\tfor k in vc: indices[k] = k\n"
+		"\t\telse: indices = idx\n"
+		"\t\tsp.put_u32(vc); sp.put_u32(indices.size())\n"
+		"\t\tfor k in vc:\n"
+		"\t\t\tvar p: Vector3 = xf * verts[k]\n"
+		"\t\t\tsp.put_float(p.x); sp.put_float(p.y); sp.put_float(p.z)\n"
+		"\t\tvar hasN = norms != null and norms.size() == vc\n"
+		"\t\tvar hasU = uvs != null and uvs.size() == vc\n"
+		"\t\tsp.put_u8(1 if hasN else 0); sp.put_u8(1 if hasU else 0)\n"
+		"\t\tif hasN:\n"
+		"\t\t\tvar b: Basis = xf.basis\n"
+		"\t\t\tfor k in vc:\n"
+		"\t\t\t\tvar n: Vector3 = (b * norms[k]).normalized()\n"
+		"\t\t\t\tsp.put_float(n.x); sp.put_float(n.y); sp.put_float(n.z)\n"
+		"\t\tif hasU:\n"
+		"\t\t\tfor k in vc:\n"
+		"\t\t\t\tsp.put_float(uvs[k].x); sp.put_float(uvs[k].y)\n"
+		"\t\tfor k in indices.size(): sp.put_32(indices[k])\n"
+		"\tvar raw: PackedByteArray = sp.data_array\n"
+		"\tvar comp: PackedByteArray = raw.compress(FileAccess.COMPRESSION_GZIP)\n"
+		"\tvar fa := FileAccess.open(out_path, FileAccess.WRITE)\n"
+		"\tif fa == null: return false\n"
+		"\tfa.store_32(0x5A364642)\n"
+		"\tfa.store_32(raw.size())\n"
+		"\tfa.store_buffer(comp)\n"
+		"\tfa.close()\n"
+		"\treturn true\n"
+		"func _collect(node: Node, out: Array) -> void:\n"
+		"\tif node is MeshInstance3D and node.mesh != null: out.append(node)\n"
+		"\tfor c in node.get_children(): _collect(c, out)\n");
+	return S.Replace(TEXT("__OUT__"), *OutDir.Replace(TEXT("\\"), TEXT("/")));
+}
+
+static FString BF6_MapScript(const FString& OutDir)
+{
+	FString S = TEXT(
+		"extends SceneTree\n"
+		"func _initialize():\n"
+		"\tvar OUT := \"__OUT__\"\n"
+		"\tDirAccess.make_dir_recursive_absolute(OUT)\n"
+		"\tvar d := DirAccess.open(\"res://static\")\n"
+		"\tif d == null: print(\"no static\"); quit(); return\n"
+		"\tvar levels := {}\n"
+		"\tfor f in d.get_files():\n"
+		"\t\tif f.ends_with(\"_Terrain.tscn\"): levels[f.replace(\"_Terrain.tscn\", \"\")] = true\n"
+		"\tfor lvl in levels.keys():\n"
+		"\t\t_do(OUT, lvl, \"Terrain\")\n"
+		"\t\t_do(OUT, lvl, \"Assets\")\n"
+		"\tprint(\"DONE\"); quit()\n"
+		"func _do(OUT: String, level: String, kind: String) -> void:\n"
+		"\tvar outp := \"%s/%s_%s.bf6mesh\" % [OUT, level, kind.to_lower()]\n"
+		"\tif FileAccess.file_exists(outp): return\n"
+		"\tvar path := \"res://static/%s_%s.tscn\" % [level, kind]\n"
+		"\tif not ResourceLoader.exists(path): return\n"
+		"\tvar ps: PackedScene = load(path)\n"
+		"\tif ps == null: return\n"
+		"\tvar root := ps.instantiate()\n"
+		"\t_dump(root, outp, true)\n"
+		"\troot.free()\n"
+		"\tprint(level, \" \", kind, \" done\")\n");
+	// same _dump/_collect as the object script
+	FString Obj = BF6_ObjectScript(OutDir);
+	const int32 At = Obj.Find(TEXT("func _dump"));
+	S += Obj.Mid(At);
+	return S.Replace(TEXT("__OUT__"), *OutDir.Replace(TEXT("\\"), TEXT("/")));
+}
+
+static void BF6_ImportFail(const FString& Why)
+{
+	g_imp.Phase = FBF6Import::EPhase::Failed;
+	g_imp.Status = Why;
+	if (g_imp.Tick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(g_imp.Tick); g_imp.Tick.Reset(); }
+	Notify(FString::Printf(TEXT("SDK import failed: %s"), *Why));
+}
+
+static bool BF6_LaunchGodot(const FString& ScriptPath)
+{
+	const FString Args = FString::Printf(TEXT("--headless --path \"%s\" --script \"%s\""),
+		*(g_imp.SdkRoot / TEXT("GodotProject")), *ScriptPath);
+	g_imp.Proc = FPlatformProcess::CreateProc(*g_imp.GodotExe, *Args, false, true, true, nullptr, 0, nullptr, nullptr);
+	return g_imp.Proc.IsValid();
+}
+
+static void BF6_ImportTickPhase()
+{
+	const FString ObjDir = BF6_DataDir() / TEXT("objmodels");
+	const FString MapDir = BF6_DataDir() / TEXT("mapmesh");
+	const FString ScriptDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("import"));
+	const bool bObjects = g_imp.Phase == FBF6Import::EPhase::Objects;
+	const FString OutDir = bObjects ? ObjDir : MapDir;
+	const int32 Target = bObjects ? g_imp.ObjTotal : g_imp.MapTotal;
+	const int32 Count = BF6_CountFiles(OutDir, TEXT("*.bf6mesh"));
+
+	// still running: just report progress
+	if (g_imp.Proc.IsValid() && FPlatformProcess::IsProcRunning(g_imp.Proc))
+	{
+		g_imp.Status = FString::Printf(TEXT("%s  %d / %d"), bObjects ? TEXT("Converting object models") : TEXT("Converting map meshes"), Count, Target);
+		// objects are ~90%% of the work
+		const float PhaseFrac = Target > 0 ? (float)Count / (float)Target : 0.f;
+		g_imp.Frac = bObjects ? 0.05f + 0.80f * PhaseFrac : 0.85f + 0.15f * PhaseFrac;
+		return;
+	}
+	if (g_imp.Proc.IsValid()) { FPlatformProcess::CloseProc(g_imp.Proc); g_imp.Proc = FProcHandle(); }
+
+	// the batch/crash-resume loop: relaunch while progress is being made
+	const bool bComplete = Count >= Target || (Count == g_imp.LastCount && ++g_imp.Stagnant >= 2);
+	if (Count > g_imp.LastCount) g_imp.Stagnant = 0;
+	g_imp.LastCount = Count;
+	if (!bComplete)
+	{
+		const FString Script = ScriptDir / (bObjects ? TEXT("extract_objects.gd") : TEXT("extract_maps.gd"));
+		if (!BF6_LaunchGodot(Script)) { BF6_ImportFail(TEXT("could not relaunch the SDK's Godot")); }
+		return;
+	}
+
+	if (bObjects)
+	{
+		// objects finished (or gave all they can) - move to the map meshes
+		UE_LOG(LogBF6, Warning, TEXT("Object models: %d of %d converted."), Count, Target);
+		g_imp.Phase = FBF6Import::EPhase::Maps;
+		g_imp.LastCount = BF6_CountFiles(MapDir, TEXT("*.bf6mesh"));
+		g_imp.Stagnant = 0;
+		if (!BF6_LaunchGodot(ScriptDir / TEXT("extract_maps.gd"))) BF6_ImportFail(TEXT("could not launch the SDK's Godot"));
+		return;
+	}
+
+	// all done
+	UE_LOG(LogBF6, Warning, TEXT("Map meshes: %d of %d converted."), Count, Target);
+	g_imp.Phase = FBF6Import::EPhase::Done;
+	g_imp.Status = TEXT("Import complete");
+	g_imp.Frac = 1.f;
+	if (g_imp.Tick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(g_imp.Tick); g_imp.Tick.Reset(); }
+	Notify(TEXT("SDK import complete - all maps and models are ready."));
+}
 // plugin can't hot-swap its own DLL, so the flow is the Godot staged-lane one:
 // check -> download to Saved/ -> restart, and a script applies it while the
 // editor is closed, then relaunches the project.
@@ -1818,6 +2163,84 @@ namespace BF6Api
 		if (TSharedPtr<IPlugin> P = IPluginManager::Get().FindPlugin(TEXT("BF6UnrealSDK")))
 			return P->GetDescriptor().VersionName;
 		return TEXT("0.0.0");
+	}
+
+	bool IsDataInstalled()
+	{
+		return FPaths::FileExists(BF6_DataDir() / TEXT("FbExportData/asset_types.json"))
+			&& BF6_CountFiles(BF6_DataDir() / TEXT("objmodels"), TEXT("*.bf6mesh")) >= 1000;
+	}
+
+	bool ValidateSdkRoot(const FString& Path, FString& OutError)
+	{
+		const FString P = Path.TrimStartAndEnd();
+		if (P.IsEmpty()) { OutError = TEXT("Pick your unzipped Portal SDK folder."); return false; }
+		if (!FPaths::FileExists(P / TEXT("GodotProject/project.godot"))) { OutError = TEXT("That folder has no GodotProject - select the SDK's root folder (the one with GodotProject and FbExportData inside)."); return false; }
+		if (!FPaths::FileExists(P / TEXT("FbExportData/asset_types.json"))) { OutError = TEXT("FbExportData/asset_types.json is missing - is this a complete SDK download?"); return false; }
+		if (BF6_FindSdkGodot(P).IsEmpty()) { OutError = TEXT("The SDK's Godot exe was not found at the folder root."); return false; }
+		if (BF6_CountFiles(P / TEXT("GodotProject/.godot/imported"), TEXT("*.scn")) < 100) { OutError = TEXT("The SDK's imported model cache (.godot/imported) looks empty - unzip the full SDK download."); return false; }
+		OutError.Reset();
+		return true;
+	}
+
+	void StartSdkImport(const FString& SdkRoot)
+	{
+		if (IsImporting()) return;
+		FString Err;
+		if (!ValidateSdkRoot(SdkRoot, Err)) { Notify(Err); return; }
+
+		g_imp = FBF6Import();
+		g_imp.SdkRoot  = SdkRoot.TrimStartAndEnd();
+		g_imp.GodotExe = BF6_FindSdkGodot(g_imp.SdkRoot);
+
+		// remember for re-sync checks
+		GConfig->SetString(TEXT("BF6UnrealSDK"), TEXT("SdkRoot"), *g_imp.SdkRoot, GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+
+		// phase 0 (fast, synchronous): catalogue + version stamp + base setups
+		g_imp.Status = TEXT("Copying catalogue...");
+		const FString Fb = BF6_DataDir() / TEXT("FbExportData");
+		IFileManager::Get().MakeDirectory(*Fb, true);
+		IFileManager::Get().Copy(*(Fb / TEXT("asset_types.json")), *(g_imp.SdkRoot / TEXT("FbExportData/asset_types.json")));
+		IFileManager::Get().Copy(*(Fb / TEXT("level_info.json")),  *(g_imp.SdkRoot / TEXT("FbExportData/level_info.json")));
+		IFileManager::Get().Copy(*(BF6_DataDir() / TEXT("sdk.version.json")), *(g_imp.SdkRoot / TEXT("sdk.version.json")));
+		BF6_ExtractBaseSetups(g_imp.SdkRoot);
+		if (g_ctx && g_loadp)   // refresh the placeable catalogue from the new jsons
+		{
+			char perr[256] = {0};
+			g_loadp(g_ctx, TCHAR_TO_UTF8(*Fb), perr, sizeof(perr));
+		}
+
+		// write the extraction scripts + count the work
+		const FString ScriptDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("import"));
+		IFileManager::Get().MakeDirectory(*ScriptDir, true);
+		FFileHelper::SaveStringToFile(BF6_ObjectScript(BF6_DataDir() / TEXT("objmodels")), *(ScriptDir / TEXT("extract_objects.gd")));
+		FFileHelper::SaveStringToFile(BF6_MapScript(BF6_DataDir() / TEXT("mapmesh")),      *(ScriptDir / TEXT("extract_maps.gd")));
+		g_imp.ObjTotal = BF6_CountFiles(g_imp.SdkRoot / TEXT("GodotProject/raw/models"), TEXT("*.glb.import"));
+		g_imp.MapTotal = 2 * BF6_CountFiles(g_imp.SdkRoot / TEXT("GodotProject/static"), TEXT("*_Terrain.tscn"));
+		IFileManager::Get().MakeDirectory(*(BF6_DataDir() / TEXT("objmodels")), true);
+		IFileManager::Get().MakeDirectory(*(BF6_DataDir() / TEXT("mapmesh")), true);
+
+		// phase 1: object models via the SDK's own Godot, headless
+		g_imp.Phase = FBF6Import::EPhase::Objects;
+		g_imp.LastCount = BF6_CountFiles(BF6_DataDir() / TEXT("objmodels"), TEXT("*.bf6mesh"));
+		if (!BF6_LaunchGodot(ScriptDir / TEXT("extract_objects.gd"))) { BF6_ImportFail(TEXT("could not launch the SDK's Godot")); return; }
+		g_imp.Tick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float)
+		{
+			BF6_ImportTickPhase();
+			return g_imp.Phase == FBF6Import::EPhase::Objects || g_imp.Phase == FBF6Import::EPhase::Maps;
+		}), 1.0f);
+	}
+
+	bool  IsImporting() { return g_imp.Phase == FBF6Import::EPhase::Objects || g_imp.Phase == FBF6Import::EPhase::Maps; }
+	FText ImportStatus() { return FText::FromString(g_imp.Status); }
+	float ImportFrac() { return g_imp.Frac; }
+	bool  ImportDone() { return g_imp.Phase == FBF6Import::EPhase::Done; }
+	FString StoredSdkRoot()
+	{
+		FString P;
+		GConfig->GetString(TEXT("BF6UnrealSDK"), TEXT("SdkRoot"), P, GEditorPerProjectIni);
+		return P;
 	}
 
 	void CheckForUpdates(bool bManual)

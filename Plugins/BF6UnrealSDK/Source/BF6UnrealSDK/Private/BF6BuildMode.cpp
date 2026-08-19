@@ -24,6 +24,8 @@
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Containers/Ticker.h"
+#include "DesktopPlatformModule.h"
+#include "IDesktopPlatform.h"
 #include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
@@ -432,12 +434,14 @@ public:
 	SLATE_BEGIN_ARGS(SBF6MapSelector) {}
 		SLATE_EVENT(FOnOpen, OnOpen)
 		SLATE_EVENT(FSimpleDelegate, OnImport)
+		SLATE_EVENT(FSimpleDelegate, OnSdkSetup)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
 		OnOpen = InArgs._OnOpen;
 		OnImport = InArgs._OnImport;
+		OnSdkSetup = InArgs._OnSdkSetup;
 
 		TSharedRef<SWrapBox> Grid = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(12, 12));
 		int32 MapCount = 0;
@@ -465,6 +469,8 @@ public:
 					// Import lives on this screen: it detects the map from the file
 					// and opens straight into build mode named after the file.
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
+					[ MakeToolButton(TEXT("SDK Setup"), [this]{ OnSdkSetup.ExecuteIfBound(); }) ]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
 					[ MakeToolButton(TEXT("Import .spatial.json"), [this]{ OnImport.ExecuteIfBound(); }) ]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
 					[ MakeToolButton(FString::Printf(TEXT("v%s - Check for updates"), *BF6Api::PluginVersion()), []{ BF6Api::CheckForUpdates(true); }) ]
@@ -480,6 +486,7 @@ public:
 private:
 	FOnOpen OnOpen;
 	FSimpleDelegate OnImport;
+	FSimpleDelegate OnSdkSetup;
 
 	void Open(const FString& Level, const FString& Save)
 	{
@@ -621,6 +628,92 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// First-time setup: point the tool at an unzipped Portal SDK download and it
+// generates all of its data from it (catalogue, base setups, and every model,
+// converted by driving the SDK's own bundled Godot headlessly). Also reachable
+// later from the selector for re-syncing after an SDK update.
+// ---------------------------------------------------------------------------
+class SBF6SetupScreen : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6SetupScreen) {}
+		SLATE_EVENT(FSimpleDelegate, OnDone)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		OnDone = InArgs._OnDone;
+		ChildSlot
+		[
+			SNew(SBorder).BorderImage(InkBrush()).Padding(0).HAlign(HAlign_Center).VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(640.f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("B F 6   U N R E A L   S D K"))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2, 0, 10)
+					[ SNew(STextBlock).Font(FontBold(26)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("SDK SETUP"))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 16)
+					[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("This tool builds its map and model data from the official Battlefield 6 Portal SDK. Download the SDK from the Portal site, unzip it anywhere, then point the tool at that folder. The import runs once and takes a while (about 9,700 models); re-running it after an SDK update only converts what changed."))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+						[ SAssignNew(PathBox, SEditableTextBox).Text(FText::FromString(BF6Api::StoredSdkRoot())).HintText(FText::FromString(TEXT("C:\\...\\PortalSDK  (the unzipped SDK folder)"))) ]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[ MakeToolButton(TEXT("Browse..."), [this]{ Browse(); }) ]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 16)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth()
+						[
+							SNew(SBox).Visibility_Lambda([]{ return BF6Api::IsImporting() ? EVisibility::Collapsed : EVisibility::Visible; })
+							[ MakePrimaryButton(TEXT("Import SDK data"), [this]{ if (PathBox.IsValid()) BF6Api::StartSdkImport(PathBox->GetText().ToString()); }) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(8, 0, 0, 0)
+						[
+							SNew(SBox).Visibility_Lambda([]{ return BF6Api::ImportDone() ? EVisibility::Visible : EVisibility::Collapsed; })
+							[ MakePrimaryButton(TEXT("Continue"), [this]{ OnDone.ExecuteIfBound(); }) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(8, 0, 0, 0)
+						[
+							// data already there (re-sync visit): let the user back out
+							SNew(SBox).Visibility_Lambda([]{ return (!BF6Api::IsImporting() && BF6Api::IsDataInstalled()) ? EVisibility::Visible : EVisibility::Collapsed; })
+							[ MakeToolButton(TEXT("Back"), [this]{ OnDone.ExecuteIfBound(); }) ]
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SVerticalBox)
+						.Visibility_Lambda([]{ return (BF6Api::IsImporting() || BF6Api::ImportDone()) ? EVisibility::Visible : EVisibility::Collapsed; })
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+						[ SNew(SProgressBar).Percent_Lambda([]{ return BF6Api::ImportFrac(); }).FillColorAndOpacity(FSlateColor(BF6Theme::Accent)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text_Lambda([]{ return BF6Api::ImportStatus(); }) ]
+					]
+				]
+			]
+		];
+	}
+
+private:
+	FSimpleDelegate OnDone;
+	TSharedPtr<SEditableTextBox> PathBox;
+
+	void Browse()
+	{
+		IDesktopPlatform* DP = FDesktopPlatformModule::Get();
+		if (!DP || !PathBox.IsValid()) return;
+		FString Picked;
+		const void* Parent = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(SharedThis(this));
+		if (DP->OpenDirectoryDialog(Parent, TEXT("Select your unzipped Portal SDK folder"), PathBox->GetText().ToString(), Picked))
+			PathBox->SetText(FText::FromString(Picked));
+	}
+};
+
+// ---------------------------------------------------------------------------
 // Viewport root: the entire tool UI, attached to the REAL level viewport (which
 // is the editor's whole centre and resizes with it - no window, no docked tab).
 // Screen 0 = the map selector, opaque and filling the viewport. Screen 1 = the
@@ -661,11 +754,22 @@ private:
 	void RebuildSelector()
 	{
 		if (!SelectorHost.IsValid()) return;
+		// no data yet = first run: the setup screen takes over until the SDK
+		// import has produced the model packs
+		if (!BF6Api::IsDataInstalled()) { ShowSetup(); return; }
 		SelectorHost->SetContent(
 			SNew(SBF6MapSelector)
 			.OnOpen_Lambda([](FString Level, FString Save){ BF6Api::EnterBuild(Level, Save); })
 			.OnImport_Lambda([this]{ if (BF6Api::ImportSpatial()) ShowBuild(); })
+			.OnSdkSetup_Lambda([this]{ ShowSetup(); })
 		);
+	}
+
+	void ShowSetup()
+	{
+		if (!SelectorHost.IsValid()) return;
+		SelectorHost->SetContent(SNew(SBF6SetupScreen).OnDone_Lambda([this]{ RebuildSelector(); }));
+		if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0);
 	}
 };
 

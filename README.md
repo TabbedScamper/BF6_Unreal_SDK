@@ -20,20 +20,18 @@ Open the project and the editor becomes a map builder:
 
 - Unreal Engine 5.8
 - Windows
-- The data packs (see below)
+- The official Battlefield 6 Portal SDK download (free from the Portal site), unzipped anywhere
 
-You do not need Battlefield 6 installed to build maps. You do need the official Portal SDK if you want to regenerate the data packs yourself.
+You do not need Battlefield 6 installed to build maps.
 
 ## Setup
 
-1. Clone the repo.
-2. Add the data packs (the low-poly mesh libraries, about 7 GB total, too large for the repo):
-   - `Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/objmodels/` : the SDK object models
-   - `Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/mapmesh/` : per-map terrain and asset meshes
+1. Clone the repo (or grab a release).
+2. Open `BF6_High_Poly.uproject` and let it compile the plugin.
+3. On first launch the tool asks for your unzipped Portal SDK folder. Point it at the SDK and hit **Import SDK data**. The tool copies the catalogue, parses every map's base setup, and converts all 9,700+ low poly models and every map mesh by driving the SDK's own bundled Godot in the background, with live progress. This runs once and takes a while; grab a coffee.
+4. Pick a map and build.
 
-   These are generated from a local install of the official Portal SDK by the extraction pipeline, or grab them from a release when one is up.
-3. Right click `BF6_High_Poly.uproject` and generate project files, then build, or just open the project and let it compile the plugin.
-4. Open the project. The map selector greets you. Pick a map and build.
+When a new SDK version drops, unzip it and run **SDK Setup** again from the map screen. The import skips everything already converted, so a re-sync only processes what changed.
 
 ## Workflow
 
@@ -48,7 +46,7 @@ You do not need Battlefield 6 installed to build maps. You do need the official 
 - Property panel for gameplay objects (spawner teams, objective IDs, volume points)
 - Object links (HQ areas, spawn groups, capture zones)
 - Volume editing
-- SDK auto-update: point the tool at a new SDK version and it regenerates its data
+- Auto-detect a new SDK version and prompt for a re-sync
 - High-poly overlay as a separate add-on plugin: full-detail meshes, materials, and extended terrain decoded from the game itself
 
 ## Credits

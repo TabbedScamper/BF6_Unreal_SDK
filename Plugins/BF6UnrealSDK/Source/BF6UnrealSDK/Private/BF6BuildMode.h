@@ -88,6 +88,18 @@ namespace BF6Api
 	void HideTransientMenus();   // dismiss the category object popup
 	bool IsBuildOverlayActive();
 
+	// ---- SDK data import (first-run setup + re-sync) ----
+	// The tool generates its data packs from the user's own unzipped Portal SDK
+	// download, driving the SDK's bundled Godot headlessly. No 7GB distribution.
+	bool    IsDataInstalled();                  // do we have models to build with?
+	bool    ValidateSdkRoot(const FString& Path, FString& OutError);
+	void    StartSdkImport(const FString& SdkRoot);
+	bool    IsImporting();
+	FText   ImportStatus();                     // progress line for the setup screen
+	float   ImportFrac();                       // 0..1 across the whole import
+	bool    ImportDone();                       // finished (success) since Start
+	FString StoredSdkRoot();                    // remembered SDK path ("" if none)
+
 	// ---- versioning + updates (GitHub releases, staged like the Godot plugin) ----
 	// The plugin's VersionName from the .uplugin (e.g. "0.1.0").
 	FString PluginVersion();
