@@ -8,6 +8,7 @@
 #include "Framework/Application/IMenu.h"
 #include "InputCoreTypes.h"
 #include "Widgets/SWindow.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/SCompoundWidget.h"
@@ -113,6 +114,18 @@ namespace
 		for (int i = 0; i < GBF6MapCardCount; i++)
 			if (Level == GBF6MapCards[i].Code) return &GBF6MapCards[i];
 		return nullptr;
+	}
+
+	const FSlateBrush* LineBrush() { static FSlateColorBrush B(BF6Theme::Line); return &B; }
+
+	// Section header like the site's "AVAILABLE MAPS": uppercase label + hairline.
+	TSharedRef<SWidget> MakeSectionHeader(const FString& Label)
+	{
+		return SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextBlue)).Text(FText::FromString(Label.ToUpper())) ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 5, 0, 0)
+			[ SNew(SBox).HeightOverride(1.f)[ SNew(SBorder).BorderImage(LineBrush()).Padding(0) ] ];
 	}
 
 	// The site's tile badges: an orange square with a black glyph. Size letter
@@ -463,11 +476,16 @@ public:
 		OnImport = InArgs._OnImport;
 		OnSdkSetup = InArgs._OnSdkSetup;
 
-		TSharedRef<SWrapBox> Grid = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(12, 12));
+		// Two sections instead of a price badge: full-game maps, then the free
+		// RedSec maps (a $ on the tile read like the PLUGIN costs money).
+		TSharedRef<SWrapBox> GridPaid = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(12, 12));
+		TSharedRef<SWrapBox> GridFree = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(12, 12));
 		int32 MapCount = 0;
 		for (const FString& Level : BF6Api::AllLevels())
 		{
-			Grid->AddSlot()[ MakeCard(Level) ];
+			const FBF6MapCard* Info = FindMapCard(Level);
+			const bool bPaid = !Info || Info->bPaid;   // unknown new maps: assume full game
+			(bPaid ? GridPaid : GridFree)->AddSlot()[ MakeCard(Level) ];
 			MapCount++;
 		}
 
@@ -498,7 +516,13 @@ public:
 				+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(32, 0, 32, 18))
 				[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(FString::Printf(TEXT("%d maps  -  click a map to open its base, or resume a saved project below it."), MapCount))) ]
 				+ SVerticalBox::Slot().FillHeight(1).Padding(FMargin(28, 0, 28, 24))
-				[ SNew(SScrollBox) + SScrollBox::Slot()[ Grid ] ]
+				[
+					SNew(SScrollBox)
+					+ SScrollBox::Slot().Padding(FMargin(2, 0, 2, 10))[ MakeSectionHeader(TEXT("Battlefield 6 maps")) ]
+					+ SScrollBox::Slot()[ GridPaid ]
+					+ SScrollBox::Slot().Padding(FMargin(2, 22, 2, 10))[ MakeSectionHeader(TEXT("RedSec maps - free for everyone")) ]
+					+ SScrollBox::Slot()[ GridFree ]
+				]
 			]
 		];
 	}
@@ -544,19 +568,9 @@ private:
 							? StaticCastSharedRef<SWidget>(SNew(SImage).Image(Thumb))
 							: StaticCastSharedRef<SWidget>(SNew(SBorder).BorderImage(PanelLightBrush()).HAlign(HAlign_Center).VAlign(VAlign_Center)[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("NO PREVIEW"))) ])
 						]
-						// the site's top-left badges: map size, and a price tag on
-						// maps that require the full game (RedSec maps are free)
+						// the site's top-left badge: map size class
 						+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top).Padding(8.f)
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 4, 0)
-							[ MakeBadge(Info ? FString::Chr(Info->Size) : TEXT("M")) ]
-							+ SHorizontalBox::Slot().AutoWidth()
-							[
-								SNew(SBox).Visibility((Info && Info->bPaid) ? EVisibility::Visible : EVisibility::Collapsed)
-								[ MakeBadge(TEXT("$")) ]
-							]
-						]
+						[ MakeBadge(Info ? FString::Chr(Info->Size) : TEXT("M")) ]
 					]
 				]
 				+ SVerticalBox::Slot().AutoHeight()
@@ -572,33 +586,25 @@ private:
 							+ SVerticalBox::Slot().AutoHeight().Padding(0, 2, 0, 0)
 							[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(FString::Printf(TEXT("%d OBJECTS"), BF6Api::PlaceableTotal(Level)))) ]
 						]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
+						// the resume dropdown lives right in the title bar
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 6, 0)
+						[
+							Saves.Num() == 0
+							? StaticCastSharedRef<SWidget>(SNullWidget::NullWidget)
+							: StaticCastSharedRef<SWidget>(
+								SNew(SComboBox<TSharedPtr<FString>>)
+								.OptionsSource(Src.Get())
+								.OnGenerateWidget_Lambda([](TSharedPtr<FString> In){ return SNew(STextBlock).Text(FText::FromString(In.IsValid() ? *In : FString())); })
+								.OnSelectionChanged_Lambda([this, Level](TSharedPtr<FString> In, ESelectInfo::Type){ if (In.IsValid()) Open(Level, *In); })
+								[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(FString::Printf(TEXT("RESUME (%d)"), Saves.Num()))) ]
+							)
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[ SNew(STextBlock).Font(FontBold(18)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("+"))) ]
 					]
 				]
 			]
 		];
-		// resume strip - only when this map has saved projects
-		if (Saves.Num() > 0)
-		{
-			Card->AddSlot().AutoHeight().Padding(FMargin(0, 4, 0, 0))
-			[
-				SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(10, 4))
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
-					[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("RESUME"))) ]
-					+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
-					[
-						SNew(SComboBox<TSharedPtr<FString>>)
-						.OptionsSource(Src.Get())
-						.OnGenerateWidget_Lambda([](TSharedPtr<FString> In){ return SNew(STextBlock).Text(FText::FromString(In.IsValid() ? *In : FString())); })
-						.OnSelectionChanged_Lambda([this, Level](TSharedPtr<FString> In, ESelectInfo::Type){ if (In.IsValid()) Open(Level, *In); })
-						[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(FString::Printf(TEXT("%d saved project%s..."), Saves.Num(), Saves.Num() == 1 ? TEXT("") : TEXT("s")))) ]
-					]
-				]
-			];
-		}
 		return SNew(SBox).WidthOverride(302.f)[ Card ];
 	}
 
