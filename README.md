@@ -21,6 +21,7 @@ Open the project and the editor becomes a map builder:
 
 - Unreal Engine 5.8
 - Windows
+- The latest [Microsoft Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe). If launch pops an error about a missing module or C++ redistributable, install this and relaunch; the copy Unreal's installer ships is often too old for this plugin.
 - The official Battlefield 6 Portal SDK download (free from the Portal site), unzipped anywhere
 
 You do not need Battlefield 6 installed to build maps.
