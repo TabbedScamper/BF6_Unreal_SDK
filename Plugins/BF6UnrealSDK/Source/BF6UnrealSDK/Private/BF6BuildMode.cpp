@@ -1243,16 +1243,26 @@ void BF6Api::ShowStartupUI()
 	}), 0.5f);
 }
 
+// Park a shared pointer on the heap forever: releases OUR reference without
+// ever running the widget's destructor. Used only during engine teardown,
+// where destructing Slate widgets (whose destructors touch preview scenes and
+// viewports that are already dead) crashes. The memory goes with the process.
+template <typename T>
+static void BF6_LeakForExit(TSharedPtr<T>& P)
+{
+	if (P.IsValid()) { new TSharedPtr<T>(P); P.Reset(); }
+}
+
 void BF6Api::DetachUI()
 {
-	// Editor teardown: Slate is already destroying the viewport widgets, so
-	// touching them (RemoveOverlayWidget, menu dismissal) crashes with an access
-	// violation in the shared-pointer release. Just drop our references.
+	// Too late in teardown to touch OR destroy widgets: RemoveOverlayWidget
+	// crashed first, and even Reset() crashes in the destructor chain (preview
+	// scenes reference dead worlds). Leak instead; the process is exiting anyway.
 	if (!FSlateApplication::IsInitialized() || IsEngineExitRequested())
 	{
-		GTransientMenu.Reset();
-		GPie.Reset(); GPieViewport.Reset();
-		GRoot.Reset(); GRootViewport.Reset();
+		BF6_LeakForExit(GTransientMenu);
+		BF6_LeakForExit(GPie); BF6_LeakForExit(GPieViewport);
+		BF6_LeakForExit(GRoot); BF6_LeakForExit(GRootViewport);
 		return;
 	}
 	BF6Pie_Close();
