@@ -1,0 +1,867 @@
+{
+ "level": "MP_Aftermath_Portal",
+ "objects": [
+  {
+   "name": "MP_Aftermath_Portal",
+   "type": "Node3D",
+   "parent": null,
+   "props": {}
+  },
+  {
+   "name": "Camera3D",
+   "type": "Camera3D",
+   "parent": ".",
+   "props": {},
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.10105598,
+    0.99488074,
+    0.0,
+    -0.99488074,
+    0.10105598
+   ],
+   "pos": [
+    -143.15591,
+    285.191,
+    9.469677
+   ]
+  },
+  {
+   "name": "DeployCam",
+   "type": "DeployCam",
+   "parent": "Camera3D",
+   "props": {}
+  },
+  {
+   "name": "TEAM_1_HQ",
+   "type": "HQ_PlayerSpawner",
+   "parent": ".",
+   "props": {
+    "AltTeam": "0",
+    "ObjId": "1",
+    "HQArea": "NodePath(\"HQ_Team1\")",
+    "InfantrySpawns": "[NodePath(\"SpawnPoint_1_1\"), NodePath(\"SpawnPoint_1_2\"), NodePath(\"SpawnPoint_1_3\"), NodePath(\"SpawnPoint_1_4\")]",
+    "id": "\"TEAM_1_HQ\""
+   },
+   "basis": [
+    0.933067,
+    0.0,
+    0.359704,
+    0.0,
+    1.07669,
+    0.0,
+    -0.359704,
+    0.0,
+    0.933067
+   ],
+   "pos": [
+    -202.389,
+    217.965,
+    20.1038
+   ]
+  },
+  {
+   "name": "HQ_Team1",
+   "type": "PolygonVolume",
+   "parent": "TEAM_1_HQ",
+   "props": {},
+   "basis": [
+    0.93306595,
+    0.0,
+    -0.3597036,
+    0.0,
+    0.92877233,
+    0.0,
+    0.3597036,
+    0.0,
+    0.93306595
+   ],
+   "pos": [
+    11.9608,
+    0.39416504,
+    -6.5959206
+   ],
+   "points": [
+    -9.089301,
+    -86.425476,
+    -62.159492,
+    63.315525,
+    4.252289,
+    89.21503,
+    66.996506,
+    -66.10507
+   ]
+  },
+  {
+   "name": "SpawnPoint_1_1",
+   "type": "SpawnPoint",
+   "parent": "TEAM_1_HQ",
+   "props": {
+    "id": "\"TEAM_1_HQ/SpawnPoint_1_1\""
+   },
+   "basis": [
+    -0.6914099,
+    0.0,
+    0.40240994,
+    0.0,
+    0.7999829,
+    0.0,
+    -0.40240994,
+    0.0,
+    -0.6914099
+   ],
+   "pos": [
+    -5.4002686,
+    0.11419678,
+    9.6408615
+   ]
+  },
+  {
+   "name": "SpawnPoint_1_2",
+   "type": "SpawnPoint",
+   "parent": "TEAM_1_HQ",
+   "props": {
+    "id": "\"TEAM_1_HQ/SpawnPoint_1_2\""
+   },
+   "basis": [
+    -0.12818995,
+    0.0,
+    0.99174887,
+    0.0,
+    0.99999887,
+    0.0,
+    -0.99174887,
+    0.0,
+    -0.12818995
+   ],
+   "pos": [
+    -12.265991,
+    0.0,
+    18.130604
+   ]
+  },
+  {
+   "name": "SpawnPoint_1_3",
+   "type": "SpawnPoint",
+   "parent": "TEAM_1_HQ",
+   "props": {
+    "id": "\"TEAM_1_HQ/SpawnPoint_1_3\""
+   },
+   "basis": [
+    0.9941429,
+    0.0,
+    -0.10806899,
+    0.0,
+    0.99999785,
+    0.0,
+    0.10806899,
+    0.0,
+    0.9941429
+   ],
+   "pos": [
+    33.14279,
+    0.0,
+    -44.370087
+   ]
+  },
+  {
+   "name": "SpawnPoint_1_4",
+   "type": "SpawnPoint",
+   "parent": "TEAM_1_HQ",
+   "props": {
+    "id": "\"TEAM_1_HQ/SpawnPoint_1_4\""
+   },
+   "basis": [
+    0.7710799,
+    0.0,
+    -0.63673794,
+    0.0,
+    0.99999887,
+    0.0,
+    0.63673794,
+    0.0,
+    0.7710799
+   ],
+   "pos": [
+    25.99501,
+    0.0,
+    -45.74949
+   ]
+  },
+  {
+   "name": "TEAM_2_HQ",
+   "type": "HQ_PlayerSpawner",
+   "parent": ".",
+   "props": {
+    "Team": "2",
+    "AltTeam": "0",
+    "ObjId": "2",
+    "HQArea": "NodePath(\"HQ_Team2\")",
+    "InfantrySpawns": "[NodePath(\"SpawnPoint_2_1\"), NodePath(\"SpawnPoint_2_2\"), NodePath(\"SpawnPoint_2_3\"), NodePath(\"SpawnPoint_2_4\")]",
+    "id": "\"TEAM_2_HQ\""
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    230.637,
+    214.579,
+    1.94338
+   ]
+  },
+  {
+   "name": "HQ_Team2",
+   "type": "PolygonVolume",
+   "parent": "TEAM_2_HQ",
+   "props": {},
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    -29.562347,
+    -0.6807709,
+    -1.94338
+   ],
+   "points": [
+    40.55053,
+    -40.0,
+    41.59877,
+    40.0,
+    -41.07465,
+    40.0,
+    -41.07465,
+    -40.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_2_1",
+   "type": "SpawnPoint",
+   "parent": "TEAM_2_HQ",
+   "props": {
+    "id": "\"TEAM_2_HQ/SpawnPoint_2_1\""
+   },
+   "basis": [
+    0.124883,
+    0.0,
+    -0.992172,
+    0.0,
+    1.0,
+    0.0,
+    0.992172,
+    0.0,
+    0.124883
+   ],
+   "pos": [
+    0.0,
+    0.0,
+    -3.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_2_2",
+   "type": "SpawnPoint",
+   "parent": "TEAM_2_HQ",
+   "props": {
+    "id": "\"TEAM_2_HQ/SpawnPoint_2_2\""
+   },
+   "basis": [
+    0.975806,
+    0.0,
+    -0.218637,
+    0.0,
+    1.0,
+    0.0,
+    0.218637,
+    0.0,
+    0.975806
+   ],
+   "pos": [
+    -22.54129,
+    0.0,
+    6.0058804
+   ]
+  },
+  {
+   "name": "SpawnPoint_2_3",
+   "type": "SpawnPoint",
+   "parent": "TEAM_2_HQ",
+   "props": {
+    "id": "\"TEAM_2_HQ/SpawnPoint_2_3\""
+   },
+   "basis": [
+    -0.351417,
+    0.0,
+    -0.936219,
+    0.0,
+    1.0,
+    0.0,
+    0.936219,
+    0.0,
+    -0.351417
+   ],
+   "pos": [
+    -41.294296,
+    0.0,
+    3.1971002
+   ]
+  },
+  {
+   "name": "SpawnPoint_2_4",
+   "type": "SpawnPoint",
+   "parent": "TEAM_2_HQ",
+   "props": {
+    "id": "\"TEAM_2_HQ/SpawnPoint_2_4\""
+   },
+   "basis": [
+    0.989885,
+    0.0,
+    -0.141869,
+    0.0,
+    1.0,
+    0.0,
+    0.141869,
+    0.0,
+    0.989885
+   ],
+   "pos": [
+    3.3663025,
+    0.0,
+    7.00932
+   ]
+  },
+  {
+   "name": "Objectives",
+   "type": "Node3D",
+   "parent": ".",
+   "props": {}
+  },
+  {
+   "name": "CapturePoint A",
+   "type": "CapturePoint",
+   "parent": "Objectives",
+   "props": {
+    "ObjId": "100",
+    "TacticalAdviceLandVehicleFriendly": "false",
+    "CaptureArea": "NodePath(\"CapturePointArea\")",
+    "InfantrySpawnPoints_Team1": "[NodePath(\"PlayerSpawner/SpawnPoint A1\")]",
+    "InfantrySpawnPoints_Team2": "[NodePath(\"PlayerSpawner/SpawnPoint A2\")]",
+    "id": "\"CapturePoint A\""
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    -116.427,
+    220.655,
+    -1.6607
+   ]
+  },
+  {
+   "name": "CapturePointArea",
+   "type": "PolygonVolume",
+   "parent": "Objectives/CapturePoint A",
+   "props": {
+    "height": "5.0"
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    -0.34283447,
+    0.23831177,
+    -0.74042
+   ],
+   "points": [
+    -9.637342,
+    -12.42625,
+    -9.858442,
+    12.05805,
+    9.525237,
+    12.03145,
+    9.970548,
+    -11.66325
+   ]
+  },
+  {
+   "name": "PlayerSpawner",
+   "type": "PlayerSpawner",
+   "parent": "Objectives/CapturePoint A",
+   "props": {
+    "ObjId": "101",
+    "Area": "NodePath(\"../CapturePointArea\")",
+    "SpawnPoints": "[NodePath(\"SpawnPoint A1\"), NodePath(\"SpawnPoint A2\")]",
+    "id": "\"CapturePoint A/PlayerSpawner\""
+   },
+   "basis": [
+    0.477159,
+    0.0,
+    0.878817,
+    0.0,
+    1.0,
+    0.0,
+    -0.878817,
+    0.0,
+    0.477159
+   ],
+   "pos": [
+    -4.7542267,
+    0.104660034,
+    -8.39852
+   ]
+  },
+  {
+   "name": "SpawnPoint A1",
+   "type": "SpawnPoint",
+   "parent": "Objectives/CapturePoint A/PlayerSpawner",
+   "props": {
+    "id": "\"CapturePoint A/PlayerSpawner/SpawnPoint A1\""
+   },
+   "basis": [
+    0.99999994,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.99999994
+   ],
+   "pos": [
+    -12.569405,
+    -2.695694,
+    -67.6299
+   ]
+  },
+  {
+   "name": "SpawnPoint A2",
+   "type": "SpawnPoint",
+   "parent": "Objectives/CapturePoint A/PlayerSpawner",
+   "props": {
+    "id": "\"CapturePoint A/PlayerSpawner/SpawnPoint A2\""
+   },
+   "basis": [
+    0.45565394,
+    0.0,
+    -0.89015794,
+    0.0,
+    1.0,
+    0.0,
+    0.89015794,
+    0.0,
+    0.45565394
+   ],
+   "pos": [
+    31.489893,
+    0.0,
+    35.758095
+   ]
+  },
+  {
+   "name": "CapturePoint B",
+   "type": "CapturePoint",
+   "parent": "Objectives",
+   "props": {
+    "ObjId": "200",
+    "TacticalAdviceLandVehicleFriendly": "false",
+    "CaptureArea": "NodePath(\"CapturePointArea\")",
+    "InfantrySpawnPoints_Team1": "[NodePath(\"PlayerSpawner/SpawnPoint B1\")]",
+    "InfantrySpawnPoints_Team2": "[NodePath(\"PlayerSpawner/SpawnPoint B2\")]",
+    "id": "\"CapturePoint B\""
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    22.0928,
+    220.776,
+    3.92546
+   ]
+  },
+  {
+   "name": "CapturePointArea",
+   "type": "PolygonVolume",
+   "parent": "Objectives/CapturePoint B",
+   "props": {
+    "height": "5.0"
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    0.5096779,
+    -0.050567627,
+    2.1774275
+   ],
+   "points": [
+    -6.3085876,
+    -15.685676,
+    -6.5128474,
+    14.891826,
+    6.5026126,
+    16.251425,
+    6.3188224,
+    -15.457576
+   ]
+  },
+  {
+   "name": "PlayerSpawner",
+   "type": "PlayerSpawner",
+   "parent": "Objectives/CapturePoint B",
+   "props": {
+    "ObjId": "201",
+    "SpawnPoints": "[NodePath(\"SpawnPoint B1\"), NodePath(\"SpawnPoint B2\")]",
+    "id": "\"CapturePoint B/PlayerSpawner\""
+   }
+  },
+  {
+   "name": "SpawnPoint B1",
+   "type": "SpawnPoint",
+   "parent": "Objectives/CapturePoint B/PlayerSpawner",
+   "props": {
+    "id": "\"CapturePoint B/PlayerSpawner/SpawnPoint B1\""
+   },
+   "basis": [
+    0.337933,
+    0.0,
+    0.94117,
+    0.0,
+    1.0,
+    0.0,
+    -0.94117,
+    0.0,
+    0.337933
+   ],
+   "pos": [
+    -35.5568,
+    0.0,
+    -20.3141
+   ]
+  },
+  {
+   "name": "SpawnPoint B2",
+   "type": "SpawnPoint",
+   "parent": "Objectives/CapturePoint B/PlayerSpawner",
+   "props": {
+    "id": "\"CapturePoint B/PlayerSpawner/SpawnPoint B2\""
+   },
+   "basis": [
+    0.241499,
+    0.0,
+    -0.970401,
+    0.0,
+    1.0,
+    0.0,
+    0.970401,
+    0.0,
+    0.241499
+   ],
+   "pos": [
+    37.1365,
+    -2.3461914,
+    -32.9177
+   ]
+  },
+  {
+   "name": "CapturePoint C",
+   "type": "CapturePoint",
+   "parent": "Objectives",
+   "props": {
+    "ObjId": "300",
+    "TacticalAdviceLandVehicleFriendly": "false",
+    "TacticalAdvicePriorityLevel_Team1": "2",
+    "TacticalAdvicePriorityLevel_Team2": "2",
+    "CaptureArea": "NodePath(\"CapturePointArea\")",
+    "InfantrySpawnPoints_Team1": "[NodePath(\"PlayerSpawner/SpawnPoint C1\")]",
+    "InfantrySpawnPoints_Team2": "[NodePath(\"PlayerSpawner/SpawnPoint C2\")]",
+    "id": "\"CapturePoint C\""
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    148.567,
+    214.77,
+    3.92546
+   ]
+  },
+  {
+   "name": "CapturePointArea",
+   "type": "PolygonVolume",
+   "parent": "Objectives/CapturePoint C",
+   "props": {
+    "height": "5.0"
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    2.703247,
+    -0.35742188,
+    -4.2147017
+   ],
+   "points": [
+    -8.552523,
+    -16.852524,
+    -9.472953,
+    16.679575,
+    8.472837,
+    17.268875,
+    9.552637,
+    -17.095924
+   ]
+  },
+  {
+   "name": "PlayerSpawner",
+   "type": "PlayerSpawner",
+   "parent": "Objectives/CapturePoint C",
+   "props": {
+    "ObjId": "301",
+    "SpawnPoints": "[NodePath(\"SpawnPoint C1\"), NodePath(\"SpawnPoint C2\")]",
+    "id": "\"CapturePoint C/PlayerSpawner\""
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    0.0,
+    -0.30030823,
+    -5.64092
+   ]
+  },
+  {
+   "name": "SpawnPoint C1",
+   "type": "SpawnPoint",
+   "parent": "Objectives/CapturePoint C/PlayerSpawner",
+   "props": {
+    "id": "\"CapturePoint C/PlayerSpawner/SpawnPoint C1\""
+   },
+   "basis": [
+    0.922814,
+    0.0,
+    -0.385246,
+    0.0,
+    1.0,
+    0.0,
+    0.385246,
+    0.0,
+    0.922814
+   ],
+   "pos": [
+    -29.8471,
+    6.201782,
+    -7.03477
+   ]
+  },
+  {
+   "name": "SpawnPoint C2",
+   "type": "SpawnPoint",
+   "parent": "Objectives/CapturePoint C/PlayerSpawner",
+   "props": {
+    "id": "\"CapturePoint C/PlayerSpawner/SpawnPoint C2\""
+   },
+   "basis": [
+    -4.37114e-08,
+    0.0,
+    -1.0,
+    0.0,
+    1.0,
+    0.0,
+    1.0,
+    0.0,
+    -4.37114e-08
+   ],
+   "pos": [
+    32.885803,
+    -0.1678009,
+    -2.3168705
+   ]
+  },
+  {
+   "name": "PlayArea",
+   "type": "Node3D",
+   "parent": ".",
+   "props": {}
+  },
+  {
+   "name": "CombatArea",
+   "type": "CombatArea",
+   "parent": "PlayArea",
+   "props": {
+    "CombatVolume": "NodePath(\"CombatVolume\")",
+    "id": "\"CombatArea\""
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    42.1975,
+    374.039,
+    37.0506
+   ]
+  },
+  {
+   "name": "CombatVolume",
+   "type": "PolygonVolume",
+   "parent": "PlayArea/CombatArea",
+   "props": {},
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    -87.63013,
+    -158.025,
+    -7.2669983
+   ],
+   "points": [
+    35.355824,
+    31.8715,
+    35.642426,
+    5.5107,
+    206.60612,
+    3.057,
+    208.41013,
+    -65.163,
+    -27.464815,
+    -61.931,
+    -27.479645,
+    -104.245,
+    -118.84647,
+    -107.162,
+    -118.10227,
+    57.3966,
+    -80.003174,
+    57.8313,
+    -72.26648,
+    29.8477,
+    -22.232965,
+    29.457,
+    -21.020815,
+    48.1888,
+    0.19492428,
+    48.4428,
+    1.2072242,
+    26.8976
+   ]
+  },
+  {
+   "name": "Sector - This manages the CapturePoint Names",
+   "type": "Sector",
+   "parent": "PlayArea",
+   "props": {
+    "ObjId": "200",
+    "AutoEnableVehicles": "false",
+    "SectorArea": "NodePath(\"../CombatArea/CombatVolume\")",
+    "CapturePoints": "[NodePath(\"../../Objectives/CapturePoint A\"), NodePath(\"../../Objectives/CapturePoint B\"), NodePath(\"../../Objectives/CapturePoint C\")]",
+    "id": "\"Sector\""
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    -117.279,
+    220.967,
+    -2.29178
+   ]
+  }
+ ]
+}

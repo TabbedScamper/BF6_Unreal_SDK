@@ -1,0 +1,31 @@
+# ---- Unreal generated ----
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+.vs/
+*.sln
+*.slnx
+.vsconfig
+*.VC.db
+*.opensdf
+*.opendb
+*.sdf
+*.suo
+*.xcodeproj
+*.xcworkspace
+
+# Plugin build output
+Plugins/**/Binaries/
+Plugins/**/Intermediate/
+
+# ---- bulk data packs (generated from the SDK / distributed separately) ----
+# The repo ships the small catalogue data (FbExportData, basesetup, maps,
+# gameplay) so a fresh clone boots the map selector. The mesh packs are
+# multi-GB and are produced by the extraction pipeline from a local Portal SDK
+# (or downloaded as a release data pack):
+#   objmodels/  - all SDK low-poly object models (.bf6mesh, ~2.7 GB)
+#   mapmesh/    - per-map low-poly terrain + assets meshes (~4.4 GB)
+Plugins/BF6HighPoly/Source/ThirdParty/libbf6/data/objmodels/
+Plugins/BF6HighPoly/Source/ThirdParty/libbf6/data/mapmesh/

@@ -1,0 +1,420 @@
+{
+ "level": "MP_FireStorm",
+ "objects": [
+  {
+   "name": "MP_FireStorm",
+   "type": "Node3D",
+   "parent": null,
+   "props": {}
+  },
+  {
+   "name": "TEAM_1_HQ",
+   "type": "HQ_PlayerSpawner",
+   "parent": ".",
+   "props": {
+    "AltTeam": "0",
+    "ObjId": "1",
+    "HQArea": "NodePath(\"HQ_Team1\")",
+    "InfantrySpawns": "[NodePath(\"SpawnPoint_1_1\"), NodePath(\"SpawnPoint_1_2\"), NodePath(\"SpawnPoint_1_3\"), NodePath(\"SpawnPoint_1_4\")]"
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    -39.6715,
+    124.691,
+    -116.683
+   ]
+  },
+  {
+   "name": "HQ_Team1",
+   "type": "PolygonVolume",
+   "parent": "TEAM_1_HQ",
+   "props": {},
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    0.0,
+    2.5,
+    0.0
+   ],
+   "points": [
+    5.0,
+    5.0,
+    5.0,
+    -5.0,
+    -5.0,
+    -5.0,
+    -5.0,
+    5.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_1_1",
+   "type": "SpawnPoint",
+   "parent": "TEAM_1_HQ",
+   "props": {},
+   "basis": [
+    0.999884,
+    0.0,
+    -0.0152535,
+    0.0,
+    1.0,
+    0.0,
+    0.0152535,
+    0.0,
+    0.999884
+   ],
+   "pos": [
+    0.0,
+    0.0,
+    -3.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_1_2",
+   "type": "SpawnPoint",
+   "parent": "TEAM_1_HQ",
+   "props": {},
+   "basis": [
+    -0.9995,
+    0.0,
+    -0.0316198,
+    0.0,
+    1.0,
+    0.0,
+    0.0316198,
+    0.0,
+    -0.9995
+   ],
+   "pos": [
+    3.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_1_3",
+   "type": "SpawnPoint",
+   "parent": "TEAM_1_HQ",
+   "props": {},
+   "basis": [
+    -0.0428871,
+    0.0,
+    0.99908,
+    0.0,
+    1.0,
+    0.0,
+    -0.99908,
+    0.0,
+    -0.0428871
+   ],
+   "pos": [
+    -3.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_1_4",
+   "type": "SpawnPoint",
+   "parent": "TEAM_1_HQ",
+   "props": {},
+   "basis": [
+    0.0841819,
+    0.0,
+    -0.99645,
+    0.0,
+    1.0,
+    0.0,
+    0.99645,
+    0.0,
+    0.0841819
+   ],
+   "pos": [
+    0.0,
+    0.0,
+    3.0
+   ]
+  },
+  {
+   "name": "TEAM_2_HQ",
+   "type": "HQ_PlayerSpawner",
+   "parent": ".",
+   "props": {
+    "Team": "2",
+    "AltTeam": "0",
+    "ObjId": "2",
+    "HQArea": "NodePath(\"HQ_Team2\")",
+    "InfantrySpawns": "[NodePath(\"SpawnPoint_2_1\"), NodePath(\"SpawnPoint_2_2\"), NodePath(\"SpawnPoint_2_3\"), NodePath(\"SpawnPoint_2_4\")]"
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    12.8234,
+    121.329,
+    -130.538
+   ]
+  },
+  {
+   "name": "HQ_Team2",
+   "type": "PolygonVolume",
+   "parent": "TEAM_2_HQ",
+   "props": {},
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    0.0,
+    2.5,
+    0.0
+   ],
+   "points": [
+    5.0,
+    5.0,
+    5.0,
+    -5.0,
+    -5.0,
+    -5.0,
+    -5.0,
+    5.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_2_1",
+   "type": "SpawnPoint",
+   "parent": "TEAM_2_HQ",
+   "props": {},
+   "basis": [
+    0.87795,
+    0.0,
+    -0.478754,
+    0.0,
+    1.0,
+    0.0,
+    0.478754,
+    0.0,
+    0.87795
+   ],
+   "pos": [
+    0.0,
+    0.0,
+    -3.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_2_2",
+   "type": "SpawnPoint",
+   "parent": "TEAM_2_HQ",
+   "props": {},
+   "basis": [
+    -0.997604,
+    0.0,
+    0.0691822,
+    0.0,
+    1.0,
+    0.0,
+    -0.0691822,
+    0.0,
+    -0.997604
+   ],
+   "pos": [
+    3.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_2_3",
+   "type": "SpawnPoint",
+   "parent": "TEAM_2_HQ",
+   "props": {},
+   "basis": [
+    0.162758,
+    0.0,
+    0.986666,
+    0.0,
+    1.0,
+    0.0,
+    -0.986666,
+    0.0,
+    0.162758
+   ],
+   "pos": [
+    -3.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "SpawnPoint_2_4",
+   "type": "SpawnPoint",
+   "parent": "TEAM_2_HQ",
+   "props": {},
+   "basis": [
+    -0.165771,
+    0.0,
+    -0.986164,
+    0.0,
+    1.0,
+    0.0,
+    0.986164,
+    0.0,
+    -0.165771
+   ],
+   "pos": [
+    0.0,
+    0.0,
+    3.0
+   ]
+  },
+  {
+   "name": "CombatArea",
+   "type": "CombatArea",
+   "parent": ".",
+   "props": {
+    "CombatVolume": "NodePath(\"CombatVolume\")"
+   },
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    -58.2441,
+    93.4144,
+    34.2265
+   ]
+  },
+  {
+   "name": "CombatVolume",
+   "type": "PolygonVolume",
+   "parent": "CombatArea",
+   "props": {},
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "pos": [
+    129.825,
+    84.381,
+    -100.438
+   ],
+   "points": [
+    -232.327,
+    -215.54,
+    -444.072,
+    -142.524,
+    -559.68,
+    -87.7629,
+    -732.932,
+    20.5444,
+    -887.817,
+    128.048,
+    -889.924,
+    342.354,
+    -597.854,
+    565.726,
+    -456.691,
+    564.509,
+    -128.964,
+    289.437,
+    -8.98291,
+    253.964,
+    177.771,
+    253.964,
+    336.354,
+    77.6436,
+    549.191,
+    -6.86501,
+    599.678,
+    -163.84,
+    601.787,
+    -266.549,
+    475.922,
+    -350.618,
+    348.145,
+    -444.321,
+    172.328,
+    -448.883,
+    -180.0,
+    -443.104
+   ]
+  },
+  {
+   "name": "Camera3D",
+   "type": "Camera3D",
+   "parent": ".",
+   "props": {},
+   "basis": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.101056,
+    0.994881,
+    0.0,
+    -0.994881,
+    0.101056
+   ],
+   "pos": [
+    -12.7025,
+    577.543,
+    -87.5632
+   ]
+  },
+  {
+   "name": "DeployCam",
+   "type": "DeployCam",
+   "parent": "Camera3D",
+   "props": {}
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "BF6 High-Poly",
+	"Description": "Reads Battlefield 6 assets from your own installed game (Unreal edition).",
+	"Category": "Editing",
+	"CreatedBy": "TabbedScamper",
+	"EnabledByDefault": true,
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "BF6HighPoly",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

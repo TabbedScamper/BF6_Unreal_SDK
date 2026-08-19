@@ -1,0 +1,127 @@
+{
+    "MP_Abbasid": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Aftermath": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Badlands": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Battery": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Capstone": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Dumbo": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Eastwood": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_FireStorm": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Limestone": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Outskirts": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Tungsten": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Granite_ClubHouse_Portal": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Granite_MainStreet_Portal": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Granite_Marina_Portal": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Granite_MilitaryRnD_Portal": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Granite_MilitaryStorage_Portal": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Granite_TechCampus_Portal": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Portal_Sand": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Contaminated": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Granite_Underground_Portal": {
+        "budget": {
+            "physicsCostMax": 0
+        }
+    },
+    "MP_Subsurface": {
+        "budget": {
+            "physicsCostMax": 0
+        }
+    },
+    "MP_GolmudRailway": {
+        "budget": {
+            "physicsCostMax": 0
+        }
+    },
+    "MP_Aftermath_Portal": {
+        "budget": {
+            "physicsCostMax": 100000
+        }
+    },
+    "MP_Plaza": {
+        "budget": {
+            "physicsCostMax": 0
+        }
+    },
+    "MP_Isolated": {
+        "budget": {
+            "physicsCostMax": 0
+        }
+    }
+}
