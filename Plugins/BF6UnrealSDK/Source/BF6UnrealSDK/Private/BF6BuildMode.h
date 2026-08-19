@@ -89,8 +89,9 @@ namespace BF6Api
 	bool IsBuildOverlayActive();
 
 	// ---- object attributes (the context radial's edit mode) ----
-	// One editable field the SDK exposes on a placeable type.
-	struct FPropDef { FString Name, Type, Default; };
+	// One editable field the SDK exposes on a placeable type. Options carries a
+	// "selection" enum's choices (the same dropdowns the Godot SDK shows).
+	struct FPropDef { FString Name, Type, Default; TArray<FString> Options; };
 	// The SDK-defined editable properties of a type (HQ teams, MCOM arming,
 	// combat-area timers, spawner vehicle types, the full suite).
 	TArray<FPropDef> PropsForType(const FString& Type);

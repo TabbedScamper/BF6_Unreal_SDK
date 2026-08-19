@@ -80,11 +80,13 @@ BF6_API int bf6_list_placeables(bf6_ctx*, const char* level, const char* search,
 
 /* One editable field the SDK exposes on a placeable (from its properties[]). */
 typedef struct {
-    const char* name;      /* "CameraFOV", "Team", "ObjId"                   */
-    const char* type;      /* "float","int","bool","string","vector",       */
-                           /* "selection", or an object-link type like       */
-                           /* "PolygonVolume" / "Array[SpawnPoint]"          */
-    const char* def;       /* default value as a string, may be ""           */
+    const char* name;       /* "CameraFOV", "Team", "ObjId"                   */
+    const char* type;       /* "float","int","bool","string","vector",       */
+                            /* "selection", or an object-link type like       */
+                            /* "PolygonVolume" / "Array[SpawnPoint]"          */
+    const char* def;        /* default value as a string, may be ""           */
+    const char* selections; /* "selection" enum options, newline-joined; ""   */
+                            /* when the field is not an enum                  */
 } bf6_prop;
 
 /* List the editable properties of placeable `type` (e.g. a CapturePoint has ~34;

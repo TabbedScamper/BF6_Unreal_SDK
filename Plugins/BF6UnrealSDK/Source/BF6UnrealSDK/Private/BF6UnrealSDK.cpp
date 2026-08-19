@@ -2626,6 +2626,8 @@ namespace BF6Api
 			D.Name = UTF8_TO_TCHAR(Buf[i].name);
 			D.Type = UTF8_TO_TCHAR(Buf[i].type);
 			D.Default = UTF8_TO_TCHAR(Buf[i].def);
+			const FString Sel = UTF8_TO_TCHAR(Buf[i].selections);
+			if (!Sel.IsEmpty()) Sel.ParseIntoArray(D.Options, TEXT("\n"));
 			Out.Add(D);
 		}
 		return Out;

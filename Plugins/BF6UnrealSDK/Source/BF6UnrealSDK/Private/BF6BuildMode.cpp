@@ -403,6 +403,20 @@ public:
 				[ !bCur ? MakePrimaryButton(TEXT("False"), [this]{ Apply(TEXT("false")); }) : MakeToolButton(TEXT("False"), [this]{ Apply(TEXT("false")); }) ]
 			];
 		}
+		else if (Def.Type == TEXT("selection") && Def.Options.Num() > 0)
+		{
+			// the same dropdown the Godot SDK shows for this field
+			OptSource = MakeShared<TArray<TSharedPtr<FString>>>();
+			for (const FString& O : Def.Options) OptSource->Add(MakeShared<FString>(O));
+			Box->AddSlot().AutoHeight()
+			[
+				SNew(SComboBox<TSharedPtr<FString>>)
+				.OptionsSource(OptSource.Get())
+				.OnGenerateWidget_Lambda([](TSharedPtr<FString> In){ return SNew(STextBlock).Text(FText::FromString(In.IsValid() ? *In : FString())); })
+				.OnSelectionChanged_Lambda([this](TSharedPtr<FString> In, ESelectInfo::Type){ if (In.IsValid()) Apply(*In); })
+				[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Current.IsEmpty() ? FString(TEXT("choose...")) : Current)) ]
+			];
+		}
 		else
 		{
 			Box->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
@@ -428,6 +442,7 @@ private:
 	TWeakObjectPtr<AActor> Target;
 	BF6Api::FPropDef Def;
 	TSharedPtr<SEditableTextBox> ValueBox;
+	TSharedPtr<TArray<TSharedPtr<FString>>> OptSource;
 
 	void Apply(const FString& Value)
 	{
