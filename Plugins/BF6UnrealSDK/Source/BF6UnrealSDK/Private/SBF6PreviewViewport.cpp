@@ -33,10 +33,15 @@ public:
 		}
 	}
 
-	void FrameRadius(float Radius)
+	void FrameBounds(const FVector& Center, float Radius)
 	{
 		const float Dist = FMath::Max(60.0f, Radius * 2.4f);
-		SetViewLocationForOrbiting(FVector::ZeroVector, Dist);
+		// Three-quarter top-down (near-isometric): look down at the model from a
+		// corner so its shape reads instantly. Front-on made objects hard to read.
+		const FRotator Rot(-35.264f, -135.f, 0.f);
+		SetViewLocationForOrbiting(Center, Dist);
+		SetViewLocation(Center - Rot.Vector() * Dist);
+		SetViewRotation(Rot);
 		Invalidate();
 	}
 };
@@ -80,5 +85,8 @@ void SBF6PreviewViewport::ShowModel(const FString& MeshName)
 		return;
 	}
 	PreviewScene->AddComponent(Mesh, FTransform::Identity);
-	if (Client.IsValid()) Client->FrameRadius(Radius);
+	// frame the model's real centre (object origins sit at the base, so aiming
+	// at the world origin cut tall models off)
+	const FBoxSphereBounds B = Mesh->CalcBounds(FTransform::Identity);
+	if (Client.IsValid()) Client->FrameBounds(B.Origin, Radius);
 }

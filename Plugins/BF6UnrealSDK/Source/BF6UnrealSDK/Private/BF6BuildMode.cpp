@@ -118,6 +118,13 @@ namespace
 
 	const FSlateBrush* LineBrush() { static FSlateColorBrush B(BF6Theme::Line); return &B; }
 
+	// Pie menu brushes: oval capsule pills with white outlines (corner radius =
+	// half the pill height), plus a circular hub.
+	const FSlateBrush* PiePill()    { static FSlateRoundedBoxBrush B(FLinearColor(BF6Theme::Panel.R, BF6Theme::Panel.G, BF6Theme::Panel.B, 0.94f), 23.f, FLinearColor::White, 1.f); return &B; }
+	const FSlateBrush* PiePillHot() { static FSlateRoundedBoxBrush B(BF6Theme::Accent, 23.f, FLinearColor::White, 2.f); return &B; }
+	const FSlateBrush* PieHub()     { static FSlateRoundedBoxBrush B(FLinearColor(BF6Theme::Ink.R, BF6Theme::Ink.G, BF6Theme::Ink.B, 0.94f), 60.f, FLinearColor::White, 1.f); return &B; }
+	const FSlateBrush* PieHubHot()  { static FSlateRoundedBoxBrush B(BF6Theme::Accent, 60.f, FLinearColor::White, 2.f); return &B; }
+
 	// Section header like the site's "AVAILABLE MAPS": uppercase label + hairline.
 	TSharedRef<SWidget> MakeSectionHeader(const FString& Label)
 	{
@@ -276,7 +283,13 @@ public:
 		SetVisibility(EVisibility::HitTestInvisible);   // the input handler drives it
 		Cats = BF6Api::Categories();
 		const int32 N = FMath::Max(1, Cats.Num());
-		const float R = 168.f;   // ring radius (px)
+		// Oval pills: size the ring so even horizontally-adjacent neighbours near
+		// the top/bottom of the wheel can never overlap (worst case needs the arc
+		// chord to exceed the pill WIDTH plus a gap).
+		const float PillW = 128.f, PillH = 46.f;
+		const float Need = PillW + 14.f;
+		const float HalfStep = PI / (float)N;
+		const float R = FMath::Max(250.f, Need / (2.f * FMath::Sin(HalfStep)));
 
 		TSharedRef<SConstraintCanvas> Canvas = SNew(SConstraintCanvas);
 
@@ -284,14 +297,16 @@ public:
 		Canvas->AddSlot().Anchors(FAnchors(0.f, 0.f, 1.f, 1.f)).Offset(FMargin(0))
 			[ SNew(SBorder).BorderImage(DimBrush()) ];
 
-		// centre hub - shows the highlighted category, or PLACE / CANCEL
+		// centre hub - a white-outlined circle showing the pick, or CANCEL
 		Canvas->AddSlot().Anchors(FAnchors(0.5f, 0.5f)).Alignment(FVector2D(0.5f, 0.5f)).AutoSize(true)
 			[
-				SNew(SBox).WidthOverride(96.f).HeightOverride(96.f)
+				SNew(SBox).WidthOverride(120.f).HeightOverride(120.f)
 				[
-					SNew(SBorder).BorderImage_Lambda([this]{ return Highlighted < 0 ? InkBrush() : AccentBrush(); }).HAlign(HAlign_Center).VAlign(VAlign_Center)
-					[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity_Lambda([this]{ return FSlateColor(Highlighted < 0 ? BF6Theme::TextDim : BF6Theme::Ink); })
-						.Text_Lambda([this]{ return FText::FromString(Highlighted < 0 ? TEXT("cancel") : (Cats.IsValidIndex(Highlighted) ? Cats[Highlighted] : FString())); }) ]
+					SNew(SBorder).BorderImage_Lambda([this]{ return Highlighted < 0 ? PieHub() : PieHubHot(); })
+					.HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(10.f)
+					[ SNew(STextBlock).Font(FontBold(11)).Justification(ETextJustify::Center).AutoWrapText(true)
+						.ColorAndOpacity_Lambda([this]{ return FSlateColor(Highlighted < 0 ? BF6Theme::TextDim : BF6Theme::Ink); })
+						.Text_Lambda([this]{ return FText::FromString(Highlighted < 0 ? FString(TEXT("CANCEL")) : (Cats.IsValidIndex(Highlighted) ? Cats[Highlighted].ToUpper() : FString())); }) ]
 				]
 			];
 
@@ -307,15 +322,20 @@ public:
 			Canvas->AddSlot()
 				.Anchors(FAnchors(0.5f, 0.5f)).Offset(FMargin(X, Y, 0.f, 0.f)).Alignment(FVector2D(0.5f, 0.5f)).AutoSize(true)
 				[
-					SNew(SBox).WidthOverride(104.f).HeightOverride(60.f)
+					SNew(SBox).WidthOverride(PillW).HeightOverride(PillH)
 					[
-						SNew(SBorder).BorderImage_Lambda([this, Idx]{ return Highlighted == Idx ? AccentBrush() : PanelBrush(); }).HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(4.f)
+						SNew(SBorder).BorderImage_Lambda([this, Idx]{ return Highlighted == Idx ? PiePillHot() : PiePill(); })
+						.HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(FMargin(12, 4))
 						[
-							SNew(SVerticalBox)
-							+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
-							[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity_Lambda([this, Idx]{ return FSlateColor(Highlighted == Idx ? BF6Theme::Ink : BF6Theme::Text); }).Text(FText::FromString(Cat)) ]
-							+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
-							[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity_Lambda([this, Idx]{ return FSlateColor(Highlighted == Idx ? BF6Theme::Ink : BF6Theme::TextDim); }).Text(FText::FromString(FString::Printf(TEXT("%d"), Cnt))) ]
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+							[ SNew(STextBlock).Font(FontBold(9))
+								.ColorAndOpacity_Lambda([this, Idx]{ return FSlateColor(Highlighted == Idx ? BF6Theme::Ink : BF6Theme::Text); })
+								.Text(FText::FromString(Cat.ToUpper())) ]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
+							[ SNew(STextBlock).Font(FontReg(8))
+								.ColorAndOpacity_Lambda([this, Idx]{ return FSlateColor(Highlighted == Idx ? BF6Theme::Ink : BF6Theme::TextDim); })
+								.Text(FText::FromString(FString::Printf(TEXT("%d"), Cnt))) ]
 						]
 					]
 				];
@@ -886,7 +906,7 @@ static void BF6Pie_Update(const FVector2D& CursorScreen)
 	if (!GPie.IsValid()) return;
 	const FVector2D v = CursorScreen - GPieCenter;
 	const int32 N = GPie->Categories().Num();
-	if (N == 0 || v.Size() < 44.f) { GPie->SetHighlighted(-1); return; }
+	if (N == 0 || v.Size() < 66.f) { GPie->SetHighlighted(-1); return; }   // inside the hub circle = cancel
 	const float Ang = FMath::RadiansToDegrees(FMath::Atan2(v.Y, v.X));
 	const float Step = 360.f / N;
 	int32 Idx = FMath::RoundToInt((Ang - (-90.f)) / Step);
