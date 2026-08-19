@@ -1,5 +1,6 @@
 #include "BF6BuildMode.h"
 #include "BF6Theme.h"
+#include "BF6MapManifest.h"
 #include "SBF6PreviewViewport.h"
 
 #include "Framework/Application/SlateApplication.h"
@@ -64,9 +65,9 @@ namespace
 	const FButtonStyle& GhostButtonStyle()
 	{
 		static FButtonStyle S = FButtonStyle()
-			.SetNormal (FSlateRoundedBoxBrush(FLinearColor(1,1,1,0.03f), 2.f, BF6Theme::Line,        1.f))
-			.SetHovered(FSlateRoundedBoxBrush(FLinearColor(1,1,1,0.10f), 2.f, FLinearColor::White,   1.f))
-			.SetPressed(FSlateRoundedBoxBrush(FLinearColor(1,1,1,0.16f), 2.f, FLinearColor::White,   1.f))
+			.SetNormal (FSlateRoundedBoxBrush(BF6Theme::PanelLight, 0.f, BF6Theme::Line,        1.f))
+			.SetHovered(FSlateRoundedBoxBrush(FLinearColor(FColor(0x24,0x28,0x2B)), 0.f, FLinearColor::White,   1.f))
+			.SetPressed(FSlateRoundedBoxBrush(FLinearColor(FColor(0x2E,0x33,0x37)), 0.f, FLinearColor::White,   1.f))
 			.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0, 1, 0, -1));
 		return S;
 	}
@@ -74,9 +75,9 @@ namespace
 	const FButtonStyle& PrimaryButtonStyle()
 	{
 		static FButtonStyle S = FButtonStyle()
-			.SetNormal (FSlateRoundedBoxBrush(FLinearColor(0.92f,0.94f,0.96f,1.f), 2.f))
-			.SetHovered(FSlateRoundedBoxBrush(FLinearColor(1.00f,1.00f,1.00f,1.f), 2.f))
-			.SetPressed(FSlateRoundedBoxBrush(FLinearColor(0.78f,0.81f,0.85f,1.f), 2.f))
+			.SetNormal (FSlateRoundedBoxBrush(FLinearColor(FColor(0xE8,0xEC,0xEF)), 0.f))
+			.SetHovered(FSlateRoundedBoxBrush(FLinearColor::White, 0.f))
+			.SetPressed(FSlateRoundedBoxBrush(FLinearColor(FColor(0xC0,0xC8,0xCE)), 0.f))
 			.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0, 1, 0, -1));
 		return S;
 	}
@@ -85,9 +86,9 @@ namespace
 	const FButtonStyle& CardButtonStyle()
 	{
 		static FButtonStyle S = FButtonStyle()
-			.SetNormal (FSlateRoundedBoxBrush(BF6Theme::Panel, 2.f, BF6Theme::Line,      1.f))
-			.SetHovered(FSlateRoundedBoxBrush(BF6Theme::Panel, 2.f, FLinearColor::White, 2.f))
-			.SetPressed(FSlateRoundedBoxBrush(BF6Theme::Panel, 2.f, BF6Theme::Accent,    2.f))
+			.SetNormal (FSlateRoundedBoxBrush(BF6Theme::Panel, 0.f, BF6Theme::Line,      1.f))
+			.SetHovered(FSlateRoundedBoxBrush(BF6Theme::Panel, 0.f, FLinearColor::White, 2.f))
+			.SetPressed(FSlateRoundedBoxBrush(BF6Theme::Panel, 0.f, BF6Theme::Accent,    2.f))
 			.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0));
 		return S;
 	}
@@ -105,6 +106,24 @@ namespace
 		return SNew(SButton).ButtonStyle(&PrimaryButtonStyle()).ContentPadding(FMargin(18, 8))
 			.OnClicked_Lambda([OnClick]{ if (OnClick) OnClick(); return FReply::Handled(); })
 			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Ink)).Text(FText::FromString(Label.ToUpper())) ];
+	}
+
+	const FBF6MapCard* FindMapCard(const FString& Level)
+	{
+		for (int i = 0; i < GBF6MapCardCount; i++)
+			if (Level == GBF6MapCards[i].Code) return &GBF6MapCards[i];
+		return nullptr;
+	}
+
+	// The site's tile badges: an orange square with a black glyph. Size letter
+	// for every map; a price tag on maps that need the full game.
+	TSharedRef<SWidget> MakeBadge(const FString& Glyph)
+	{
+		return SNew(SBox).WidthOverride(22.f).HeightOverride(22.f)
+			[
+				SNew(SBorder).BorderImage(AccentBrush()).HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(0)
+				[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(FLinearColor::Black)).Text(FText::FromString(Glyph)) ]
+			];
 	}
 }
 
@@ -498,6 +517,7 @@ private:
 	{
 		const TArray<FString> Saves = BF6Api::SavesFor(Level);
 		const FSlateBrush* Thumb = BF6Api::MapThumbnail(Level);
+		const FBF6MapCard* Info = FindMapCard(Level);
 
 		// saves dropdown source
 		TSharedPtr<TArray<TSharedPtr<FString>>> Src = MakeShared<TArray<TSharedPtr<FString>>>();
@@ -517,20 +537,43 @@ private:
 				[
 					SNew(SBox).WidthOverride(300.f).HeightOverride(169.f)
 					[
-						Thumb
-						? StaticCastSharedRef<SWidget>(SNew(SImage).Image(Thumb))
-						: StaticCastSharedRef<SWidget>(SNew(SBorder).BorderImage(PanelLightBrush()).HAlign(HAlign_Center).VAlign(VAlign_Center)[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("NO PREVIEW"))) ])
+						SNew(SOverlay)
+						+ SOverlay::Slot()
+						[
+							Thumb
+							? StaticCastSharedRef<SWidget>(SNew(SImage).Image(Thumb))
+							: StaticCastSharedRef<SWidget>(SNew(SBorder).BorderImage(PanelLightBrush()).HAlign(HAlign_Center).VAlign(VAlign_Center)[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("NO PREVIEW"))) ])
+						]
+						// the site's top-left badges: map size, and a price tag on
+						// maps that require the full game (RedSec maps are free)
+						+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top).Padding(8.f)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 4, 0)
+							[ MakeBadge(Info ? FString::Chr(Info->Size) : TEXT("M")) ]
+							+ SHorizontalBox::Slot().AutoWidth()
+							[
+								SNew(SBox).Visibility((Info && Info->bPaid) ? EVisibility::Visible : EVisibility::Collapsed)
+								[ MakeBadge(TEXT("$")) ]
+							]
+						]
 					]
 				]
 				+ SVerticalBox::Slot().AutoHeight()
 				[
 					SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(10, 8))
 					[
-						SNew(SVerticalBox)
-						+ SVerticalBox::Slot().AutoHeight()
-						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(BF6Api::DisplayName(Level).ToUpper())) ]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2, 0, 0)
-						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(FString::Printf(TEXT("%s  -  %d OBJECTS"), *Level.ToUpper(), BF6Api::PlaceableTotal(Level)))) ]
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot().AutoHeight()
+							[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(BF6Api::DisplayName(Level).ToUpper())) ]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 2, 0, 0)
+							[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(FString::Printf(TEXT("%d OBJECTS"), BF6Api::PlaceableTotal(Level)))) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
+						[ SNew(STextBlock).Font(FontBold(18)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("+"))) ]
 					]
 				]
 			]
@@ -935,7 +978,16 @@ void BF6Api::ShowStartupUI()
 
 void BF6Api::DetachUI()
 {
-	if (!FSlateApplication::IsInitialized()) { GRoot.Reset(); GRootViewport.Reset(); return; }
+	// Editor teardown: Slate is already destroying the viewport widgets, so
+	// touching them (RemoveOverlayWidget, menu dismissal) crashes with an access
+	// violation in the shared-pointer release. Just drop our references.
+	if (!FSlateApplication::IsInitialized() || IsEngineExitRequested())
+	{
+		GTransientMenu.Reset();
+		GPie.Reset(); GPieViewport.Reset();
+		GRoot.Reset(); GRootViewport.Reset();
+		return;
+	}
 	BF6Pie_Close();
 	HideTransientMenus();
 	if (GRoot.IsValid() && GRootViewport.IsValid())
