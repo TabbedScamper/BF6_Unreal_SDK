@@ -2521,6 +2521,10 @@ static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FStri
 	Ps += FString::Printf(TEXT("Start-Process \"%s\"\r\n"), *Project);
 	FFileHelper::SaveStringToFile(Ps, *Script);
 
+	// Marker for the next launch: if the plugin version then matches this tag
+	// the update applied; if not, the apply failed and the user is told so.
+	FFileHelper::SaveStringToFile(Tag, *FPaths::Combine(UpdateDir, TEXT("pending.txt")));
+
 	FPlatformProcess::CreateProc(TEXT("powershell.exe"),
 		*FString::Printf(TEXT("-ExecutionPolicy Bypass -WindowStyle Hidden -File \"%s\""), *Script),
 		true, false, false, nullptr, 0, nullptr, nullptr);
@@ -2528,20 +2532,76 @@ static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FStri
 	FPlatformMisc::RequestExit(false);
 }
 
-static void BF6_DownloadUpdate(const FString& Url, const FString& Tag)
+// The persistent "downloading..." toast, kept alive so its text can track
+// download progress. Reset when the download ends either way.
+static TSharedPtr<SNotificationItem> GUpdateToast;
+
+static void BF6_DownloadUpdate(const FString& Url, const FString& Tag, uint64 ExpectedBytes)
 {
-	Notify(FString::Printf(TEXT("Downloading update %s..."), *Tag));
+	FNotificationInfo Info(FText::FromString(FString::Printf(TEXT("Downloading update %s..."), *Tag)));
+	Info.bFireAndForget = false;
+	Info.bUseThrobber = true;
+	GUpdateToast = FSlateNotificationManager::Get().AddNotification(Info);
+	if (GUpdateToast.IsValid()) GUpdateToast->SetCompletionState(SNotificationItem::CS_Pending);
+
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
 	Req->SetURL(Url);
 	Req->SetVerb(TEXT("GET"));
 	Req->SetHeader(TEXT("User-Agent"), TEXT("BF6UnrealSDK"));
+	Req->OnRequestProgress64().BindLambda([Tag, ExpectedBytes](FHttpRequestPtr, uint64, uint64 Received)
+	{
+		if (!GUpdateToast.IsValid()) return;
+		const double GotMB = double(Received) / (1024.0 * 1024.0);
+		GUpdateToast->SetText(FText::FromString(ExpectedBytes > 0
+			? FString::Printf(TEXT("Downloading update %s... %d%% (%.1f / %.1f MB)"),
+				*Tag, int32(Received * 100 / ExpectedBytes), GotMB, double(ExpectedBytes) / (1024.0 * 1024.0))
+			: FString::Printf(TEXT("Downloading update %s... %.1f MB"), *Tag, GotMB)));
+	});
 	Req->OnProcessRequestComplete().BindLambda([Tag](FHttpRequestPtr, FHttpResponsePtr Resp, bool bOk)
 	{
-		if (!bOk || !Resp.IsValid() || Resp->GetResponseCode() != 200)
-		{ Notify(TEXT("Update download failed - try again later.")); return; }
-		BF6_StageUpdateAndRestart(Resp->GetContent(), Tag);
+		const bool bGood = bOk && Resp.IsValid() && Resp->GetResponseCode() == 200;
+		if (GUpdateToast.IsValid())
+		{
+			GUpdateToast->SetText(FText::FromString(bGood
+				? FString::Printf(TEXT("Update %s downloaded. The editor will now close and reopen itself."), *Tag)
+				: FString(TEXT("Update download failed - try again later."))));
+			GUpdateToast->SetCompletionState(bGood ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+			GUpdateToast->ExpireAndFadeout();
+			GUpdateToast.Reset();
+		}
+		if (bGood) BF6_StageUpdateAndRestart(Resp->GetContent(), Tag);
 	});
 	Req->ProcessRequest();
+}
+
+// First launch after an update restart: compare the marker's tag against the
+// running plugin version, so the user knows whether the update actually
+// applied instead of having to find the version label themselves.
+static void BF6_ReportUpdateOutcome()
+{
+	const FString Marker = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("update"), TEXT("pending.txt"));
+	FString Tag;
+	if (!FFileHelper::LoadFileToString(Tag, *Marker)) return;
+	IFileManager::Get().Delete(*Marker);
+	Tag.TrimStartAndEndInline();
+	FString Expected = Tag; Expected.RemoveFromStart(TEXT("v"));
+	const FString Local = BF6Api::PluginVersion();
+	if (Local == Expected)
+	{
+		FNotificationInfo Info(FText::FromString(FString::Printf(TEXT("Updated to v%s."), *Local)));
+		Info.ExpireDuration = 6.0f;
+		TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(Info);
+		if (N.IsValid()) N->SetCompletionState(SNotificationItem::CS_Success);
+	}
+	else
+	{
+		FNotificationInfo Info(FText::FromString(FString::Printf(
+			TEXT("The update to %s did not apply. You are still on v%s. Close the editor and unzip the plugin package from github.com/TabbedScamper/BF6_Unreal_SDK/releases over Plugins/BF6UnrealSDK."),
+			*Tag, *Local)));
+		Info.ExpireDuration = 20.0f;
+		TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(Info);
+		if (N.IsValid()) N->SetCompletionState(SNotificationItem::CS_Fail);
+	}
 }
 
 // ---- BF6Api: data + action surface consumed by the Build Mode widgets ----
@@ -2663,6 +2723,7 @@ namespace BF6Api
 
 			// find the plugin zip asset ("...Plugin....zip" preferred, else first zip)
 			FString AssetUrl, AssetName;
+			uint64 AssetBytes = 0;
 			const TArray<TSharedPtr<FJsonValue>>* Assets = nullptr;
 			if (Root->TryGetArrayField(TEXT("assets"), Assets))
 				for (const auto& v : *Assets)
@@ -2672,16 +2733,21 @@ namespace BF6Api
 					a->TryGetStringField(TEXT("name"), Nm);
 					a->TryGetStringField(TEXT("browser_download_url"), Url);
 					if (!Nm.EndsWith(TEXT(".zip"))) continue;
-					if (AssetUrl.IsEmpty() || Nm.Contains(TEXT("Plugin"))) { AssetUrl = Url; AssetName = Nm; }
+					if (AssetUrl.IsEmpty() || Nm.Contains(TEXT("Plugin")))
+					{
+						AssetUrl = Url; AssetName = Nm;
+						double Sz = 0; a->TryGetNumberField(TEXT("size"), Sz);
+						AssetBytes = Sz > 0 ? (uint64)Sz : 0;
+					}
 					if (Nm.Contains(TEXT("Plugin"))) break;
 				}
 			if (AssetUrl.IsEmpty())
 			{ if (bManual) Notify(FString::Printf(TEXT("%s is out, but has no plugin package attached yet."), *Tag)); return; }
 
 			const EAppReturnType::Type Choice = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(
-				TEXT("BF6 Unreal SDK %s is available (you have v%s).\n\nDownload now? The editor will close to apply the update and reopen when it's done."),
-				*Tag, *Local)));
-			if (Choice == EAppReturnType::Yes) BF6_DownloadUpdate(AssetUrl, Tag);
+				TEXT("BF6 Unreal SDK %s is available (you have v%s).\n\nDownload now? The editor will close itself to apply the update and reopen when it's done. The whole thing takes a minute or two, most of it the editor restarting. You'll see \"Updated to %s\" when it's back."),
+				*Tag, *Local, *Tag)));
+			if (Choice == EAppReturnType::Yes) BF6_DownloadUpdate(AssetUrl, Tag, AssetBytes);
 		});
 		Req->ProcessRequest();
 	}
@@ -3193,6 +3259,7 @@ void FBF6UnrealSDKModule::StartupModule()
 	{
 		BF6Api::InstallInputHandler();
 		BF6Api::ShowStartupUI();
+		BF6_ReportUpdateOutcome();        // "Updated to vX" / "did not apply"
 		BF6Api::CheckForUpdates(false);   // silent unless a newer release exists
 
 		// New-SDK detection: if the remembered SDK folder now holds a different
@@ -3243,6 +3310,8 @@ void FBF6UnrealSDKModule::StartupModule()
 void FBF6UnrealSDKModule::ShutdownModule()
 {
 	if (g_postUndoHandle.IsValid()) { FEditorDelegates::PostUndoRedo.Remove(g_postUndoHandle); g_postUndoHandle.Reset(); }
+	// Park the download toast (never destruct widgets during exit).
+	if (GUpdateToast.IsValid()) { new TSharedPtr<SNotificationItem>(GUpdateToast); GUpdateToast.Reset(); }
 	BF6Api::DetachUI();
 	BF6Api::RemoveInputHandler();
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(kTabName);
