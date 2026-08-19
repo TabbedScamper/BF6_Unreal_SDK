@@ -2198,13 +2198,15 @@ static FString BF6_ObjectScript(const FString& OutDir)
 		"\tprint(\"DONE\"); quit()\n");
 	S += TEXT(
 		"func _dump(root: Node, out_path: String, use_global: bool) -> bool:\n"
+		"\t# accumulate parent transforms manually: global_transform is wrong for\n"
+		"\t# nested nodes when the scene was never added to a tree (headless)\n"
 		"\tvar meshes: Array = []\n"
-		"\t_collect(root, meshes)\n"
+		"\t_collect(root, Transform3D.IDENTITY, meshes)\n"
 		"\tvar surfaces: Array = []\n"
-		"\tfor mi in meshes:\n"
-		"\t\tvar m: Mesh = mi.mesh\n"
+		"\tfor pairm in meshes:\n"
+		"\t\tvar m: Mesh = pairm[0].mesh\n"
 		"\t\tif m == null: continue\n"
-		"\t\tvar xf: Transform3D = mi.global_transform if use_global else mi.transform\n"
+		"\t\tvar xf: Transform3D = pairm[1]\n"
 		"\t\tfor si in m.get_surface_count(): surfaces.append([m.surface_get_arrays(si), xf])\n"
 		"\tif surfaces.is_empty(): return false\n"
 		"\tvar sp := StreamPeerBuffer.new()\n"
@@ -2248,9 +2250,11 @@ static FString BF6_ObjectScript(const FString& OutDir)
 		"\tfa.store_buffer(comp)\n"
 		"\tfa.close()\n"
 		"\treturn true\n"
-		"func _collect(node: Node, out: Array) -> void:\n"
-		"\tif node is MeshInstance3D and node.mesh != null: out.append(node)\n"
-		"\tfor c in node.get_children(): _collect(c, out)\n");
+		"func _collect(node: Node, xf: Transform3D, out: Array) -> void:\n"
+		"\tvar acc := xf\n"
+		"\tif node is Node3D: acc = xf * (node as Node3D).transform\n"
+		"\tif node is MeshInstance3D and node.mesh != null: out.append([node, acc])\n"
+		"\tfor c in node.get_children(): _collect(c, acc, out)\n");
 	return S.Replace(TEXT("__OUT__"), *OutDir.Replace(TEXT("\\"), TEXT("/")));
 }
 
