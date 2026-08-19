@@ -88,6 +88,34 @@ namespace BF6Api
 	void HideTransientMenus();   // dismiss the category object popup
 	bool IsBuildOverlayActive();
 
+	// ---- object attributes (the context radial's edit mode) ----
+	// One editable field the SDK exposes on a placeable type.
+	struct FPropDef { FString Name, Type, Default; };
+	// The SDK-defined editable properties of a type (HQ teams, MCOM arming,
+	// combat-area timers, spawner vehicle types, the full suite).
+	TArray<FPropDef> PropsForType(const FString& Type);
+	// The currently selected base/placed gameplay actor, if any (else null).
+	class AActor* SelectedGameplayActor(FString& OutType);
+	// Per-actor property values, stored as "p:Key=Value" actor tags. Seeded from
+	// the base setup; falls back to the type's schema default when unset.
+	FString GetActorProp(AActor* A, const FString& Key, const FString& Fallback = FString());
+	void    SetActorProp(AActor* A, const FString& Key, const FString& Value);
+
+	// ---- zone (polygon volume) point editing, Godot-style ----
+	bool IsVolumeActor(AActor* A);          // does this actor carry an editable loop?
+	bool IsVolumeEditing();
+	void BeginVolumeEdit(AActor* Volume);   // spawn a drag handle at every vertex
+	void VolumeAddPoint();                  // insert after the selected handle
+	void VolumeDeletePoint();               // remove the selected handle (min 3)
+	void FinishVolumeEdit();                // bake the handles back into the walls
+	void TickVolumeEdit();                  // live wall rebuild while handles move
+
+	// ---- link picking (assign spawn points / volumes to an object) ----
+	bool IsLinkPicking();
+	void BeginLinkPick(AActor* Owner, const FString& PropName, bool bArray);
+	void ConfirmLinkPick();                 // write the current selection as the link
+	void CancelLinkPick();
+
 	// ---- SDK data import (first-run setup + re-sync) ----
 	// The tool generates its data packs from the user's own unzipped Portal SDK
 	// download, driving the SDK's bundled Godot headlessly. No 7GB distribution.

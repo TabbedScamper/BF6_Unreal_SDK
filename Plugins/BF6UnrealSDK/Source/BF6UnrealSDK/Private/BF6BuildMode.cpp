@@ -276,12 +276,22 @@ class SBF6PieMenu : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SBF6PieMenu) {}
+		SLATE_ARGUMENT(TArray<FString>, Items)   // custom labels; empty = place categories
+		SLATE_ARGUMENT(TArray<FString>, Subs)    // small sublabels, aligned with Items
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments&)
+	void Construct(const FArguments& InArgs)
 	{
 		SetVisibility(EVisibility::HitTestInvisible);   // the input handler drives it
-		Cats = BF6Api::Categories();
+		Cats = InArgs._Items;
+		Subs = InArgs._Subs;
+		if (Cats.Num() == 0)
+		{
+			Cats = BF6Api::Categories();
+			Subs.Reset();
+			for (const FString& C : Cats) Subs.Add(FString::Printf(TEXT("%d"), BF6Api::CategoryCount(C)));
+		}
+		Subs.SetNum(Cats.Num());
 		const int32 N = FMath::Max(1, Cats.Num());
 		// Oval pills: size the ring so even horizontally-adjacent neighbours near
 		// the top/bottom of the wheel can never overlap (worst case needs the arc
@@ -316,7 +326,7 @@ public:
 			const float X = R * FMath::Cos(Ang);
 			const float Y = R * FMath::Sin(Ang);
 			const FString Cat = Cats[i];
-			const int32 Cnt = BF6Api::CategoryCount(Cat);
+			const FString Sub = Subs[i];
 			const int32 Idx = i;
 
 			Canvas->AddSlot()
@@ -334,8 +344,9 @@ public:
 								.Text(FText::FromString(Cat.ToUpper())) ]
 							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
 							[ SNew(STextBlock).Font(FontReg(8))
+								.Visibility(Sub.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
 								.ColorAndOpacity_Lambda([this, Idx]{ return FSlateColor(Highlighted == Idx ? BF6Theme::Ink : BF6Theme::TextDim); })
-								.Text(FText::FromString(FString::Printf(TEXT("%d"), Cnt))) ]
+								.Text(FText::FromString(Sub)) ]
 						]
 					]
 				];
@@ -350,7 +361,79 @@ public:
 
 private:
 	TArray<FString> Cats;
+	TArray<FString> Subs;
 	int32 Highlighted = -1;
+};
+
+// ---------------------------------------------------------------------------
+// Attribute editor popup: opened from the context radial when an object's
+// property is picked. Bools get TRUE/FALSE buttons; everything else a text box.
+// ---------------------------------------------------------------------------
+class SBF6PropEditPopup : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6PropEditPopup) : _TargetActor(nullptr) {}
+		SLATE_ARGUMENT(AActor*, TargetActor)
+		SLATE_ARGUMENT(BF6Api::FPropDef, Def)
+		SLATE_ARGUMENT(FString, TypeName)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		Target = InArgs._TargetActor;
+		Def = InArgs._Def;
+		const FString Current = BF6Api::GetActorProp(InArgs._TargetActor, Def.Name, Def.Default);
+		const bool bBool = Def.Type == TEXT("bool");
+
+		TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+		Box->AddSlot().AutoHeight().Padding(0, 0, 0, 2)
+		[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(FString::Printf(TEXT("%s  -  %s"), *InArgs._TypeName.ToUpper(), *Def.Name.ToUpper()))) ];
+		Box->AddSlot().AutoHeight().Padding(0, 0, 0, 10)
+		[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(FString::Printf(TEXT("%s   default: %s"), *Def.Type, Def.Default.IsEmpty() ? TEXT("(none)") : *Def.Default))) ];
+
+		if (bBool)
+		{
+			const bool bCur = Current.Equals(TEXT("true"), ESearchCase::IgnoreCase);
+			Box->AddSlot().AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
+				[ bCur ? MakePrimaryButton(TEXT("True"),  [this]{ Apply(TEXT("true"));  }) : MakeToolButton(TEXT("True"),  [this]{ Apply(TEXT("true"));  }) ]
+				+ SHorizontalBox::Slot().AutoWidth()
+				[ !bCur ? MakePrimaryButton(TEXT("False"), [this]{ Apply(TEXT("false")); }) : MakeToolButton(TEXT("False"), [this]{ Apply(TEXT("false")); }) ]
+			];
+		}
+		else
+		{
+			Box->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
+			[ SAssignNew(ValueBox, SEditableTextBox).Text(FText::FromString(Current)) ];
+			Box->AddSlot().AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
+				[ MakePrimaryButton(TEXT("Apply"), [this]{ if (ValueBox.IsValid()) Apply(ValueBox->GetText().ToString()); }) ]
+				+ SHorizontalBox::Slot().AutoWidth()
+				[ MakeToolButton(TEXT("Cancel"), []{ BF6Api::HideTransientMenus(); }) ]
+			];
+		}
+
+		ChildSlot
+		[
+			SNew(SBox).WidthOverride(380.f)
+			[ SNew(SBorder).BorderImage(PanelBrush()).Padding(14.f)[ Box ] ]
+		];
+	}
+
+private:
+	TWeakObjectPtr<AActor> Target;
+	BF6Api::FPropDef Def;
+	TSharedPtr<SEditableTextBox> ValueBox;
+
+	void Apply(const FString& Value)
+	{
+		if (AActor* A = Target.Get()) BF6Api::SetActorProp(A, Def.Name, Value.TrimStartAndEnd());
+		BF6Api::HideTransientMenus();
+	}
 };
 
 // ---------------------------------------------------------------------------
@@ -465,6 +548,7 @@ public:
 	virtual void Tick(const FGeometry& G, const double T, const float D) override
 	{
 		SCompoundWidget::Tick(G, T, D);
+		BF6Api::TickVolumeEdit();   // live zone-wall rebuild while handles are dragged
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
 	}
 
@@ -872,6 +956,16 @@ namespace
 	TSharedPtr<SBF6PieMenu>        GPie;             // the directional pie
 	TSharedPtr<SLevelViewport>     GPieViewport;
 	FVector2D                      GPieCenter = FVector2D::ZeroVector;
+
+	// context the pie opened with: placing objects, editing an object's
+	// attributes, or editing a zone's points
+	enum class EBF6PieMode { Place, Props, VolEdit };
+	EBF6PieMode                   GPieMode = EBF6PieMode::Place;
+	TWeakObjectPtr<AActor>        GPieTarget;
+	FString                       GPieTargetType;
+	TArray<BF6Api::FPropDef>      GPieProps;
+	int32                         GPiePage = 0;
+	static const int32            kPiePropsPerPage = 10;
 }
 
 static bool BF6Pie_Active() { return GPie.IsValid(); }
@@ -882,22 +976,79 @@ static void BF6Pie_Close()
 	GPie.Reset(); GPieViewport.Reset();
 }
 
-// Space over the viewport: remember the world spot under the crosshair, drop the
-// pie centred on the viewport, and warp the cursor to the centre so the gesture
-// starts neutral (centre = cancel).
+// Build the pie's items for the current mode and attach it at GPieCenter.
+static void BF6Pie_Attach()
+{
+	FLevelEditorModule& LE = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
+	if (!VP.IsValid()) return;
+
+	TArray<FString> Items, Subs;
+	switch (GPieMode)
+	{
+	case EBF6PieMode::VolEdit:
+		Items = { TEXT("ADD POINT"), TEXT("DELETE POINT"), TEXT("FINISH EDITING") };
+		Subs  = { TEXT("after selected"), TEXT("selected"), TEXT("bake the zone") };
+		break;
+	case EBF6PieMode::Props:
+	{
+		GPieProps = BF6Api::PropsForType(GPieTargetType);
+		if (BF6Api::IsVolumeActor(GPieTarget.Get())) { Items.Add(TEXT("EDIT POINTS")); Subs.Add(TEXT("zone shape")); }
+		int32 Start = GPiePage * kPiePropsPerPage;
+		if (Start >= GPieProps.Num()) { GPiePage = 0; Start = 0; }
+		for (int32 i = Start; i < GPieProps.Num() && i < Start + kPiePropsPerPage; i++)
+		{
+			Items.Add(GPieProps[i].Name);
+			Subs.Add(GPieProps[i].Type);
+		}
+		if (GPieProps.Num() > kPiePropsPerPage)
+		{
+			Items.Add(TEXT("MORE..."));
+			Subs.Add(FString::Printf(TEXT("%d total"), GPieProps.Num()));
+		}
+		break;
+	}
+	default: break;   // Place: empty items = the object categories
+	}
+
+	GPie = SNew(SBF6PieMenu).Items(Items).Subs(Subs);
+	VP->AddOverlayWidget(GPie.ToSharedRef(), 100);
+	GPieViewport = VP;
+	GPie->SetHighlighted(-1);
+	FSlateApplication::Get().SetCursorPos(GPieCenter);
+}
+
+// Space over the viewport: pick the pie's mode from context (selection / zone
+// edit in progress), remember the world spot under the crosshair, and open the
+// pie centred on the viewport with the cursor warped to neutral.
 static void BF6Pie_Open()
 {
 	FVector W; if (BF6Api::WorldFromViewportCursor(W)) GBF6PendingWorld = W;
+
+	if (BF6Api::IsVolumeEditing())
+	{
+		GPieMode = EBF6PieMode::VolEdit;
+	}
+	else
+	{
+		FString SelType;
+		AActor* Sel = BF6Api::SelectedGameplayActor(SelType);
+		if (Sel)
+		{
+			GPieMode = EBF6PieMode::Props;
+			GPieTarget = Sel;
+			GPieTargetType = SelType;
+			GPiePage = 0;
+		}
+		else GPieMode = EBF6PieMode::Place;
+	}
+
 	FLevelEditorModule& LE = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 	TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
 	if (!VP.IsValid()) return;
 	const FGeometry& Geo = VP->GetCachedGeometry();
 	GPieCenter = Geo.LocalToAbsolute(Geo.GetLocalSize() * 0.5f);
-	GPie = SNew(SBF6PieMenu);
-	VP->AddOverlayWidget(GPie.ToSharedRef(), 100);
-	GPieViewport = VP;
-	GPie->SetHighlighted(-1);
-	FSlateApplication::Get().SetCursorPos(GPieCenter);
+	BF6Pie_Attach();
 }
 
 // Mouse direction from the centre picks the wedge; inside the deadzone = cancel.
@@ -914,18 +1065,55 @@ static void BF6Pie_Update(const FVector2D& CursorScreen)
 	GPie->SetHighlighted(Idx);
 }
 
-// Confirm: a highlighted wedge opens its object list at the centre; the deadzone
-// (no highlight) just closes.
+// Confirm: dispatch the highlighted wedge by the mode the pie opened in.
+// Deadzone (no highlight) just closes.
 static void BF6Pie_Confirm()
 {
 	if (!GPie.IsValid()) return;
 	const int32 Idx = GPie->GetHighlighted();
-	const TArray<FString> Cats = GPie->Categories();
+	const TArray<FString> Items = GPie->Categories();
 	const FVector2D Center = GPieCenter;
+	const EBF6PieMode Mode = GPieMode;
 	BF6Pie_Close();
-	if (Idx >= 0 && Cats.IsValidIndex(Idx) && GRoot.IsValid())
+	if (Idx < 0 || !Items.IsValidIndex(Idx)) return;
+	const FString Pick = Items[Idx];
+
+	if (Mode == EBF6PieMode::VolEdit)
 	{
-		TSharedRef<SBF6CategoryPopup> Popup = SNew(SBF6CategoryPopup).Category(Cats[Idx]);
+		if (Pick == TEXT("ADD POINT"))         BF6Api::VolumeAddPoint();
+		else if (Pick == TEXT("DELETE POINT")) BF6Api::VolumeDeletePoint();
+		else                                   BF6Api::FinishVolumeEdit();
+		return;
+	}
+
+	if (Mode == EBF6PieMode::Props)
+	{
+		AActor* Target = GPieTarget.Get();
+		if (!Target) return;
+		if (Pick == TEXT("EDIT POINTS")) { BF6Api::BeginVolumeEdit(Target); return; }
+		if (Pick == TEXT("MORE...")) { GPiePage++; BF6Pie_Attach(); return; }
+		const BF6Api::FPropDef* Def = GPieProps.FindByPredicate([&](const BF6Api::FPropDef& D){ return D.Name == Pick; });
+		if (!Def) return;
+		const bool bLink = Def->Type.Contains(TEXT("Volume")) || Def->Type.Contains(TEXT("Array[")) || Def->Type.Contains(TEXT("Path")) || Def->Type.Contains(TEXT("SpawnPoint"));
+		if (bLink)
+		{
+			BF6Api::BeginLinkPick(Target, Def->Name, Def->Type.Contains(TEXT("Array[")));
+			return;
+		}
+		if (GRoot.IsValid())
+		{
+			TSharedRef<SBF6PropEditPopup> Popup = SNew(SBF6PropEditPopup).TargetActor(Target).Def(*Def).TypeName(GPieTargetType);
+			GTransientMenu = FSlateApplication::Get().PushMenu(
+				GRoot.ToSharedRef(), FWidgetPath(), Popup, Center,
+				FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+		}
+		return;
+	}
+
+	// Place mode: open the category's object list
+	if (GRoot.IsValid())
+	{
+		TSharedRef<SBF6CategoryPopup> Popup = SNew(SBF6CategoryPopup).Category(Pick);
 		GTransientMenu = FSlateApplication::Get().PushMenu(
 			GRoot.ToSharedRef(), FWidgetPath(), Popup, Center,
 			FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
@@ -950,12 +1138,19 @@ public:
 		{
 			if (BF6Pie_Active()) { if (!E.IsRepeat()) BF6Pie_Confirm(); return true; }
 			if (E.IsRepeat()) return false;
+			// assigning a link: SPACE commits the current selection as the target
+			if (BF6Api::IsLinkPicking()) { BF6Api::ConfirmLinkPick(); return true; }
 			if (!BF6Api::IsBuildOverlayActive() || !BF6Api::IsEditing() || GTransientMenu.IsValid()) return false;
 			FVector W; if (!BF6Api::WorldFromViewportCursor(W)) return false;   // only over a viewport
 			BF6Pie_Open();
 			return true;
 		}
-		if (K == EKeys::Escape && BF6Pie_Active()) { BF6Pie_Cancel(); return true; }
+		if (K == EKeys::Escape)
+		{
+			if (BF6Pie_Active()) { BF6Pie_Cancel(); return true; }
+			if (BF6Api::IsLinkPicking()) { BF6Api::CancelLinkPick(); return true; }
+			if (BF6Api::IsVolumeEditing()) { BF6Api::FinishVolumeEdit(); return true; }
+		}
 		return false;
 	}
 

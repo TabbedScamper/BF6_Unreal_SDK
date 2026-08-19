@@ -18,6 +18,7 @@
 #include "GameFramework/Actor.h"
 #include "EngineUtils.h"
 #include "Editor.h"
+#include "Engine/Selection.h"
 #include "LevelEditorViewport.h"
 #include "Input/DragAndDrop.h"
 #include "ImageUtils.h"
@@ -463,6 +464,91 @@ static void BuildWalls(UProceduralMeshComponent* M, const TArray<FVector>& Loop,
 	M->CreateMeshSection_LinearColor(0, V, T, N, UV, NC, NT, false);
 }
 
+// ============================================================================
+// Zone (polygon volume) point editing + per-actor property store.
+// Volumes keep their editable world-space ground loop in a registry; EDIT
+// POINTS spawns a small drag handle per vertex that the user moves with the
+// normal gizmo while the walls rebuild live (Godot-style).
+// ============================================================================
+static const FName kHandleTag("BF6Handle");
+
+static TMap<TWeakObjectPtr<AActor>, TArray<FVector>> GVolumeLoops;
+
+struct FBF6VolEdit
+{
+	TWeakObjectPtr<AActor> Volume;
+	TArray<TWeakObjectPtr<AActor>> Handles;   // vertex order
+	TArray<FVector> LastLoop;
+};
+static FBF6VolEdit GVolEdit;
+
+struct FBF6LinkPick
+{
+	TWeakObjectPtr<AActor> Owner;
+	FString Prop;
+	bool bArray = false;
+	bool bActive = false;
+};
+static FBF6LinkPick GLinkPick;
+
+// A small centered cube the user can grab with the normal move gizmo.
+static void BuildHandleCube(UProceduralMeshComponent* M)
+{
+	const float r = 35.f;
+	TArray<FVector> V = {
+		{-r,-r,-r},{r,-r,-r},{r,r,-r},{-r,r,-r}, {-r,-r,r},{r,-r,r},{r,r,r},{-r,r,r} };
+	const int32 F[6][4] = {{0,3,2,1},{4,5,6,7},{0,1,5,4},{1,2,6,5},{2,3,7,6},{3,0,4,7}};
+	TArray<int32> T;
+	for (auto& f : F) { T.Add(f[0]);T.Add(f[1]);T.Add(f[2]); T.Add(f[0]);T.Add(f[2]);T.Add(f[3]); }
+	const TArray<FVector> N; const TArray<FVector2D> UV; const TArray<FLinearColor> NC; const TArray<FProcMeshTangent> NT;
+	M->CreateMeshSection_LinearColor(0, V, T, N, UV, NC, NT, false);
+}
+
+static AActor* SpawnVolumeHandle(UWorld* W, const FVector& Pos, int32 Idx)
+{
+	AActor* A = W->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+	if (!A) return nullptr;
+	UProceduralMeshComponent* M = MakeProcMesh(A, TEXT("Handle"));
+	BuildHandleCube(M);
+	ApplyObjectWhite(M);
+	A->SetActorLocation(Pos);
+	A->SetActorLabel(FString::Printf(TEXT("BF6_Point_%d"), Idx));
+	A->Tags.Add(kHandleTag);
+	A->SetFlags(RF_Transient);
+	return A;
+}
+
+static void RebuildVolumeWalls(AActor* Vol, const TArray<FVector>& Loop)
+{
+	UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(Vol->GetRootComponent());
+	if (!M) return;
+	M->ClearAllMeshSections();
+	BuildWalls(M, Loop, 500.f);
+	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume")))
+		M->SetMaterial(0, Mat);
+}
+
+static bool GatherHandleLoop(TArray<FVector>& Out)
+{
+	Out.Reset();
+	for (const TWeakObjectPtr<AActor>& H : GVolEdit.Handles)
+	{
+		if (!H.IsValid()) return false;
+		Out.Add(H->GetActorLocation());
+	}
+	return Out.Num() >= 3;
+}
+
+// index of the currently selected handle in the edit session (else the last)
+static int32 SelectedHandleIndex()
+{
+	int32 Sel = GVolEdit.Handles.Num() - 1;
+	if (GEditor)
+		for (int32 i = 0; i < GVolEdit.Handles.Num(); i++)
+			if (GVolEdit.Handles[i].IsValid() && GVolEdit.Handles[i]->IsSelected()) { Sel = i; break; }
+	return Sel;
+}
+
 // ---- session save / load (JSON of placed objects) ----
 static FString SessionDir(const FString& Level)
 {
@@ -502,6 +588,14 @@ static void SaveSession(const FString& Level, const FString& Name)
 		O->SetNumberField(TEXT("x"), L.X); O->SetNumberField(TEXT("y"), L.Y); O->SetNumberField(TEXT("z"), L.Z);
 		O->SetNumberField(TEXT("pitch"), R.Pitch); O->SetNumberField(TEXT("yaw"), R.Yaw); O->SetNumberField(TEXT("roll"), R.Roll);
 		O->SetNumberField(TEXT("sx"), S.X); O->SetNumberField(TEXT("sy"), S.Y); O->SetNumberField(TEXT("sz"), S.Z);
+		// edited attribute values ("Key=Value" strings from the p: tags)
+		TArray<TSharedPtr<FJsonValue>> PTags;
+		for (const FName& T : It->Tags)
+		{
+			const FString TS = T.ToString();
+			if (TS.StartsWith(TEXT("p:"))) PTags.Add(MakeShared<FJsonValueString>(TS.Mid(2)));
+		}
+		if (PTags.Num()) O->SetArrayField(TEXT("props"), PTags);
 		Objs.Add(MakeShared<FJsonValueObject>(O));
 	}
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
@@ -537,7 +631,18 @@ static void LoadSession(const FString& Level, const FString& Name)
 		FVector L(O->GetNumberField(TEXT("x")), O->GetNumberField(TEXT("y")), O->GetNumberField(TEXT("z")));
 		FRotator Rot(O->GetNumberField(TEXT("pitch")), O->GetNumberField(TEXT("yaw")), O->GetNumberField(TEXT("roll")));
 		FVector Sc(O->GetNumberField(TEXT("sx")), O->GetNumberField(TEXT("sy")), O->GetNumberField(TEXT("sz")));
-		if (SpawnSdkModel(MeshName, Label, FTransform(Rot, L, Sc))) n++;
+		if (AActor* A = SpawnSdkModel(MeshName, Label, FTransform(Rot, L, Sc)))
+		{
+			// restore edited attribute values
+			const TArray<TSharedPtr<FJsonValue>>* PTags = nullptr;
+			if (O->TryGetArrayField(TEXT("props"), PTags))
+				for (const auto& PV : *PTags)
+				{
+					FString KV;
+					if (PV->TryGetString(KV) && !KV.IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("p:")) + KV)));
+				}
+			n++;
+		}
 	}
 	UE_LOG(LogBF6, Warning, TEXT("Loaded %d object(s) from %s"), n, *Path);
 }
@@ -1555,7 +1660,7 @@ static void BF6_LoadBaseSetup(const FString& Level)
 			TArray<FVector> Loop;
 			for (int32 i = 0; i + 1 < pts->Num(); i += 2){ const float px=(*pts)[i]->AsNumber(), pz=(*pts)[i+1]->AsNumber(); Loop.Add(ToUnreal(FVector(gw.X+px, gw.Y, gw.Z+pz))); }
 			A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,500.f); if(UMaterialInterface* Mat=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0,Mat); }
+			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,500.f); if(UMaterialInterface* Mat=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0,Mat); GVolumeLoops.Add(A, Loop); }
 		}
 		else
 		{
@@ -1568,6 +1673,16 @@ static void BF6_LoadBaseSetup(const FString& Level)
 		A->Tags.Add(kBaseTag);
 		A->Tags.Add(FName(*(FString(TEXT("type:")) + ty)));
 		A->Tags.Add(FName(*(FString(TEXT("oid:")) + FString::FromInt(oid))));
+		// seed the object's shipped field values (Team, ObjId, timers, links) so
+		// the attribute radial edits real data
+		const TSharedPtr<FJsonObject>* PObj = nullptr;
+		if (o->TryGetObjectField(TEXT("props"), PObj) && PObj->IsValid())
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& KV : (*PObj)->Values)
+			{
+				FString Val;
+				if (KV.Value.IsValid() && KV.Value->TryGetString(Val) && !Val.IsEmpty())
+					A->Tags.Add(FName(*FString::Printf(TEXT("p:%s=%s"), *KV.Key, *Val)));
+			}
 		A->SetFlags(RF_Transient);
 		FBaseObj bo; bo.Type = ty; g_ss.BaseObjects.Add(oid, bo);
 		oid++; spawned++;
@@ -1590,9 +1705,10 @@ static void BF6_OpenMapWorldImpl(const FString& Level, const FString& Save)
 	BF6_RecomputeBudget();
 }
 
-// Export the current session to <map>.spatial.json (Portal format + minifier).
-// Free twin of SBF6Browser::OnExportSpatial, keyed on g_ss.
-static void BF6_ExportSpatial()
+// Export the current session to <map>.spatial.json (Portal format). bMinify
+// runs the PortalSpatialMinifier-style renaming for the upload size cap;
+// without it names stay readable so the file re-imports and shares cleanly.
+static void BF6_ExportSpatial(bool bMinify)
 {
 	if (!GEditor) return;
 	UWorld* World = GEditor->GetEditorWorldContext().World(); if (!World) return;
@@ -1600,7 +1716,42 @@ static void BF6_ExportSpatial()
 	auto Vec = [](double x,double y,double z){ TSharedPtr<FJsonObject> v=MakeShared<FJsonObject>(); v->SetNumberField(TEXT("x"),x); v->SetNumberField(TEXT("y"),y); v->SetNumberField(TEXT("z"),z); return v; };
 
 	TMap<FString,FString> ShortMap; int32 ShortCtr = 1;
-	auto ShortName = [&](const FString& Orig)->FString{ if(Orig.IsEmpty())return Orig; if(const FString* F=ShortMap.Find(Orig))return *F; FString Rr; int32 Num=ShortCtr++; while(Num>0){Num--; Rr=FString::Chr((TCHAR)('a'+(Num%26)))+Rr; Num/=26;} ShortMap.Add(Orig,Rr); return Rr; };
+	auto ShortName = [&](const FString& Orig)->FString{ if(!bMinify||Orig.IsEmpty())return Orig; if(const FString* F=ShortMap.Find(Orig))return *F; FString Rr; int32 Num=ShortCtr++; while(Num>0){Num--; Rr=FString::Chr((TCHAR)('a'+(Num%26)))+Rr; Num/=26;} ShortMap.Add(Orig,Rr); return Rr; };
+
+	// Emit one property value with the SDK schema's type: bools and numbers as
+	// such, link types (volume refs / spawn-point arrays) as minified ids. Raw
+	// Godot NodePath/ExtResource values from the shipped scenes are skipped.
+	auto EmitTyped = [&](const TSharedPtr<FJsonObject>& e, const BF6Api::FPropDef& D, const FString& V)
+	{
+		if (V.IsEmpty() || V.Contains(TEXT("NodePath")) || V.Contains(TEXT("ExtResource"))) return;
+		const bool bLink = D.Type.Contains(TEXT("Volume")) || D.Type.Contains(TEXT("Array[")) || D.Type.Contains(TEXT("Path")) || D.Type.Contains(TEXT("SpawnPoint"));
+		if (bLink)
+		{
+			TArray<FString> Parts; V.ParseIntoArray(Parts, TEXT(","));
+			if (D.Type.Contains(TEXT("Array[")))
+			{
+				TArray<TSharedPtr<FJsonValue>> Arr;
+				for (FString& P : Parts) Arr.Add(MakeShared<FJsonValueString>(ShortName(P.TrimStartAndEnd())));
+				e->SetArrayField(D.Name, Arr);
+			}
+			else if (Parts.Num()) e->SetStringField(D.Name, ShortName(Parts[0].TrimStartAndEnd()));
+			return;
+		}
+		if (D.Type == TEXT("bool")) { e->SetBoolField(D.Name, V.Equals(TEXT("true"), ESearchCase::IgnoreCase)); return; }
+		if ((D.Type == TEXT("int") || D.Type == TEXT("float")) && V.IsNumeric()) { e->SetNumberField(D.Name, FCString::Atod(*V)); return; }
+		e->SetStringField(D.Name, V);
+	};
+
+	// live base actors: edited attribute values and reshaped zones win over the
+	// shipped json (matched by name via the actor label)
+	TMap<FString, AActor*> LiveByName;
+	for (TActorIterator<AActor> It(World); It; ++It)
+		if (It->Tags.Contains(kBaseTag))
+		{
+			FString L = It->GetActorLabel();
+			L.RemoveFromStart(TEXT("BF6_"));
+			LiveByName.Add(L, *It);
+		}
 
 	TArray<TSharedPtr<FJsonValue>> Dynamic;
 	FString In; TSharedPtr<FJsonObject> BaseRoot;
@@ -1624,7 +1775,36 @@ static void BF6_ExportSpatial()
 			else { e->SetObjectField(TEXT("right"),Vec(1,0,0)); e->SetObjectField(TEXT("up"),Vec(0,1,0)); e->SetObjectField(TEXT("front"),Vec(0,0,1)); }
 			e->SetObjectField(TEXT("position"), Vec(gw.X,gw.Y,gw.Z));
 			e->SetStringField(TEXT("id"), ShortName(nm));
-			const TArray<TSharedPtr<FJsonValue>>* pts=nullptr; if(o->TryGetArrayField(TEXT("points"),pts)) e->SetArrayField(TEXT("points"),*pts);
+			AActor* Live = LiveByName.FindRef(nm);
+			// zone polygon: a reshaped loop from the point editor wins over the json
+			const TArray<TSharedPtr<FJsonValue>>* pts=nullptr;
+			if (o->TryGetArrayField(TEXT("points"),pts))
+			{
+				const TArray<FVector>* EditedLoop = Live ? GVolumeLoops.Find(Live) : nullptr;
+				if (EditedLoop && EditedLoop->Num() >= 3)
+				{
+					TArray<TSharedPtr<FJsonValue>> PtsArr;
+					for (const FVector& Wv : *EditedLoop)
+					{
+						PtsArr.Add(MakeShared<FJsonValueNumber>(Wv.X / 100.0 - gw.X));
+						PtsArr.Add(MakeShared<FJsonValueNumber>(Wv.Y / 100.0 - gw.Z));
+					}
+					e->SetArrayField(TEXT("points"), PtsArr);
+				}
+				else e->SetArrayField(TEXT("points"), *pts);
+			}
+			// field values: live edits win, else the shipped values from the scene
+			{
+				const TArray<BF6Api::FPropDef> Defs = BF6Api::PropsForType(ty);
+				const TSharedPtr<FJsonObject>* JP = nullptr;
+				o->TryGetObjectField(TEXT("props"), JP);
+				for (const BF6Api::FPropDef& D : Defs)
+				{
+					FString V = Live ? BF6Api::GetActorProp(Live, D.Name) : FString();
+					if (V.IsEmpty() && JP && JP->IsValid()) (*JP)->TryGetStringField(D.Name, V);
+					EmitTyped(e, D, V);
+				}
+			}
 			Dynamic.Add(MakeShared<FJsonValueObject>(e));
 		}
 	}
@@ -1643,6 +1823,12 @@ static void BF6_ExportSpatial()
 		e->SetObjectField(TEXT("right"),Vec(Rr.X,Rr.Y,Rr.Z)); e->SetObjectField(TEXT("up"),Vec(U.X,U.Y,U.Z)); e->SetObjectField(TEXT("front"),Vec(F.X,F.Y,F.Z));
 		e->SetObjectField(TEXT("position"),Vec(L.X/100.0,L.Z/100.0,L.Y/100.0));
 		e->SetStringField(TEXT("id"),nm); e->SetNumberField(TEXT("ObjId"),-1);
+		// edited attribute values from the context radial
+		{
+			const TArray<BF6Api::FPropDef> Defs = BF6Api::PropsForType(Type);
+			for (const BF6Api::FPropDef& D : Defs)
+				EmitTyped(e, D, BF6Api::GetActorProp(*It, D.Name));
+		}
 		Dynamic.Add(MakeShared<FJsonValueObject>(e)); pid++;
 	}
 
@@ -1719,6 +1905,7 @@ static bool BF6_ImportSpatialDialog()
 			UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume")); BuildWalls(VM, Loop, 500.f);
 			if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0, Mat);
 			A->SetActorLabel(FString::Printf(TEXT("BF6_%s"), *Type)); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient);
+			GVolumeLoops.Add(A, Loop);   // imported zones are point-editable too
 			spawned++; continue;
 		}
 		const FVector Rg=ReadVec(o,TEXT("right"),FVector(1,0,0)), Ug=ReadVec(o,TEXT("up"),FVector(0,1,0)), Fg=ReadVec(o,TEXT("front"),FVector(0,0,1));
@@ -2397,7 +2584,16 @@ namespace BF6Api
 	}
 
 	void OpenMapWorld(const FString& Level, const FString& SaveName) { BF6_OpenMapWorldImpl(Level, SaveName); }
-	void ExportSpatial() { BF6_ExportSpatial(); }
+	void ExportSpatial()
+	{
+		// Minified = smallest for the Portal upload cap, but every object gets a
+		// short generated name. Readable keeps the real names, which is what you
+		// want for re-importing and sharing work in progress.
+		const EAppReturnType::Type Choice = FMessageDialog::Open(EAppMsgType::YesNoCancel, FText::FromString(
+			TEXT("Minify object names for the Portal upload?\n\nYes = minified (smallest file, best for uploading).\nNo = readable names (best for re-importing and sharing).\nCancel = don't export.")));
+		if (Choice == EAppReturnType::Cancel) return;
+		BF6_ExportSpatial(Choice == EAppReturnType::Yes);
+	}
 	bool ImportSpatial() { return BF6_ImportSpatialDialog(); }
 
 	void SaveCurrent()
@@ -2415,6 +2611,194 @@ namespace BF6Api
 		g_ss.bEditing = true;
 		SaveSession(g_ss.CurrentLevel, g_ss.CurrentSave);
 		Notify(FString::Printf(TEXT("Custom map '%s' created - aim and press SPACE to place objects."), *Clean));
+	}
+
+	// ---- object attributes ----
+	TArray<FPropDef> PropsForType(const FString& Type)
+	{
+		TArray<FPropDef> Out;
+		if (!g_ctx || !g_props || Type.IsEmpty()) return Out;
+		bf6_prop Buf[64];
+		const int n = FMath::Min(g_props(g_ctx, TCHAR_TO_UTF8(*Type), Buf, 64), 64);
+		for (int i = 0; i < n; i++)
+		{
+			FPropDef D;
+			D.Name = UTF8_TO_TCHAR(Buf[i].name);
+			D.Type = UTF8_TO_TCHAR(Buf[i].type);
+			D.Default = UTF8_TO_TCHAR(Buf[i].def);
+			Out.Add(D);
+		}
+		return Out;
+	}
+
+	AActor* SelectedGameplayActor(FString& OutType)
+	{
+		OutType.Reset();
+		if (!GEditor) return nullptr;
+		USelection* Sel = GEditor->GetSelectedActors();
+		if (!Sel) return nullptr;
+		for (int32 i = 0; i < Sel->Num(); i++)
+		{
+			AActor* A = Cast<AActor>(Sel->GetSelectedObject(i));
+			if (!A) continue;
+			if (!A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kPlacedTag)) continue;
+			FString Ty = TagValue(A, TEXT("label:"));
+			if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("type:"));
+			if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("mesh:"));
+			if (Ty.IsEmpty()) continue;
+			OutType = Ty;
+			return A;
+		}
+		return nullptr;
+	}
+
+	FString GetActorProp(AActor* A, const FString& Key, const FString& Fallback)
+	{
+		if (!A) return Fallback;
+		const FString V = TagValue(A, FString::Printf(TEXT("p:%s="), *Key));
+		return V.IsEmpty() ? Fallback : V;
+	}
+
+	void SetActorProp(AActor* A, const FString& Key, const FString& Value)
+	{
+		if (!A) return;
+		const FString Prefix = FString::Printf(TEXT("p:%s="), *Key);
+		for (int32 i = A->Tags.Num() - 1; i >= 0; i--)
+			if (A->Tags[i].ToString().StartsWith(Prefix)) A->Tags.RemoveAt(i);
+		A->Tags.Add(FName(*(Prefix + Value)));
+		A->Modify();
+	}
+
+	// ---- zone point editing ----
+	bool IsVolumeActor(AActor* A) { return A && GVolumeLoops.Contains(A); }
+	bool IsVolumeEditing() { return GVolEdit.Handles.Num() > 0; }
+
+	void BeginVolumeEdit(AActor* Volume)
+	{
+		if (!GEditor || !Volume) return;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+		FinishVolumeEdit();
+		const TArray<FVector>* Loop = GVolumeLoops.Find(Volume);
+		if (!Loop || Loop->Num() < 3) { Notify(TEXT("No editable points on this volume.")); return; }
+		GVolEdit.Volume = Volume;
+		GVolEdit.Handles.Reset();
+		for (int32 i = 0; i < Loop->Num(); i++)
+			GVolEdit.Handles.Add(SpawnVolumeHandle(W, (*Loop)[i], i));
+		GVolEdit.LastLoop = *Loop;
+		if (GVolEdit.Handles.Num() && GVolEdit.Handles[0].IsValid())
+		{
+			GEditor->SelectNone(false, true, false);
+			GEditor->SelectActor(GVolEdit.Handles[0].Get(), true, true);
+		}
+		Notify(TEXT("Editing zone points: drag the handles with the gizmo. SPACE = add / delete / finish."));
+	}
+
+	void TickVolumeEdit()
+	{
+		if (!IsVolumeEditing()) return;
+		AActor* Vol = GVolEdit.Volume.Get();
+		if (!Vol) { GVolEdit = FBF6VolEdit(); return; }
+		TArray<FVector> Loop;
+		if (!GatherHandleLoop(Loop)) return;
+		bool bChanged = Loop.Num() != GVolEdit.LastLoop.Num();
+		if (!bChanged)
+			for (int32 i = 0; i < Loop.Num(); i++)
+				if (!Loop[i].Equals(GVolEdit.LastLoop[i], 0.5f)) { bChanged = true; break; }
+		if (!bChanged) return;
+		GVolEdit.LastLoop = Loop;
+		RebuildVolumeWalls(Vol, Loop);
+		GVolumeLoops.Add(Vol, Loop);
+	}
+
+	void VolumeAddPoint()
+	{
+		if (!IsVolumeEditing() || !GEditor) return;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+		const int32 Sel = SelectedHandleIndex();
+		const int32 Next = (Sel + 1) % GVolEdit.Handles.Num();
+		if (!GVolEdit.Handles[Sel].IsValid() || !GVolEdit.Handles[Next].IsValid()) return;
+		const FVector Mid = (GVolEdit.Handles[Sel]->GetActorLocation() + GVolEdit.Handles[Next]->GetActorLocation()) * 0.5f;
+		AActor* H = SpawnVolumeHandle(W, Mid, Sel + 1);
+		if (!H) return;
+		GVolEdit.Handles.Insert(H, Sel + 1);
+		GEditor->SelectNone(false, true, false);
+		GEditor->SelectActor(H, true, true);
+	}
+
+	void VolumeDeletePoint()
+	{
+		if (!IsVolumeEditing() || !GEditor) return;
+		if (GVolEdit.Handles.Num() <= 3) { Notify(TEXT("A zone needs at least 3 points.")); return; }
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+		const int32 Sel = SelectedHandleIndex();
+		if (GVolEdit.Handles[Sel].IsValid()) W->EditorDestroyActor(GVolEdit.Handles[Sel].Get(), false);
+		GVolEdit.Handles.RemoveAt(Sel);
+		const int32 NewSel = FMath::Clamp(Sel, 0, GVolEdit.Handles.Num() - 1);
+		if (GVolEdit.Handles[NewSel].IsValid())
+		{
+			GEditor->SelectNone(false, true, false);
+			GEditor->SelectActor(GVolEdit.Handles[NewSel].Get(), true, true);
+		}
+	}
+
+	void FinishVolumeEdit()
+	{
+		if (GVolEdit.Handles.Num() == 0) { GVolEdit = FBF6VolEdit(); return; }
+		TArray<FVector> Loop;
+		const bool bHave = GatherHandleLoop(Loop);
+		if (AActor* Vol = GVolEdit.Volume.Get())
+			if (bHave) { RebuildVolumeWalls(Vol, Loop); GVolumeLoops.Add(Vol, Loop); }
+		if (GEditor)
+			if (UWorld* W = GEditor->GetEditorWorldContext().World())
+				for (const TWeakObjectPtr<AActor>& H : GVolEdit.Handles)
+					if (H.IsValid()) W->EditorDestroyActor(H.Get(), false);
+		GVolEdit = FBF6VolEdit();
+	}
+
+	// ---- link picking (assign spawn points / volumes) ----
+	bool IsLinkPicking() { return GLinkPick.bActive; }
+
+	void BeginLinkPick(AActor* Owner, const FString& PropName, bool bArray)
+	{
+		GLinkPick.Owner = Owner;
+		GLinkPick.Prop = PropName;
+		GLinkPick.bArray = bArray;
+		GLinkPick.bActive = true;
+		if (GEditor) GEditor->SelectNone(false, true, false);
+		Notify(FString::Printf(TEXT("Assigning %s: select the target %s in the viewport, then press SPACE (ESC cancels)."),
+			*PropName, bArray ? TEXT("objects") : TEXT("object")));
+	}
+
+	void ConfirmLinkPick()
+	{
+		if (!GLinkPick.bActive) return;
+		GLinkPick.bActive = false;
+		AActor* Owner = GLinkPick.Owner.Get();
+		if (!Owner || !GEditor) return;
+		TArray<FString> Names;
+		USelection* Sel = GEditor->GetSelectedActors();
+		for (int32 i = 0; Sel && i < Sel->Num(); i++)
+		{
+			AActor* A = Cast<AActor>(Sel->GetSelectedObject(i));
+			if (!A || A == Owner) continue;
+			if (!A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kPlacedTag)) continue;
+			FString Nm = A->GetActorLabel();
+			Nm.RemoveFromStart(TEXT("BF6_"));
+			Names.Add(Nm);
+			if (!GLinkPick.bArray) break;
+		}
+		if (Names.Num() == 0) { Notify(TEXT("Nothing assignable was selected - link unchanged.")); return; }
+		SetActorProp(Owner, GLinkPick.Prop, FString::Join(Names, TEXT(",")));
+		Notify(FString::Printf(TEXT("%s = %s"), *GLinkPick.Prop, *FString::Join(Names, TEXT(", "))));
+		GEditor->SelectNone(false, true, false);
+		GEditor->SelectActor(Owner, true, true);
+	}
+
+	void CancelLinkPick()
+	{
+		if (!GLinkPick.bActive) return;
+		GLinkPick.bActive = false;
+		Notify(TEXT("Link assignment cancelled."));
 	}
 
 	AActor* PlaceType(const FString& Type, const FVector& WorldPos)
