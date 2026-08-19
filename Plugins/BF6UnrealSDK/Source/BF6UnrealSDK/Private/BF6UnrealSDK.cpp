@@ -19,6 +19,7 @@
 #include "EngineUtils.h"
 #include "Editor.h"
 #include "Engine/Selection.h"
+#include "ScopedTransaction.h"
 #include "LevelEditorViewport.h"
 #include "Input/DragAndDrop.h"
 #include "ImageUtils.h"
@@ -2750,11 +2751,13 @@ namespace BF6Api
 	void SetActorProp(AActor* A, const FString& Key, const FString& Value)
 	{
 		if (!A) return;
+		// undoable: record the actor before mutating its tags
+		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Edit %s"), *Key)));
+		A->Modify();
 		const FString Prefix = FString::Printf(TEXT("p:%s="), *Key);
 		for (int32 i = A->Tags.Num() - 1; i >= 0; i--)
 			if (A->Tags[i].ToString().StartsWith(Prefix)) A->Tags.RemoveAt(i);
 		A->Tags.Add(FName(*(Prefix + Value)));
-		A->Modify();
 	}
 
 	// ---- zone point editing ----
@@ -2806,11 +2809,54 @@ namespace BF6Api
 		const int32 Next = (Sel + 1) % GVolEdit.Handles.Num();
 		if (!GVolEdit.Handles[Sel].IsValid() || !GVolEdit.Handles[Next].IsValid()) return;
 		const FVector Mid = (GVolEdit.Handles[Sel]->GetActorLocation() + GVolEdit.Handles[Next]->GetActorLocation()) * 0.5f;
+		FScopedTransaction Tx(FText::FromString(TEXT("Add Zone Point")));
 		AActor* H = SpawnVolumeHandle(W, Mid, Sel + 1);
 		if (!H) return;
 		GVolEdit.Handles.Insert(H, Sel + 1);
 		GEditor->SelectNone(false, true, false);
 		GEditor->SelectActor(H, true, true);
+	}
+
+	void VolumeAddPointAt(const FVector& WorldPos)
+	{
+		if (!IsVolumeEditing() || !GEditor) return;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+		TArray<FVector> Loop;
+		if (!GatherHandleLoop(Loop)) return;
+		// nearest edge segment to the click
+		int32 Best = 0; float BestD = FLT_MAX; FVector BestP = WorldPos;
+		for (int32 i = 0; i < Loop.Num(); i++)
+		{
+			const FVector A = Loop[i], B = Loop[(i + 1) % Loop.Num()];
+			const FVector P = FMath::ClosestPointOnSegment(WorldPos, A, B);
+			const float D = FVector::Dist2D(WorldPos, P);
+			if (D < BestD) { BestD = D; Best = i; BestP = P; }
+		}
+		FScopedTransaction Tx(FText::FromString(TEXT("Add Zone Point")));
+		AActor* H = SpawnVolumeHandle(W, BestP, Best + 1);
+		if (!H) return;
+		GVolEdit.Handles.Insert(H, Best + 1);
+		GEditor->SelectNone(false, true, false);
+		GEditor->SelectActor(H, true, true);
+	}
+
+	void TickZoneAutoEdit()
+	{
+		if (!GEditor || !g_ss.bEditing) return;
+		AActor* Sel = nullptr;
+		if (USelection* S = GEditor->GetSelectedActors())
+			for (int32 i = 0; i < S->Num() && !Sel; i++) Sel = Cast<AActor>(S->GetSelectedObject(i));
+
+		if (IsVolumeEditing())
+		{
+			// keep the session while the zone or its handles are selected (or
+			// nothing is - the user may just be orbiting); end it when the user
+			// moves on to a different object
+			const bool bKeep = !Sel || Sel == GVolEdit.Volume.Get() || Sel->Tags.Contains(kHandleTag);
+			if (!bKeep) FinishVolumeEdit();
+		}
+		if (!IsVolumeEditing() && Sel && GVolumeLoops.Contains(Sel))
+			BeginVolumeEdit(Sel);
 	}
 
 	void VolumeDeletePoint()
@@ -2819,6 +2865,7 @@ namespace BF6Api
 		if (GVolEdit.Handles.Num() <= 3) { Notify(TEXT("A zone needs at least 3 points.")); return; }
 		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
 		const int32 Sel = SelectedHandleIndex();
+		FScopedTransaction Tx(FText::FromString(TEXT("Delete Zone Point")));
 		if (GVolEdit.Handles[Sel].IsValid()) W->EditorDestroyActor(GVolEdit.Handles[Sel].Get(), false);
 		GVolEdit.Handles.RemoveAt(Sel);
 		const int32 NewSel = FMath::Clamp(Sel, 0, GVolEdit.Handles.Num() - 1);
@@ -2894,6 +2941,7 @@ namespace BF6Api
 		if (!g_ss.bEditing) { Notify(TEXT("Open a custom map (a save) to place objects.")); return nullptr; }
 		const FString Mesh = BF6_ResolveMeshForType(Type);
 		if (Mesh.IsEmpty()) { Notify(FString::Printf(TEXT("No SDK model for '%s'."), *Type)); return nullptr; }
+		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Place %s"), *Type)));
 		AActor* A = SpawnSdkModel(Mesh, Type, FTransform(WorldPos));
 		if (A && GEditor) { GEditor->SelectNone(false, true, false); GEditor->SelectActor(A, true, true); }
 		BF6_RecomputeBudget();
@@ -2927,8 +2975,35 @@ namespace BF6Api
 // (The old docked tab is gone: the tool UI now attaches straight onto the level
 // viewport via BF6Api::ShowStartupUI, so it always fills the editor's centre.)
 
+// Undo/redo resurrects our actors WITHOUT their geometry (procedural-mesh
+// sections are not transactional), so they'd reappear invisible. After every
+// undo/redo, rebuild any of our actors that came back empty.
+static FDelegateHandle g_postUndoHandle;
+static void BF6_RepairAfterUndo()
+{
+	if (!GEditor) return;
+	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+	// an undone add-point leaves a stale handle entry behind
+	GVolEdit.Handles.RemoveAll([](const TWeakObjectPtr<AActor>& H){ return !H.IsValid(); });
+	for (TActorIterator<AActor> It(W); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kHandleTag)) continue;
+		UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
+		if (!M || M->GetNumSections() > 0) continue;
+		if (A->Tags.Contains(kHandleTag)) { BuildHandleCube(M); ApplyObjectWhite(M); continue; }
+		if (const TArray<FVector>* Loop = GVolumeLoops.Find(A)) { RebuildVolumeWalls(A, *Loop); continue; }
+		FString Mesh = TagValue(A, TEXT("mesh:"));
+		if (Mesh.IsEmpty()) Mesh = TagValue(A, TEXT("type:"));
+		if (!Mesh.IsEmpty() && FillProcFromBf6Mesh(M, ObjModelPath(Mesh))) { ApplyObjectWhite(M); continue; }
+		BuildMarker(M); ApplyObjectWhite(M);
+	}
+	BF6_RecomputeBudget();
+}
+
 void FBF6UnrealSDKModule::StartupModule()
 {
+	g_postUndoHandle = FEditorDelegates::PostUndoRedo.AddStatic(&BF6_RepairAfterUndo);
 	g_pluginDir = IPluginManager::Get().FindPlugin(TEXT("BF6UnrealSDK"))->GetBaseDir();
 
 	// One-time migration: saves/exports from before the plugin was renamed.
@@ -3037,6 +3112,7 @@ void FBF6UnrealSDKModule::StartupModule()
 
 void FBF6UnrealSDKModule::ShutdownModule()
 {
+	if (g_postUndoHandle.IsValid()) { FEditorDelegates::PostUndoRedo.Remove(g_postUndoHandle); g_postUndoHandle.Reset(); }
 	BF6Api::DetachUI();
 	BF6Api::RemoveInputHandler();
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(kTabName);

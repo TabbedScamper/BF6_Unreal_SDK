@@ -107,9 +107,14 @@ namespace BF6Api
 	bool IsVolumeEditing();
 	void BeginVolumeEdit(AActor* Volume);   // spawn a drag handle at every vertex
 	void VolumeAddPoint();                  // insert after the selected handle
+	// insert a point on the loop edge nearest to WorldPos (right-click on an edge)
+	void VolumeAddPointAt(const FVector& WorldPos);
 	void VolumeDeletePoint();               // remove the selected handle (min 3)
 	void FinishVolumeEdit();                // bake the handles back into the walls
 	void TickVolumeEdit();                  // live wall rebuild while handles move
+	// selecting a zone starts point editing automatically; selecting something
+	// else ends it (like the Godot SDK)
+	void TickZoneAutoEdit();
 
 	// ---- link picking (assign spawn points / volumes to an object) ----
 	bool IsLinkPicking();

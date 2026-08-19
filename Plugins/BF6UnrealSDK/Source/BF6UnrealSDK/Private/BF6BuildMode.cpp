@@ -420,7 +420,10 @@ public:
 		else
 		{
 			Box->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
-			[ SAssignNew(ValueBox, SEditableTextBox).Text(FText::FromString(Current)) ];
+			[
+				SAssignNew(ValueBox, SEditableTextBox).Text(FText::FromString(Current))
+				.OnTextCommitted_Lambda([this](const FText& T, ETextCommit::Type C){ if (C == ETextCommit::OnEnter) Apply(T.ToString()); })
+			];
 			Box->AddSlot().AutoHeight()
 			[
 				SNew(SHorizontalBox)
@@ -563,7 +566,8 @@ public:
 	virtual void Tick(const FGeometry& G, const double T, const float D) override
 	{
 		SCompoundWidget::Tick(G, T, D);
-		BF6Api::TickVolumeEdit();   // live zone-wall rebuild while handles are dragged
+		BF6Api::TickZoneAutoEdit();   // selecting a zone starts point editing, like Godot
+		BF6Api::TickVolumeEdit();     // live zone-wall rebuild while handles are dragged
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
 	}
 
@@ -985,6 +989,19 @@ namespace
 
 static bool BF6Pie_Active() { return GPie.IsValid(); }
 
+// Push a popup and ALWAYS clear our pointer when the menu stack dismisses it
+// (clicking away, focus loss). Holding a stale IMenu kept GTransientMenu
+// "valid" forever, which permanently gated the space-bar radial.
+static void BF6_PushTransient(TSharedRef<SWidget> Content, const FVector2D& Center)
+{
+	if (!GRoot.IsValid()) return;
+	GTransientMenu = FSlateApplication::Get().PushMenu(
+		GRoot.ToSharedRef(), FWidgetPath(), Content, Center,
+		FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+	if (GTransientMenu.IsValid())
+		GTransientMenu->GetOnMenuDismissed().AddLambda([](TSharedRef<IMenu>){ GTransientMenu.Reset(); });
+}
+
 static void BF6Pie_Close()
 {
 	if (GPie.IsValid() && GPieViewport.IsValid()) GPieViewport->RemoveOverlayWidget(GPie.ToSharedRef());
@@ -1115,24 +1132,12 @@ static void BF6Pie_Confirm()
 			BF6Api::BeginLinkPick(Target, Def->Name, Def->Type.Contains(TEXT("Array[")));
 			return;
 		}
-		if (GRoot.IsValid())
-		{
-			TSharedRef<SBF6PropEditPopup> Popup = SNew(SBF6PropEditPopup).TargetActor(Target).Def(*Def).TypeName(GPieTargetType);
-			GTransientMenu = FSlateApplication::Get().PushMenu(
-				GRoot.ToSharedRef(), FWidgetPath(), Popup, Center,
-				FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
-		}
+		BF6_PushTransient(SNew(SBF6PropEditPopup).TargetActor(Target).Def(*Def).TypeName(GPieTargetType), Center);
 		return;
 	}
 
 	// Place mode: open the category's object list
-	if (GRoot.IsValid())
-	{
-		TSharedRef<SBF6CategoryPopup> Popup = SNew(SBF6CategoryPopup).Category(Pick);
-		GTransientMenu = FSlateApplication::Get().PushMenu(
-			GRoot.ToSharedRef(), FWidgetPath(), Popup, Center,
-			FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
-	}
+	BF6_PushTransient(SNew(SBF6CategoryPopup).Category(Pick), Center);
 }
 
 static void BF6Pie_Cancel() { BF6Pie_Close(); }
@@ -1172,14 +1177,40 @@ public:
 	virtual bool HandleMouseMoveEvent(FSlateApplication& App, const FPointerEvent& E) override
 	{
 		if (BF6Pie_Active()) BF6Pie_Update(E.GetScreenSpacePosition());
+		if (bRightDown && FVector2D::Distance(E.GetScreenSpacePosition(), RightDownPos) > 6.f) bRightDragged = true;
 		return false;
 	}
 
 	virtual bool HandleMouseButtonDownEvent(FSlateApplication& App, const FPointerEvent& E) override
 	{
 		if (BF6Pie_Active() && E.GetEffectingButton() == EKeys::LeftMouseButton) { BF6Pie_Confirm(); return true; }
+		if (E.GetEffectingButton() == EKeys::RightMouseButton)
+		{
+			bRightDown = true;
+			bRightDragged = false;
+			RightDownPos = E.GetScreenSpacePosition();
+		}
+		return false;   // never consume the down - camera look must still work
+	}
+
+	virtual bool HandleMouseButtonUpEvent(FSlateApplication& App, const FPointerEvent& E) override
+	{
+		if (E.GetEffectingButton() != EKeys::RightMouseButton) return false;
+		const bool bWasClick = bRightDown && !bRightDragged;
+		bRightDown = false;
+		// Godot-style: while a zone's points are up, right-clicking near an edge
+		// inserts a point there. Right-drag (camera) passes through untouched.
+		if (bWasClick && BF6Api::IsVolumeEditing())
+		{
+			FVector W;
+			if (BF6Api::WorldFromViewportCursor(W)) { BF6Api::VolumeAddPointAt(W); return true; }
+		}
 		return false;
 	}
+
+private:
+	bool bRightDown = false, bRightDragged = false;
+	FVector2D RightDownPos = FVector2D::ZeroVector;
 };
 
 // ---- BF6Api entry points (module state + the pie live above) ----
