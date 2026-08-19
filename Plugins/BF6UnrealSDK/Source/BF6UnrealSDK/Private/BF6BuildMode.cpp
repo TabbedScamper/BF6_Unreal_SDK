@@ -904,11 +904,14 @@ public:
 					+ SVerticalBox::Slot().AutoHeight()
 					[
 						SNew(SVerticalBox)
-						.Visibility_Lambda([]{ return (BF6Api::IsImporting() || BF6Api::ImportDone()) ? EVisibility::Visible : EVisibility::Collapsed; })
+						.Visibility_Lambda([]{ return (BF6Api::IsImporting() || BF6Api::ImportDone() || BF6Api::ImportFailed()) ? EVisibility::Visible : EVisibility::Collapsed; })
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
-						[ SNew(SProgressBar).Percent_Lambda([]{ return BF6Api::ImportFrac(); }).FillColorAndOpacity(FSlateColor(BF6Theme::Accent)) ]
+						[ SNew(SProgressBar).Percent_Lambda([]{ return BF6Api::ImportFrac(); })
+							.FillColorAndOpacity(TAttribute<FSlateColor>::CreateLambda([]{ return FSlateColor(BF6Api::ImportFailed() ? FLinearColor(0.80f, 0.25f, 0.20f) : BF6Theme::Accent); })) ]
 						+ SVerticalBox::Slot().AutoHeight()
-						[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text_Lambda([]{ return BF6Api::ImportStatus(); }) ]
+						[ SNew(STextBlock).Font(FontReg(11)).AutoWrapText(true)
+							.ColorAndOpacity(TAttribute<FSlateColor>::CreateLambda([]{ return FSlateColor(BF6Api::ImportFailed() ? FLinearColor(0.90f, 0.45f, 0.40f) : BF6Theme::TextDim); }))
+							.Text_Lambda([]{ return BF6Api::ImportStatus(); }) ]
 					]
 				]
 			]

@@ -137,6 +137,7 @@ namespace BF6Api
 	FText   ImportStatus();                     // progress line for the setup screen
 	float   ImportFrac();                       // 0..1 across the whole import
 	bool    ImportDone();                       // finished (success) since Start
+	bool    ImportFailed();                     // failed since Start (message in ImportStatus)
 	FString StoredSdkRoot();                    // remembered SDK path ("" if none)
 
 	// ---- versioning + updates (GitHub releases, staged like the Godot plugin) ----

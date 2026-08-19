@@ -2139,6 +2139,10 @@ struct FBF6Import
 	FString SdkRoot, GodotExe;
 	FProcHandle Proc;
 	int32   ObjTotal = 0, MapTotal = 0, LastCount = 0, Stagnant = 0;
+	// StartCount = converted files when the phase began, so a phase that adds
+	// NOTHING can be told apart from one that legitimately skipped existing work
+	int32   StartCount = 0, ObjDone = 0;
+	void*   PipeRead = nullptr; void* PipeWrite = nullptr;
 	FString Status;
 	float   Frac = 0.f;
 	FTSTicker::FDelegateHandle Tick;
@@ -2293,20 +2297,25 @@ static FString BF6_ObjectScript(const FString& OutDir)
 		"\tfor f in d.get_files():\n"
 		"\t\tif f.ends_with(\".glb.import\"): names.append(f.substr(0, f.length() - 7))\n"
 		"\trandomize(); names.shuffle()\n"
+		"\tprint(\"engine \", Engine.get_version_info().string, \"  models found: \", names.size())\n"
 		"\tvar did := 0\n"
+		"\tvar skipped := 0\n"
+		"\tvar no_import := 0\n"
+		"\tvar load_fail := 0\n"
 		"\tfor gname in names:\n"
 		"\t\tvar outp := \"%s/%s.bf6mesh\" % [OUT, gname.get_basename()]\n"
-		"\t\tif FileAccess.file_exists(outp): continue\n"
+		"\t\tif FileAccess.file_exists(outp): skipped += 1; continue\n"
 		"\t\tvar path := \"res://raw/models/\" + gname\n"
-		"\t\tif not ResourceLoader.exists(path): continue\n"
+		"\t\tif not ResourceLoader.exists(path): no_import += 1; continue\n"
 		"\t\tvar ps: PackedScene = ResourceLoader.load(path, \"\", ResourceLoader.CACHE_MODE_IGNORE)\n"
-		"\t\tif ps == null: continue\n"
+		"\t\tif ps == null: load_fail += 1; continue\n"
 		"\t\tvar root := ps.instantiate()\n"
 		"\t\t_dump(root, outp, false)\n"
 		"\t\troot.free()\n"
 		"\t\tdid += 1\n"
-		"\t\tif did >= 1200: print(\"BATCH\"); quit(); return\n"
-		"\tprint(\"DONE\"); quit()\n");
+		"\t\tif did >= 1200: print(\"BATCH converted=\", did); quit(); return\n"
+		"\tprint(\"DONE converted=\", did, \" already_done=\", skipped, \" no_import_cache=\", no_import, \" load_failed=\", load_fail)\n"
+		"\tquit()\n");
 	S += TEXT(
 		"func _dump(root: Node, out_path: String, use_global: bool) -> bool:\n"
 		"\t# accumulate parent transforms manually: global_transform is wrong for\n"
@@ -2403,19 +2412,52 @@ static FString BF6_MapScript(const FString& OutDir)
 	return S.Replace(TEXT("__OUT__"), *OutDir.Replace(TEXT("\\"), TEXT("/")));
 }
 
+static void BF6_CloseGodotPipe();   // fwd (defined with the launch helpers below)
+
 static void BF6_ImportFail(const FString& Why)
 {
+	BF6_CloseGodotPipe();
 	g_imp.Phase = FBF6Import::EPhase::Failed;
-	g_imp.Status = Why;
+	g_imp.Status = FString::Printf(TEXT("Import failed: %s"), *Why);
 	if (g_imp.Tick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(g_imp.Tick); g_imp.Tick.Reset(); }
 	Notify(FString::Printf(TEXT("SDK import failed: %s"), *Why));
+}
+
+// Everything the headless Godot prints lands here, so a machine where the
+// conversion produces nothing is diagnosable from a tester's report.
+static FString BF6_ImportLogPath()
+{
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("import"), TEXT("godot_run.log"));
+}
+static void BF6_ImportLog(const FString& Line)
+{
+	FFileHelper::SaveStringToFile(Line + LINE_TERMINATOR, *BF6_ImportLogPath(),
+		FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
+}
+static void BF6_DrainGodotPipe()
+{
+	if (!g_imp.PipeRead) return;
+	const FString Out = FPlatformProcess::ReadPipe(g_imp.PipeRead);
+	if (!Out.IsEmpty()) BF6_ImportLog(Out.TrimEnd());
+}
+static void BF6_CloseGodotPipe()
+{
+	BF6_DrainGodotPipe();
+	if (g_imp.PipeRead || g_imp.PipeWrite)
+	{
+		FPlatformProcess::ClosePipe(g_imp.PipeRead, g_imp.PipeWrite);
+		g_imp.PipeRead = nullptr; g_imp.PipeWrite = nullptr;
+	}
 }
 
 static bool BF6_LaunchGodot(const FString& ScriptPath)
 {
 	const FString Args = FString::Printf(TEXT("--headless --path \"%s\" --script \"%s\""),
 		*(g_imp.SdkRoot / TEXT("GodotProject")), *ScriptPath);
-	g_imp.Proc = FPlatformProcess::CreateProc(*g_imp.GodotExe, *Args, false, true, true, nullptr, 0, nullptr, nullptr);
+	FPlatformProcess::CreatePipe(g_imp.PipeRead, g_imp.PipeWrite);
+	BF6_ImportLog(FString::Printf(TEXT("--- launching: \"%s\" %s"), *g_imp.GodotExe, *Args));
+	g_imp.Proc = FPlatformProcess::CreateProc(*g_imp.GodotExe, *Args, false, true, true, nullptr, 0, nullptr, g_imp.PipeWrite);
+	if (!g_imp.Proc.IsValid()) BF6_ImportLog(TEXT("--- launch FAILED (CreateProc)"));
 	return g_imp.Proc.IsValid();
 }
 
@@ -2429,9 +2471,10 @@ static void BF6_ImportTickPhase()
 	const int32 Target = bObjects ? g_imp.ObjTotal : g_imp.MapTotal;
 	const int32 Count = BF6_CountFiles(OutDir, TEXT("*.bf6mesh"));
 
-	// still running: just report progress
+	// still running: stream its output to the log + report progress
 	if (g_imp.Proc.IsValid() && FPlatformProcess::IsProcRunning(g_imp.Proc))
 	{
+		BF6_DrainGodotPipe();
 		g_imp.Status = FString::Printf(TEXT("%s  %d / %d"), bObjects ? TEXT("Converting object models") : TEXT("Converting map meshes"), Count, Target);
 		// objects are ~90%% of the work
 		const float PhaseFrac = Target > 0 ? (float)Count / (float)Target : 0.f;
@@ -2439,6 +2482,7 @@ static void BF6_ImportTickPhase()
 		return;
 	}
 	if (g_imp.Proc.IsValid()) { FPlatformProcess::CloseProc(g_imp.Proc); g_imp.Proc = FProcHandle(); }
+	BF6_CloseGodotPipe();
 
 	// the batch/crash-resume loop: relaunch while progress is being made
 	const bool bComplete = Count >= Target || (Count == g_imp.LastCount && ++g_imp.Stagnant >= 2);
@@ -2451,24 +2495,41 @@ static void BF6_ImportTickPhase()
 		return;
 	}
 
+	// a phase that converted NOTHING new and is short of its target is a
+	// failure, not a completion - say so instead of pretending success
+	// (the classic cause: the SDK project was opened in the user's own newer
+	// Godot, which rebuilt the model cache in a format the SDK's bundled
+	// Godot cannot read)
+	if (Count == g_imp.StartCount && Count < Target && Target > 0)
+	{
+		BF6_ImportFail(FString::Printf(
+			TEXT("the SDK's Godot converted nothing new (%d of %d %s). If this SDK was ever opened in your own Godot, its model cache no longer matches the SDK's bundled Godot: open GodotProject once with the Godot exe in the SDK folder, let the import finish, close it, then use Full re-sync here. Please report this with Saved/BF6UnrealSDK/import/godot_run.log attached."),
+			Count, Target, bObjects ? TEXT("models") : TEXT("map meshes")));
+		return;
+	}
+
 	if (bObjects)
 	{
 		// objects finished (or gave all they can) - move to the map meshes
 		UE_LOG(LogBF6, Warning, TEXT("Object models: %d of %d converted."), Count, Target);
+		g_imp.ObjDone = Count;
 		g_imp.Phase = FBF6Import::EPhase::Maps;
 		g_imp.LastCount = BF6_CountFiles(MapDir, TEXT("*.bf6mesh"));
+		g_imp.StartCount = g_imp.LastCount;
 		g_imp.Stagnant = 0;
 		if (!BF6_LaunchGodot(ScriptDir / TEXT("extract_maps.gd"))) BF6_ImportFail(TEXT("could not launch the SDK's Godot"));
 		return;
 	}
 
-	// all done
+	// all done - stamp the SDK version only now, so a failed import is offered
+	// a re-sync next launch instead of being recorded as current
 	UE_LOG(LogBF6, Warning, TEXT("Map meshes: %d of %d converted."), Count, Target);
+	IFileManager::Get().Copy(*(BF6_DataDir() / TEXT("sdk.version.json")), *(g_imp.SdkRoot / TEXT("sdk.version.json")));
 	g_imp.Phase = FBF6Import::EPhase::Done;
-	g_imp.Status = TEXT("Import complete");
+	g_imp.Status = FString::Printf(TEXT("Import complete - %d of %d models, %d of %d map meshes"), g_imp.ObjDone, g_imp.ObjTotal, Count, Target);
 	g_imp.Frac = 1.f;
 	if (g_imp.Tick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(g_imp.Tick); g_imp.Tick.Reset(); }
-	Notify(TEXT("SDK import complete - all maps and models are ready."));
+	Notify(FString::Printf(TEXT("SDK import complete - %d models and %d map meshes ready."), g_imp.ObjDone, Count));
 }
 // plugin can't hot-swap its own DLL, so the flow is the Godot staged-lane one:
 // check -> download to Saved/ -> restart, and a script applies it while the
@@ -2691,7 +2752,7 @@ namespace BF6Api
 		IFileManager::Get().MakeDirectory(*Fb, true);
 		IFileManager::Get().Copy(*(Fb / TEXT("asset_types.json")), *(g_imp.SdkRoot / TEXT("FbExportData/asset_types.json")));
 		IFileManager::Get().Copy(*(Fb / TEXT("level_info.json")),  *(g_imp.SdkRoot / TEXT("FbExportData/level_info.json")));
-		IFileManager::Get().Copy(*(BF6_DataDir() / TEXT("sdk.version.json")), *(g_imp.SdkRoot / TEXT("sdk.version.json")));
+		// (sdk.version.json is stamped only when the whole import SUCCEEDS)
 		BF6_ExtractBaseSetups(g_imp.SdkRoot);
 		if (g_ctx && g_loadp)   // refresh the placeable catalogue from the new jsons
 		{
@@ -2709,9 +2770,13 @@ namespace BF6Api
 		IFileManager::Get().MakeDirectory(*(BF6_DataDir() / TEXT("objmodels")), true);
 		IFileManager::Get().MakeDirectory(*(BF6_DataDir() / TEXT("mapmesh")), true);
 
+		// start a fresh diagnostics log for this import run
+		FFileHelper::SaveStringToFile(FString::Printf(TEXT("SDK import from %s%s"), *g_imp.SdkRoot, LINE_TERMINATOR), *BF6_ImportLogPath());
+
 		// phase 1: object models via the SDK's own Godot, headless
 		g_imp.Phase = FBF6Import::EPhase::Objects;
 		g_imp.LastCount = BF6_CountFiles(BF6_DataDir() / TEXT("objmodels"), TEXT("*.bf6mesh"));
+		g_imp.StartCount = g_imp.LastCount;
 		if (!BF6_LaunchGodot(ScriptDir / TEXT("extract_objects.gd"))) { BF6_ImportFail(TEXT("could not launch the SDK's Godot")); return; }
 		g_imp.Tick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float)
 		{
@@ -2724,6 +2789,7 @@ namespace BF6Api
 	FText ImportStatus() { return FText::FromString(g_imp.Status); }
 	float ImportFrac() { return g_imp.Frac; }
 	bool  ImportDone() { return g_imp.Phase == FBF6Import::EPhase::Done; }
+	bool  ImportFailed() { return g_imp.Phase == FBF6Import::EPhase::Failed; }
 	FString StoredSdkRoot()
 	{
 		FString P;
