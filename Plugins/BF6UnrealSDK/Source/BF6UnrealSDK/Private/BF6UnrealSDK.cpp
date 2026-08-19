@@ -1648,7 +1648,8 @@ static void BF6_LoadBaseSetup(const FString& Level)
 	for (const auto& v : *Objs){ const TSharedPtr<FJsonObject> o=v->AsObject(); if(!o.IsValid())continue; const FString nm=o->GetStringField(TEXT("name")); LocalPos.Add(nm,ReadPos(o)); FString par; o->TryGetStringField(TEXT("parent"),par); ParentOf.Add(nm,par); }
 	auto WorldG = [&](FString nm){ FVector w(0,0,0); int g=0; while(!nm.IsEmpty()&&nm!=TEXT(".")&&g++<8){ if(const FVector* lp=LocalPos.Find(nm)) w+=*lp; const FString* pp=ParentOf.Find(nm); nm=pp?*pp:FString(); } return w; };
 	auto ToUnreal = [](const FVector& G){ return FVector((float)G.X,(float)G.Z,(float)G.Y)*100.f; };
-	auto BasisToRot = [](const TArray<TSharedPtr<FJsonValue>>* b)->FRotator{ if(!b||b->Num()<9) return FRotator::ZeroRotator; auto N=[&](int i){return (float)(*b)[i]->AsNumber();}; const FVector Ax(N(0),N(6),N(3)); const FVector Ay(N(2),N(8),N(5)); const FVector Az(N(1),N(7),N(4)); return FMatrix(Ax,Ay,Az,FVector::ZeroVector).Rotator(); };
+	auto BasisToRot = [](const TArray<TSharedPtr<FJsonValue>>* b)->FRotator{ if(!b||b->Num()<9) return FRotator::ZeroRotator; auto N=[&](int i){return (float)(*b)[i]->AsNumber();}; const FVector Ax=FVector(N(0),N(6),N(3)).GetSafeNormal(); const FVector Ay=FVector(N(2),N(8),N(5)).GetSafeNormal(); const FVector Az=FVector(N(1),N(7),N(4)).GetSafeNormal(); return FMatrix(Ax,Ay,Az,FVector::ZeroVector).Rotator(); };
+	auto BasisToScale = [](const TArray<TSharedPtr<FJsonValue>>* b)->FVector{ if(!b||b->Num()<9) return FVector::OneVector; auto N=[&](int i){return (float)(*b)[i]->AsNumber();}; const float SX=FVector(N(0),N(3),N(6)).Size(), SY=FVector(N(1),N(4),N(7)).Size(), SZ=FVector(N(2),N(5),N(8)).Size(); return FVector(FMath::Max(SX,0.0001f), FMath::Max(SZ,0.0001f), FMath::Max(SY,0.0001f)); };
 
 	int32 oid = 0, spawned = 0;
 	for (const auto& v : *Objs)
@@ -1658,6 +1659,7 @@ static void BF6_LoadBaseSetup(const FString& Level)
 		const FVector gw = WorldG(nm);
 		const TArray<TSharedPtr<FJsonValue>>* bz = nullptr; o->TryGetArrayField(TEXT("basis"), bz);
 		const FRotator Rot = BasisToRot(bz);
+		const FVector Scl = BasisToScale(bz);
 		AActor* A = nullptr; const TArray<TSharedPtr<FJsonValue>>* pts = nullptr;
 		const bool bVolume = o->TryGetArrayField(TEXT("points"), pts) && pts->Num() >= 6;
 		if (bVolume)
@@ -1680,7 +1682,7 @@ static void BF6_LoadBaseSetup(const FString& Level)
 			if (A){ UProceduralMeshComponent* MM=MakeProcMesh(A,TEXT("Model")); if(!FillProcFromBf6Mesh(MM,ObjModelPath(ty))) BuildMarker(MM); ApplyObjectWhite(MM); }
 		}
 		if (!A) continue;
-		if (!bVolume) A->SetActorTransform(FTransform(Rot, ToUnreal(gw), FVector::OneVector));
+		if (!bVolume) A->SetActorTransform(FTransform(Rot, ToUnreal(gw), Scl));
 		A->SetActorLabel(FString::Printf(TEXT("BF6_%s"), *nm));
 		A->Tags.Add(kBaseTag);
 		A->Tags.Add(FName(*(FString(TEXT("type:")) + ty)));
@@ -1837,7 +1839,9 @@ static void BF6_ExportSpatial(bool bMinify)
 		if (!It->Tags.Contains(kPlacedTag)) continue;
 		FString Type=TagValue(*It,TEXT("label:")); if(Type.IsEmpty())Type=TagValue(*It,TEXT("mesh:")); if(Type.IsEmpty())continue;
 		const FTransform Xf=It->GetActorTransform(); const FVector L=Xf.GetLocation();
-		const FVector Rr=Swap(Xf.GetUnitAxis(EAxis::X)), U=Swap(Xf.GetUnitAxis(EAxis::Z)), F=Swap(Xf.GetUnitAxis(EAxis::Y));
+		// axis lengths carry the object's scale in the Godot basis
+		const FVector S3=Xf.GetScale3D();
+		const FVector Rr=Swap(Xf.GetUnitAxis(EAxis::X)*S3.X), U=Swap(Xf.GetUnitAxis(EAxis::Z)*S3.Z), F=Swap(Xf.GetUnitAxis(EAxis::Y)*S3.Y);
 		TSharedPtr<FJsonObject> e=MakeShared<FJsonObject>();
 		const FString nm=ShortName(FString::Printf(TEXT("placed_%d"),pid));
 		e->SetStringField(TEXT("name"),nm); e->SetStringField(TEXT("type"),Type);
@@ -1994,9 +1998,13 @@ static bool BF6_ImportSpatialDialog()
 			}
 			continue;
 		}
+		// Rotation AND scale come from the basis: most of a built map is scaled
+		// primitives (walls stretched 200x, floors squashed), and the axis
+		// lengths carry that scale. Dropping it rendered everything at 1x.
 		const FVector Rg=ReadVec(o,TEXT("right"),FVector(1,0,0)), Ug=ReadVec(o,TEXT("up"),FVector(0,1,0)), Fg=ReadVec(o,TEXT("front"),FVector(0,0,1));
-		const FVector Ax=Swap(Rg), Ay=Swap(Fg), Az=Swap(Ug);
-		const FTransform Xf(FMatrix(Ax,Ay,Az,FVector::ZeroVector).Rotator(), ToUnreal(gpos.X,gpos.Y,gpos.Z), FVector::OneVector);
+		const FVector Scale(FMath::Max(Rg.Size(), 0.0001), FMath::Max(Fg.Size(), 0.0001), FMath::Max(Ug.Size(), 0.0001));
+		const FVector Ax=Swap(Rg).GetSafeNormal(), Ay=Swap(Fg).GetSafeNormal(), Az=Swap(Ug).GetSafeNormal();
+		const FTransform Xf(FMatrix(Ax,Ay,Az,FVector::ZeroVector).Rotator(), ToUnreal(gpos.X,gpos.Y,gpos.Z), Scale);
 		const FString Mesh = BF6_ResolveMeshForType(Type);
 		AActor* A = Mesh.IsEmpty() ? nullptr : SpawnSdkModel(Mesh, Type, Xf);
 		if (!A){ A=World->SpawnActor<AActor>(AActor::StaticClass(),FVector::ZeroVector,FRotator::ZeroRotator); if(!A)continue; UProceduralMeshComponent* MM=MakeProcMesh(A,TEXT("Model")); BuildMarker(MM); A->SetActorTransform(Xf); A->SetActorLabel(FString::Printf(TEXT("BF6_%s"),*Type)); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient); }
