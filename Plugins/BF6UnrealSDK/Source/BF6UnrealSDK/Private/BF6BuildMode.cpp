@@ -656,7 +656,7 @@ public:
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2, 0, 10)
 					[ SNew(STextBlock).Font(FontBold(26)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("SDK SETUP"))) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 16)
-					[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("This tool builds its map and model data from the official Battlefield 6 Portal SDK. Download the SDK from the Portal site, unzip it anywhere, then point the tool at that folder. The import runs once and takes a while (about 9,700 models); re-running it after an SDK update only converts what changed."))) ]
+					[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("This tool builds its map and model data from the official Battlefield 6 Portal SDK. Download the SDK from the Portal site, unzip it anywhere, then point the tool at that folder. An SDK you already mod in works fine - only the official content is read. Close the SDK's Godot editor while the import runs. The import takes a while (about 9,700 models); re-running it after an SDK update only converts what changed."))) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
 					[
 						SNew(SHorizontalBox)
