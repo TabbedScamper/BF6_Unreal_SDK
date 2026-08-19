@@ -24,6 +24,12 @@
 #include "Input/DragAndDrop.h"
 #include "ImageUtils.h"
 #include "Engine/Texture2D.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "PreviewScene.h"
+#include "Styling/SlateBrush.h"
+#include "ActorGroupingUtils.h"
+#include "Editor/GroupActor.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Styling/SlateBrush.h"
 #include "Framework/Docking/TabManager.h"
@@ -243,7 +249,14 @@ static AActor* SpawnResource(const FString& ResName, const FString& Label, const
 		Mesh->CreateMeshSection_LinearColor(si, V, T, N, UV, NC, NT, false);
 	}
 	Mesh->SetVisibility(true, true);
-	if (!Placed) { Actor->Tags.Remove(kPlacedTag); Actor->Tags.Add(kContextTag); }
+	if (!Placed)
+	{
+		Actor->Tags.Remove(kPlacedTag); Actor->Tags.Add(kContextTag);
+		// context is scenery: not clickable, not movable, foldered out of the way
+		Mesh->bSelectable = false;
+		Actor->SetLockLocation(true);
+		Actor->SetFolderPath(FName(TEXT("BF6 Map Context")));
+	}
 	g_free(g_ctx, m);
 	return Actor;
 }
@@ -283,6 +296,7 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	Actor->Tags.Add(kContextTag);
 	Actor->SetFlags(RF_Transient);          // never saved into the level
 	Actor->SetLockLocation(true);
+	Actor->SetFolderPath(FName(TEXT("BF6 Map Context")));   // out of the way in the outliner
 	UProceduralMeshComponent* Mesh = MakeProcMesh(Actor, TEXT("ContextMesh"));
 	// Collision ON: the space-bar placement ray traces this surface so objects
 	// land where the crosshair points (not on a flat z=0 plane under the map).
@@ -321,6 +335,7 @@ static AActor* SpawnSdkModel(const FString& MeshName, const FString& Label, cons
 	Actor->Tags.Add(kPlacedTag);
 	Actor->Tags.Add(FName(*(FString(TEXT("mesh:")) + MeshName)));
 	if (!Label.IsEmpty()) Actor->Tags.Add(FName(*(FString(TEXT("label:")) + Label)));
+	Actor->SetFolderPath(FName(TEXT("BF6 Placed")));   // Godot-style scene tree home
 	UProceduralMeshComponent* M = MakeProcMesh(Actor, TEXT("ProcMesh"));
 	if (!FillProcFromBf6Mesh(M, Path)) { World->EditorDestroyActor(Actor, false); return nullptr; }
 	ApplyObjectWhite(M);               // pure white, like Godot's object library
@@ -354,6 +369,140 @@ bool BF6_LoadSdkModelInto(UProceduralMeshComponent* Mesh, const FString& MeshNam
 	const FBoxSphereBounds B = Mesh->CalcBounds(FTransform::Identity);
 	OutRadius = FMath::Max(50.f, (float)B.SphereRadius);
 	return true;
+}
+
+// ============================================================================
+// Thumbnail service: renders the same corner-down isometric the hover preview
+// uses into 256px PNGs (Saved/BF6UnrealSDK/thumbs), a few per tick, on demand.
+// The library's cards poll GetModelThumb; a null return means "queued".
+// ============================================================================
+namespace
+{
+	struct FBF6Thumbs
+	{
+		TUniquePtr<FPreviewScene>     Scene;
+		USceneCaptureComponent2D*     Capture = nullptr;
+		UTextureRenderTarget2D*       RT = nullptr;
+		TMap<FString, TSharedPtr<FSlateBrush>> Brushes;   // mesh -> live brush
+		TArray<UTexture2D*>           Held;                // keep brush textures alive
+		TArray<FString>               Queue;
+		TSet<FString>                 Known;               // queued or done
+		FTSTicker::FDelegateHandle    Tick;
+	};
+	FBF6Thumbs g_thumbs;
+
+	FString BF6_ThumbDir() { return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("thumbs")); }
+	// queue keys: plain mesh names, or "block::<name>" for composite block renders
+	FString BF6_ThumbPathForKey(const FString& Key)
+	{
+		return Key.StartsWith(TEXT("block::"))
+			? BF6_ThumbDir() / (TEXT("block_") + Key.Mid(7) + TEXT(".png"))
+			: BF6_ThumbDir() / (Key + TEXT(".png"));
+	}
+	FString BF6_ThumbPath(const FString& Mesh) { return BF6_ThumbPathForKey(Mesh); }
+	bool BF6_RenderBlockThumb(const FString& Name);   // defined after the Blocks code
+
+	bool BF6_ThumbRigReady()
+	{
+		if (g_thumbs.Scene.IsValid()) return true;
+		g_thumbs.Scene = MakeUnique<FPreviewScene>(FPreviewScene::ConstructionValues());
+		g_thumbs.RT = NewObject<UTextureRenderTarget2D>(GetTransientPackage());
+		g_thumbs.RT->AddToRoot();
+		g_thumbs.RT->RenderTargetFormat = RTF_RGBA8;
+		g_thumbs.RT->InitAutoFormat(256, 256);
+		g_thumbs.Capture = NewObject<USceneCaptureComponent2D>(GetTransientPackage());
+		g_thumbs.Capture->CaptureSource = SCS_FinalColorLDR;
+		g_thumbs.Capture->TextureTarget = g_thumbs.RT;
+		g_thumbs.Capture->bCaptureEveryFrame = false;
+		g_thumbs.Capture->bCaptureOnMovement = false;
+		g_thumbs.Scene->AddComponent(g_thumbs.Capture, FTransform::Identity);
+		return true;
+	}
+
+	// point the rig at Bounds with the hover preview's corner-down iso framing,
+	// capture, and write the PNG. The caller owns adding/removing components.
+	bool BF6_CaptureRigTo(const FString& PngPath, const FBoxSphereBounds& B)
+	{
+		const FRotator Rot(-35.264f, -135.f, 0.f);
+		const float Dist = FMath::Max(60.f, (float)B.SphereRadius * 2.4f);
+		g_thumbs.Capture->SetWorldLocationAndRotation(B.Origin - Rot.Vector() * Dist, Rot);
+		g_thumbs.Capture->FOVAngle = 50.f;
+		g_thumbs.Capture->CaptureScene();
+		TArray<FColor> Pixels;
+		FTextureRenderTargetResource* Res = g_thumbs.RT->GameThread_GetRenderTargetResource();
+		if (!Res || !Res->ReadPixels(Pixels)) return false;
+		for (FColor& C : Pixels) C.A = 255;
+		TArray64<uint8> Png;
+		FImageUtils::PNGCompressImageArray(256, 256, Pixels, Png);
+		IFileManager::Get().MakeDirectory(*BF6_ThumbDir(), true);
+		return FFileHelper::SaveArrayToFile(Png, *PngPath);
+	}
+
+	// render one model to its PNG; true when a file was produced
+	bool BF6_RenderThumb(const FString& Mesh)
+	{
+		if (!BF6_ThumbRigReady()) return false;
+		UProceduralMeshComponent* M = NewObject<UProceduralMeshComponent>(GetTransientPackage());
+		float Radius = 100.f;
+		if (!BF6_LoadSdkModelInto(M, Mesh, Radius)) return false;
+		g_thumbs.Scene->AddComponent(M, FTransform::Identity);
+		const bool bOk = BF6_CaptureRigTo(BF6_ThumbPath(Mesh), M->CalcBounds(FTransform::Identity));
+		g_thumbs.Scene->RemoveComponent(M);
+		return bOk;
+	}
+
+	// PNG on disk -> live texture + brush
+	TSharedPtr<FSlateBrush> BF6_BrushFromPng(const FString& Mesh)
+	{
+		UTexture2D* Tex = FImageUtils::ImportFileAsTexture2D(BF6_ThumbPath(Mesh));
+		if (!Tex) return nullptr;
+		Tex->AddToRoot();
+		g_thumbs.Held.Add(Tex);
+		TSharedPtr<FSlateBrush> Brush = MakeShared<FSlateBrush>();
+		Brush->SetResourceObject(Tex);
+		Brush->ImageSize = FVector2D(256, 256);
+		return Brush;
+	}
+
+	void BF6_PumpThumbs()
+	{
+		int32 Done = 0;
+		while (g_thumbs.Queue.Num() && Done < 2)   // a couple per tick keeps the editor smooth
+		{
+			const FString Key = g_thumbs.Queue[0];
+			g_thumbs.Queue.RemoveAt(0);
+			Done++;
+			const bool bOk = Key.StartsWith(TEXT("block::")) ? BF6_RenderBlockThumb(Key.Mid(7)) : BF6_RenderThumb(Key);
+			if (bOk)
+				if (TSharedPtr<FSlateBrush> Brush = BF6_BrushFromPng(Key))
+					g_thumbs.Brushes.Add(Key, Brush);
+		}
+		if (g_thumbs.Queue.Num() == 0 && g_thumbs.Tick.IsValid())
+		{ FTSTicker::GetCoreTicker().RemoveTicker(g_thumbs.Tick); g_thumbs.Tick.Reset(); }
+	}
+}
+
+namespace BF6Api
+{
+	const FSlateBrush* GetModelThumb(const FString& Mesh)
+	{
+		if (Mesh.IsEmpty()) return nullptr;
+		if (const TSharedPtr<FSlateBrush>* B = g_thumbs.Brushes.Find(Mesh)) return B->Get();
+		if (g_thumbs.Known.Contains(Mesh)) return nullptr;   // queued or failed
+		g_thumbs.Known.Add(Mesh);
+		// already rendered in an earlier session?
+		if (FPaths::FileExists(BF6_ThumbPath(Mesh)))
+		{
+			if (TSharedPtr<FSlateBrush> Brush = BF6_BrushFromPng(Mesh))
+			{ g_thumbs.Brushes.Add(Mesh, Brush); return Brush.Get(); }
+			return nullptr;
+		}
+		g_thumbs.Queue.Add(Mesh);
+		if (!g_thumbs.Tick.IsValid())
+			g_thumbs.Tick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+				[](float){ BF6_PumpThumbs(); return true; }));
+		return nullptr;
+	}
 }
 
 static void ClearActorsWithTag(FName Tag)
@@ -484,6 +633,9 @@ struct FBF6VolEdit
 	TWeakObjectPtr<AActor> Volume;
 	TArray<TWeakObjectPtr<AActor>> Handles;   // vertex order
 	TArray<FVector> LastLoop;
+	// Godot-style add-point preview: a white marker on the nearest edge while
+	// Ctrl is held (Ctrl+LMB inserts a point there)
+	TWeakObjectPtr<AActor> HoverMarker;
 };
 static FBF6VolEdit GVolEdit;
 
@@ -531,6 +683,43 @@ static AActor* SpawnVolumeHandle(UWorld* W, const FVector& Pos, int32 Idx)
 	A->Tags.Add(kHandleTag);
 	A->SetFlags(RF_Transient);
 	return A;
+}
+
+// The Ctrl add-point preview: a small white cube on the nearest edge, drawn on
+// top like the handles but never part of the loop and never left selected.
+static AActor* SpawnHoverMarker(UWorld* W, const FVector& Pos)
+{
+	AActor* A = W->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+	if (!A) return nullptr;
+	UProceduralMeshComponent* M = MakeProcMesh(A, TEXT("HoverMarker"));
+	BuildHandleCube(M);
+	M->SetDepthPriorityGroup(SDPG_Foreground);
+	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_ObjectWhite.M_ObjectWhite")))
+		for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mat);
+	A->SetActorLocation(Pos);
+	A->SetActorScale3D(FVector(0.6f));
+	A->SetActorLabel(TEXT("BF6_AddPointPreview"));
+	A->SetFlags(RF_Transient);
+	return A;
+}
+
+// Zone loops are stored in the volume ACTOR's space (== world at load, since
+// volumes spawn at the origin). Consumers that need world coordinates - the
+// exporter, the session save, the point-edit handles - transform through the
+// actor, so MOVING or ROTATING a whole zone with the gizmo carries its points.
+static TArray<FVector> BF6_LoopToWorld(AActor* Vol, const TArray<FVector>& Local)
+{
+	const FTransform Xf = Vol ? Vol->GetActorTransform() : FTransform::Identity;
+	TArray<FVector> Out; Out.Reserve(Local.Num());
+	for (const FVector& P : Local) Out.Add(Xf.TransformPosition(P));
+	return Out;
+}
+static TArray<FVector> BF6_LoopToLocal(AActor* Vol, const TArray<FVector>& World)
+{
+	const FTransform Xf = Vol ? Vol->GetActorTransform() : FTransform::Identity;
+	TArray<FVector> Out; Out.Reserve(World.Num());
+	for (const FVector& P : World) Out.Add(Xf.InverseTransformPosition(P));
+	return Out;
 }
 
 static void RebuildVolumeWalls(AActor* Vol, const TArray<FVector>& Loop)
@@ -642,7 +831,7 @@ static void SaveSession(const FString& Level, const FString& Name)
 		if (const TArray<FVector>* Loop = GVolumeLoops.Find(*It))
 		{
 			TArray<TSharedPtr<FJsonValue>> LArr;
-			for (const FVector& V : *Loop)
+			for (const FVector& V : BF6_LoopToWorld(*It, *Loop))
 			{
 				LArr.Add(MakeShared<FJsonValueNumber>(V.X));
 				LArr.Add(MakeShared<FJsonValueNumber>(V.Y));
@@ -1675,23 +1864,76 @@ static FString BF6_TopSeg(const FString& Dir)
 	return Dir;
 }
 
-static void BF6_LoadPlaceables(const FString& Level)
+// ---- user category overrides (library "move to category") ----
+// Type -> category chosen by the user; everything (pie, popups, the library)
+// reads categories through BF6_EffectiveCategory so a move shows up everywhere.
+static TMap<FString, FString> GCatOverrides;
+
+static FString BF6_CategoriesPath()
 {
-	g_ss.AllItems.Reset(); g_ss.TypeCost.Reset(); g_ss.TypeToMesh.Reset();
-	if (!g_ctx || !g_listp) return;
-	const int32 kMax = 4000;
-	TArray<bf6_placeable> Buf; Buf.SetNum(kMax);
-	const int total = g_listp(g_ctx, Level.IsEmpty() ? "" : TCHAR_TO_UTF8(*Level), "", Buf.GetData(), kMax);
-	const int n = FMath::Min(total, kMax);
-	for (int i = 0; i < n; i++)
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("categories.json"));
+}
+
+static void BF6_LoadCatOverrides()
+{
+	GCatOverrides.Reset();
+	FString In; if (!FFileHelper::LoadFileToString(In, *BF6_CategoriesPath())) return;
+	TSharedPtr<FJsonObject> Root; TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
+	if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid()) return;
+	for (const auto& P : Root->Values)
+	{
+		FString V; if (P.Value->TryGetString(V) && !V.IsEmpty()) GCatOverrides.Add(FString(P.Key), V);
+	}
+}
+
+static void BF6_SaveCatOverrides()
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	for (const auto& P : GCatOverrides) Root->SetStringField(P.Key, P.Value);
+	FString Out;
+	TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
+	FJsonSerializer::Serialize(Root, W);
+	FFileHelper::SaveStringToFile(Out, *BF6_CategoriesPath());
+}
+
+static FString BF6_EffectiveCategory(const FPlaceableRow& r)
+{
+	if (const FString* O = GCatOverrides.Find(r.Type)) return *O;
+	return BF6_TopSeg(r.Directory);
+}
+
+// Every placeable in the SDK regardless of level (the library's "Full" scope).
+static TArray<TSharedPtr<FPlaceableRow>> g_allGlobal;
+
+static void BF6_FillRows(const bf6_placeable* Buf, int32 n, TArray<TSharedPtr<FPlaceableRow>>& Out, bool bFeedLookups)
+{
+	for (int32 i = 0; i < n; i++)
 	{
 		TSharedPtr<FPlaceableRow> r = MakeShared<FPlaceableRow>();
 		r->Type = UTF8_TO_TCHAR(Buf[i].type); r->Directory = UTF8_TO_TCHAR(Buf[i].directory);
 		r->Mesh = UTF8_TO_TCHAR(Buf[i].mesh); r->PhysicsCost = Buf[i].physics_cost; r->Universal = Buf[i].universal != 0;
-		g_ss.AllItems.Add(r);
-		g_ss.TypeCost.Add(r->Type, r->PhysicsCost);
-		if (!r->Mesh.IsEmpty()) { g_ss.TypeCost.Add(r->Mesh, r->PhysicsCost); g_ss.TypeToMesh.Add(r->Type, r->Mesh); }
+		Out.Add(r);
+		if (bFeedLookups)
+		{
+			g_ss.TypeCost.Add(r->Type, r->PhysicsCost);
+			if (!r->Mesh.IsEmpty()) { g_ss.TypeCost.Add(r->Mesh, r->PhysicsCost); g_ss.TypeToMesh.Add(r->Type, r->Mesh); }
+		}
 	}
+}
+
+static void BF6_LoadPlaceables(const FString& Level)
+{
+	g_ss.AllItems.Reset(); g_ss.TypeCost.Reset(); g_ss.TypeToMesh.Reset();
+	g_allGlobal.Reset();
+	if (!g_ctx || !g_listp) return;
+	const int32 kMax = 16000;
+	TArray<bf6_placeable> Buf; Buf.SetNum(kMax);
+	const int n = FMath::Min(g_listp(g_ctx, Level.IsEmpty() ? "" : TCHAR_TO_UTF8(*Level), "", Buf.GetData(), kMax), kMax);
+	BF6_FillRows(Buf.GetData(), n, g_ss.AllItems, true);
+	// the level-independent catalogue: the Full Library browses and places from
+	// it, so its types must resolve meshes and budget costs too
+	const int an = FMath::Min(g_listp(g_ctx, "", "", Buf.GetData(), kMax), kMax);
+	BF6_FillRows(Buf.GetData(), an, g_allGlobal, true);
 }
 
 static void BF6_LoadBudgetMax(const FString& Level)
@@ -1787,6 +2029,7 @@ static void BF6_LoadBaseSetup(const FString& Level)
 		if (!A) continue;
 		if (!bVolume) A->SetActorTransform(FTransform(Rot, ToUnreal(gw), Scl));
 		A->SetActorLabel(FString::Printf(TEXT("BF6_%s"), *nm));
+		A->SetFolderPath(FName(TEXT("BF6 Base Setup")));
 		A->Tags.Add(kBaseTag);
 		A->Tags.Add(FName(*(FString(TEXT("type:")) + ty)));
 		A->Tags.Add(FName(*(FString(TEXT("oid:")) + FString::FromInt(oid))));
@@ -1903,7 +2146,8 @@ static void BF6_ExportSpatial(bool bMinify)
 				const TArray<FVector>* EditedLoop = Live ? GVolumeLoops.Find(Live) : nullptr;
 				if (EditedLoop && EditedLoop->Num() >= 3)
 				{
-					for (const FVector& Wv : *EditedLoop)
+					// world = loop through the actor, so a MOVED zone exports moved
+					for (const FVector& Wv : BF6_LoopToWorld(Live, *EditedLoop))
 						PtsArr.Add(MakeShared<FJsonValueObject>(Vec(Wv.X / 100.0, Wv.Z / 100.0, Wv.Y / 100.0)));
 				}
 				else
@@ -2862,23 +3106,27 @@ namespace BF6Api
 	TArray<FString> Categories()
 	{
 		TMap<FString,int32> Counts;
-		for (const auto& r : g_ss.AllItems) Counts.FindOrAdd(BF6_TopSeg(r->Directory))++;
+		for (const auto& r : g_ss.AllItems) Counts.FindOrAdd(BF6_EffectiveCategory(*r))++;
 		Counts.ValueSort([](int32 A, int32 B){ return A > B; });
 		TArray<FString> Out; for (const auto& P : Counts) Out.Add(P.Key);
 		return Out;
 	}
 	int32 CategoryCount(const FString& Category)
 	{
-		int32 n = 0; for (const auto& r : g_ss.AllItems) if (BF6_TopSeg(r->Directory) == Category) n++;
+		int32 n = 0; for (const auto& r : g_ss.AllItems) if (BF6_EffectiveCategory(*r) == Category) n++;
 		return n;
 	}
-	TArray<FPlaceableInfo> PlaceablesIn(const FString& Category, const FString& Query, int32 Max)
+
+	// Shared filter over a row source: category (empty = every category) +
+	// fuzzy query, best matches first, capped at Max.
+	static TArray<FPlaceableInfo> FilterRows(const TArray<TSharedPtr<FPlaceableRow>>& Src,
+		const FString& Category, const FString& Query, int32 Max)
 	{
 		const FString P = Query.ToLower();
 		TArray<TPair<int32, const FPlaceableRow*>> Scored;
-		for (const auto& r : g_ss.AllItems)
+		for (const auto& r : Src)
 		{
-			if (BF6_TopSeg(r->Directory) != Category) continue;
+			if (!Category.IsEmpty() && BF6_EffectiveCategory(*r) != Category) continue;
 			int32 s = 0;
 			if (P.IsEmpty()) Scored.Emplace(0, r.Get());
 			else if (FuzzyScore(P, r->Type, s)) Scored.Emplace(s + 20, r.Get());
@@ -2886,8 +3134,39 @@ namespace BF6Api
 		}
 		if (!P.IsEmpty()) Scored.Sort([](const TPair<int32,const FPlaceableRow*>& A, const TPair<int32,const FPlaceableRow*>& B){ return A.Key > B.Key; });
 		TArray<FPlaceableInfo> Out;
-		for (const auto& pr : Scored){ if (Out.Num() >= Max) break; FPlaceableInfo I; I.Type=pr.Value->Type; I.Directory=pr.Value->Directory; I.Mesh=pr.Value->Mesh; I.PhysicsCost=pr.Value->PhysicsCost; Out.Add(I); }
+		for (const auto& pr : Scored)
+		{
+			if (Out.Num() >= Max) break;
+			FPlaceableInfo I; I.Type=pr.Value->Type; I.Directory=pr.Value->Directory; I.Mesh=pr.Value->Mesh;
+			I.PhysicsCost=pr.Value->PhysicsCost; I.Category=BF6_EffectiveCategory(*pr.Value);
+			Out.Add(I);
+		}
 		return Out;
+	}
+
+	TArray<FPlaceableInfo> PlaceablesIn(const FString& Category, const FString& Query, int32 Max)
+	{
+		return FilterRows(g_ss.AllItems, Category, Query, Max);
+	}
+
+	// ---- the slide-up Object Library ----
+	TArray<FString> LibraryCategories(bool bAllLevels)
+	{
+		TMap<FString,int32> Counts;
+		for (const auto& r : (bAllLevels ? g_allGlobal : g_ss.AllItems)) Counts.FindOrAdd(BF6_EffectiveCategory(*r))++;
+		Counts.ValueSort([](int32 A, int32 B){ return A > B; });
+		TArray<FString> Out; for (const auto& P : Counts) Out.Add(P.Key);
+		return Out;
+	}
+	TArray<FPlaceableInfo> LibraryPlaceables(const FString& Category, const FString& Query, bool bAllLevels, int32 Max)
+	{
+		return FilterRows(bAllLevels ? g_allGlobal : g_ss.AllItems, Category, Query, Max);
+	}
+	void SetTypeCategory(const FString& Type, const FString& NewCategory)
+	{
+		if (NewCategory.IsEmpty()) GCatOverrides.Remove(Type);
+		else GCatOverrides.Add(Type, NewCategory);
+		BF6_SaveCatOverrides();
 	}
 
 	TArray<FString> AllLevels()
@@ -3051,15 +3330,31 @@ namespace BF6Api
 		if (!Loop || Loop->Num() < 3) { Notify(TEXT("No editable points on this volume.")); return; }
 		GVolEdit.Volume = Volume;
 		GVolEdit.Handles.Reset();
-		for (int32 i = 0; i < Loop->Num(); i++)
-			GVolEdit.Handles.Add(SpawnVolumeHandle(W, (*Loop)[i], i));
-		GVolEdit.LastLoop = *Loop;
+		// handles live in WORLD space: transform the stored loop through the actor
+		const TArray<FVector> WorldLoop = BF6_LoopToWorld(Volume, *Loop);
+		for (int32 i = 0; i < WorldLoop.Num(); i++)
+			GVolEdit.Handles.Add(SpawnVolumeHandle(W, WorldLoop[i], i));
+		GVolEdit.LastLoop = WorldLoop;
 		if (GVolEdit.Handles.Num() && GVolEdit.Handles[0].IsValid())
 		{
 			GEditor->SelectNone(false, true, false);
 			GEditor->SelectActor(GVolEdit.Handles[0].Get(), true, true);
 		}
-		Notify(TEXT("Editing zone points: drag the handles with the gizmo. SPACE = add / delete / finish."));
+		Notify(TEXT("Editing zone points: drag the handles. Ctrl+LMB adds a point on an edge, Ctrl+RMB deletes one. Enter or Esc finishes."));
+	}
+
+	bool VolumeNearestEdgePoint(const FVector& WorldPos, FVector& OutPoint)
+	{
+		TArray<FVector> Loop;
+		if (!IsVolumeEditing() || !GatherHandleLoop(Loop)) return false;
+		float BestD = FLT_MAX;
+		for (int32 i = 0; i < Loop.Num(); i++)
+		{
+			const FVector P = FMath::ClosestPointOnSegment(WorldPos, Loop[i], Loop[(i + 1) % Loop.Num()]);
+			const float D = FVector::Dist2D(WorldPos, P);
+			if (D < BestD) { BestD = D; OutPoint = P; }
+		}
+		return BestD != FLT_MAX;
 	}
 
 	void TickVolumeEdit()
@@ -3067,6 +3362,26 @@ namespace BF6Api
 		if (!IsVolumeEditing()) return;
 		AActor* Vol = GVolEdit.Volume.Get();
 		if (!Vol) { GVolEdit = FBF6VolEdit(); return; }
+
+		// Godot-style add preview: while Ctrl is held, a white marker rides the
+		// nearest edge under the cursor; Ctrl+LMB inserts a point there.
+		const bool bCtrl = FSlateApplication::Get().GetModifierKeys().IsControlDown();
+		FVector Cursor, Edge;
+		if (bCtrl && WorldFromViewportCursor(Cursor) && VolumeNearestEdgePoint(Cursor, Edge))
+		{
+			if (AActor* Mk = GVolEdit.HoverMarker.Get()) Mk->SetActorLocation(Edge);
+			else if (GEditor)
+				if (UWorld* W = GEditor->GetEditorWorldContext().World())
+					GVolEdit.HoverMarker = SpawnHoverMarker(W, Edge);
+		}
+		else if (AActor* Mk = GVolEdit.HoverMarker.Get())
+		{
+			if (GEditor)
+				if (UWorld* W = GEditor->GetEditorWorldContext().World())
+					W->EditorDestroyActor(Mk, false);
+			GVolEdit.HoverMarker = nullptr;
+		}
+
 		TArray<FVector> Loop;
 		if (!GatherHandleLoop(Loop)) return;
 		bool bChanged = Loop.Num() != GVolEdit.LastLoop.Num();
@@ -3075,8 +3390,10 @@ namespace BF6Api
 				if (!Loop[i].Equals(GVolEdit.LastLoop[i], 0.5f)) { bChanged = true; break; }
 		if (!bChanged) return;
 		GVolEdit.LastLoop = Loop;
-		RebuildVolumeWalls(Vol, Loop);
-		GVolumeLoops.Add(Vol, Loop);
+		// handles are world-space; the stored loop and the wall mesh are actor-space
+		const TArray<FVector> Local = BF6_LoopToLocal(Vol, Loop);
+		RebuildVolumeWalls(Vol, Local);
+		GVolumeLoops.Add(Vol, Local);
 	}
 
 	void VolumeAddPoint()
@@ -3161,13 +3478,47 @@ namespace BF6Api
 		}
 	}
 
+	void VolumeDeletePointAt(const FVector& WorldPos)
+	{
+		if (!IsVolumeEditing() || !GEditor) return;
+		if (GVolEdit.Handles.Num() <= 3) { Notify(TEXT("A zone needs at least 3 points.")); return; }
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+		// nearest point to the click, with a grab radius so a miss does nothing
+		int32 Best = INDEX_NONE; float BestD = 200.f;
+		for (int32 i = 0; i < GVolEdit.Handles.Num(); i++)
+		{
+			if (!GVolEdit.Handles[i].IsValid()) continue;
+			const float D = FVector::Dist2D(WorldPos, GVolEdit.Handles[i]->GetActorLocation());
+			if (D < BestD) { BestD = D; Best = i; }
+		}
+		if (Best == INDEX_NONE) return;
+		FScopedTransaction Tx(FText::FromString(TEXT("Delete Zone Point")));
+		W->EditorDestroyActor(GVolEdit.Handles[Best].Get(), false);
+		GVolEdit.Handles.RemoveAt(Best);
+		const int32 NewSel = FMath::Clamp(Best, 0, GVolEdit.Handles.Num() - 1);
+		if (GVolEdit.Handles[NewSel].IsValid())
+		{
+			GEditor->SelectNone(false, true, false);
+			GEditor->SelectActor(GVolEdit.Handles[NewSel].Get(), true, true);
+		}
+	}
+
 	void FinishVolumeEdit()
 	{
+		if (AActor* Mk = GVolEdit.HoverMarker.Get())
+			if (GEditor)
+				if (UWorld* W = GEditor->GetEditorWorldContext().World())
+					W->EditorDestroyActor(Mk, false);
 		if (GVolEdit.Handles.Num() == 0) { GVolEdit = FBF6VolEdit(); return; }
 		TArray<FVector> Loop;
 		const bool bHave = GatherHandleLoop(Loop);
 		if (AActor* Vol = GVolEdit.Volume.Get())
-			if (bHave) { RebuildVolumeWalls(Vol, Loop); GVolumeLoops.Add(Vol, Loop); }
+			if (bHave)
+			{
+				const TArray<FVector> Local = BF6_LoopToLocal(Vol, Loop);
+				RebuildVolumeWalls(Vol, Local);
+				GVolumeLoops.Add(Vol, Local);
+			}
 		if (GEditor)
 			if (UWorld* W = GEditor->GetEditorWorldContext().World())
 				for (const TWeakObjectPtr<AActor>& H : GVolEdit.Handles)
@@ -3233,12 +3584,383 @@ namespace BF6Api
 		return A;
 	}
 
+	// Library double-click / "Place in scene": drop the object in front of the
+	// camera. Picking another object before touching the first one SWAPS it
+	// (auditioning objects in place), so the map never collects stray props.
+	static TWeakObjectPtr<AActor> GQuickPlaced;
+	static FVector GQuickPlacedAt = FVector::ZeroVector;
+
+	AActor* QuickPlace(const FString& Type)
+	{
+		FVector W;
+		if (!WorldFromViewportCenter(W)) return nullptr;
+		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Place %s"), *Type)));
+		if (AActor* Prev = GQuickPlaced.Get())
+			if (Prev->GetActorLocation().Equals(GQuickPlacedAt, 1.f))
+			{
+				W = GQuickPlacedAt;   // swap in exactly the same spot
+				if (GEditor)
+					if (UWorld* World = GEditor->GetEditorWorldContext().World())
+					{ Prev->Modify(); World->EditorDestroyActor(Prev, true); }
+			}
+		GQuickPlaced = nullptr;
+		AActor* A = PlaceType(Type, W);
+		if (A) { GQuickPlaced = A; GQuickPlacedAt = A->GetActorLocation(); }
+		return A;
+	}
+
+	// ---- selection tools ----
+	void SelectSimilar()
+	{
+		FString Type; AActor* Seed = SelectedGameplayActor(Type);
+		if (!Seed || !GEditor) return;
+		const FString Lb = TagValue(Seed, TEXT("label:"));
+		const FString Ms = TagValue(Seed, TEXT("mesh:"));
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+		int32 n = 0;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)) continue;
+			const bool bSame =
+				(!Lb.IsEmpty() && TagValue(*It, TEXT("label:")) == Lb) ||
+				( Lb.IsEmpty() && !Ms.IsEmpty() && TagValue(*It, TEXT("mesh:")) == Ms);
+			if (!bSame) continue;
+			GEditor->SelectActor(*It, true, false);
+			n++;
+		}
+		GEditor->NoteSelectionChange();
+		Notify(FString::Printf(TEXT("Selected %d x %s"), n, *Type));
+	}
+
+	void GroupSelection()
+	{
+		if (!UActorGroupingUtils::IsGroupingActive()) UActorGroupingUtils::SetGroupingActive(true);
+		UActorGroupingUtils::Get()->GroupSelected();
+	}
+	void UngroupSelection()
+	{
+		if (!UActorGroupingUtils::IsGroupingActive()) UActorGroupingUtils::SetGroupingActive(true);
+		UActorGroupingUtils::Get()->UngroupSelected();
+	}
+
+	// ---- group edit mode (Revit-style "tab into the group") ----
+	// While active: the group is unlocked so members move individually, and the
+	// selection is restricted to members only. Enter or Esc locks it back up.
+	static TWeakObjectPtr<AGroupActor> GGroupEdit;
+
+	bool SelectionGrouped()
+	{
+		FString T; AActor* A = SelectedGameplayActor(T);
+		return A && AGroupActor::GetRootForActor(A) != nullptr;
+	}
+	bool IsGroupEditing() { return GGroupEdit.IsValid(); }
+
+	void BeginGroupEditFromSelection()
+	{
+		FString T; AActor* A = SelectedGameplayActor(T);
+		AGroupActor* G = A ? AGroupActor::GetRootForActor(A) : nullptr;
+		if (!G) { Notify(TEXT("Select a grouped object first.")); return; }
+		GGroupEdit = G;
+		G->Unlock();
+		Notify(TEXT("Editing group: only its members are selectable. Enter or Esc locks it again."));
+	}
+
+	void FinishGroupEdit()
+	{
+		if (AGroupActor* G = GGroupEdit.Get())
+			if (GEditor)
+			{
+				// Lock() isn't exported: lock through the selection-based utility
+				GEditor->SelectNone(false, true, false);
+				GEditor->SelectActor(G, true, true);
+				UActorGroupingUtils::Get()->LockSelectedGroups();
+			}
+		GGroupEdit = nullptr;
+	}
+
+	void TickGroupEdit()
+	{
+		AGroupActor* G = GGroupEdit.Get();
+		if (!G || !GEditor) return;
+		TArray<AActor*> Members;
+		G->GetGroupActors(Members, true);
+		USelection* S = GEditor->GetSelectedActors(); if (!S) return;
+		TArray<AActor*> Strip;
+		for (int32 i = 0; i < S->Num(); i++)
+			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
+				if (A != G && !Members.Contains(A)) Strip.Add(A);
+		for (AActor* A : Strip) GEditor->SelectActor(A, false, true);
+	}
+
+	// ---- Blocks: named user prefabs, one portable JSON each ----
+	// Share a block by sending its file; received files just go in the folder.
+	static FString BF6_BlocksDir() { return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("blocks")); }
+	static FString BF6_BlockPath(const FString& Name) { return BF6_BlocksDir() / (Name + TEXT(".json")); }
+	static FString BF6_SafeName(const FString& In)
+	{
+		FString S = In.TrimStartAndEnd();
+		for (TCHAR& C : S) if (!FChar::IsAlnum(C) && C != '_' && C != '-' && C != ' ') C = '_';
+		return S;
+	}
+
+	static void  BF6_TagBlockInstance(const TArray<AActor*>& Actors, const FString& Name, const FVector& Anchor);
+	static int32 BF6_RefreshBlockInstances(const FString& Name, const TArray<AActor*>& Keep);
+
+	int32 SaveBlockFromSelection(const FString& InName)
+	{
+		const FString Name = BF6_SafeName(InName);
+		if (Name.IsEmpty() || !GEditor) return 0;
+		USelection* Sel = GEditor->GetSelectedActors(); if (!Sel) return 0;
+		TArray<AActor*> Picked;
+		for (int32 i = 0; i < Sel->Num(); i++)
+			if (AActor* A = Cast<AActor>(Sel->GetSelectedObject(i)))
+				if (A->Tags.Contains(kPlacedTag)) Picked.Add(A);
+		if (Picked.Num() == 0) { Notify(TEXT("Select placed objects first (base objects can't go in a block).")); return 0; }
+
+		// anchor: centroid in the plane, lowest Z - so placement lands on surfaces
+		FVector Anchor = FVector::ZeroVector; double MinZ = DBL_MAX;
+		for (AActor* A : Picked) { Anchor += A->GetActorLocation(); MinZ = FMath::Min(MinZ, (double)A->GetActorLocation().Z); }
+		Anchor /= (double)Picked.Num(); Anchor.Z = MinZ;
+
+		TArray<TSharedPtr<FJsonValue>> Objs;
+		for (AActor* A : Picked)
+		{
+			TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetStringField(TEXT("type"), TagValue(A, TEXT("label:")));
+			O->SetStringField(TEXT("mesh"), TagValue(A, TEXT("mesh:")));
+			const FVector P = A->GetActorLocation() - Anchor;
+			const FRotator R = A->GetActorRotation();
+			const FVector S = A->GetActorScale3D();
+			auto Arr = [](std::initializer_list<double> V){ TArray<TSharedPtr<FJsonValue>> A2; for (double d : V) A2.Add(MakeShared<FJsonValueNumber>(d)); return A2; };
+			O->SetArrayField(TEXT("pos"),   Arr({ P.X, P.Y, P.Z }));
+			O->SetArrayField(TEXT("rot"),   Arr({ R.Pitch, R.Yaw, R.Roll }));
+			O->SetArrayField(TEXT("scale"), Arr({ S.X, S.Y, S.Z }));
+			TArray<TSharedPtr<FJsonValue>> Props;
+			for (const FName& T : A->Tags)
+			{
+				const FString TS = T.ToString();
+				if (TS.StartsWith(TEXT("p:"))) Props.Add(MakeShared<FJsonValueString>(TS.Mid(2)));
+			}
+			if (Props.Num()) O->SetArrayField(TEXT("props"), Props);
+			Objs.Add(MakeShared<FJsonValueObject>(O));
+		}
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetStringField(TEXT("name"), Name);
+		Root->SetStringField(TEXT("level"), g_ss.CurrentLevel);
+		Root->SetArrayField(TEXT("objects"), Objs);
+		FString Out;
+		TSharedRef<TJsonWriter<>> Wr = TJsonWriterFactory<>::Create(&Out);
+		FJsonSerializer::Serialize(Root, Wr);
+		IFileManager::Get().MakeDirectory(*BF6_BlocksDir(), true);
+		if (!FFileHelper::SaveStringToFile(Out, *BF6_BlockPath(Name))) return 0;
+		// force the block's composite thumbnail to regenerate
+		IFileManager::Get().Delete(*(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("thumbs")) / (TEXT("block_") + Name + TEXT(".png"))), false, false, true);
+		// the source selection becomes an instance of the (possibly updated) block
+		BF6_TagBlockInstance(Picked, Name, Anchor);
+		// Revit-style: every OTHER placed copy of this block refreshes to match
+		const int32 Refreshed = BF6_RefreshBlockInstances(Name, Picked);
+		if (Refreshed > 0)
+			Notify(FString::Printf(TEXT("Updated %d other placed cop%s of block '%s'."),
+				Refreshed, Refreshed == 1 ? TEXT("y") : TEXT("ies"), *Name));
+		return Picked.Num();
+	}
+
+	static TSharedPtr<FJsonObject> BF6_LoadBlock(const FString& Name)
+	{
+		FString In;
+		if (!FFileHelper::LoadFileToString(In, *BF6_BlockPath(Name))) return nullptr;
+		TSharedPtr<FJsonObject> Root; TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
+		return (FJsonSerializer::Deserialize(R, Root) && Root.IsValid()) ? Root : nullptr;
+	}
+
+	TArray<FBlockInfo> ListBlocks()
+	{
+		TArray<FBlockInfo> Out;
+		TArray<FString> Files;
+		IFileManager::Get().FindFiles(Files, *(BF6_BlocksDir() / TEXT("*.json")), true, false);
+		Files.Sort();
+		for (const FString& F : Files)
+		{
+			const FString Name = FPaths::GetBaseFilename(F);
+			if (TSharedPtr<FJsonObject> B = BF6_LoadBlock(Name))
+			{
+				FBlockInfo I; I.Name = Name;
+				B->TryGetStringField(TEXT("level"), I.Level);
+				const TArray<TSharedPtr<FJsonValue>>* Objs = nullptr;
+				if (B->TryGetArrayField(TEXT("objects"), Objs)) I.Count = Objs->Num();
+				Out.Add(I);
+			}
+		}
+		return Out;
+	}
+
+	// Stamp a set of actors as one placed INSTANCE of a block, so a later
+	// re-save of that block can find and refresh every copy on the map.
+	static void BF6_TagBlockInstance(const TArray<AActor*>& Actors, const FString& Name, const FVector& Anchor)
+	{
+		const FString Id = FGuid::NewGuid().ToString(EGuidFormats::Short);
+		for (AActor* A : Actors)
+		{
+			// strip any previous block identity first
+			for (int32 i = A->Tags.Num() - 1; i >= 0; i--)
+			{
+				const FString TS = A->Tags[i].ToString();
+				if (TS.StartsWith(TEXT("blk:")) || TS.StartsWith(TEXT("blkid:")) || TS.StartsWith(TEXT("blkat:")))
+					A->Tags.RemoveAt(i);
+			}
+			A->Tags.Add(FName(*(TEXT("blk:") + Name)));
+			A->Tags.Add(FName(*(TEXT("blkid:") + Id)));
+			A->Tags.Add(FName(*FString::Printf(TEXT("blkat:%f,%f,%f"), Anchor.X, Anchor.Y, Anchor.Z)));
+		}
+	}
+
+	// spawn a block's actors at WorldPos; no selection/group/notify side effects
+	static bool BF6_SpawnBlockActors(const FString& Name, const FVector& WorldPos, TArray<AActor*>& OutSpawned)
+	{
+		TSharedPtr<FJsonObject> B = BF6_LoadBlock(Name);
+		if (!B.IsValid()) return false;
+		const TArray<TSharedPtr<FJsonValue>>* Objs = nullptr;
+		if (!B->TryGetArrayField(TEXT("objects"), Objs) || Objs->Num() == 0) return false;
+		auto Vec = [](const TSharedPtr<FJsonObject>& O, const TCHAR* Key, const FVector& Def)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* A = nullptr;
+			if (!O->TryGetArrayField(Key, A) || A->Num() < 3) return Def;
+			return FVector((*A)[0]->AsNumber(), (*A)[1]->AsNumber(), (*A)[2]->AsNumber());
+		};
+		for (const TSharedPtr<FJsonValue>& V : *Objs)
+		{
+			const TSharedPtr<FJsonObject> O = V->AsObject(); if (!O.IsValid()) continue;
+			FString Ty, Ms;
+			O->TryGetStringField(TEXT("type"), Ty);
+			O->TryGetStringField(TEXT("mesh"), Ms);
+			if (Ms.IsEmpty()) Ms = BF6_ResolveMeshForType(Ty);
+			if (Ms.IsEmpty()) continue;
+			const FVector P = Vec(O, TEXT("pos"), FVector::ZeroVector);
+			const FVector R = Vec(O, TEXT("rot"), FVector::ZeroVector);
+			const FVector S = Vec(O, TEXT("scale"), FVector::OneVector);
+			AActor* A = SpawnSdkModel(Ms, Ty, FTransform(FRotator(R.X, R.Y, R.Z), WorldPos + P, S));
+			if (!A) continue;
+			const TArray<TSharedPtr<FJsonValue>>* Props = nullptr;
+			if (O->TryGetArrayField(TEXT("props"), Props))
+				for (const TSharedPtr<FJsonValue>& PV : *Props)
+				{ FString PS; if (PV->TryGetString(PS)) A->Tags.Add(FName(*(TEXT("p:") + PS))); }
+			OutSpawned.Add(A);
+		}
+		BF6_TagBlockInstance(OutSpawned, Name, WorldPos);
+		return OutSpawned.Num() > 0;
+	}
+
+	bool PlaceBlock(const FString& Name, const FVector& WorldPos)
+	{
+		if (!g_ss.bEditing) { Notify(TEXT("Open a custom map (a save) to place objects.")); return false; }
+		TSharedPtr<FJsonObject> B = BF6_LoadBlock(Name);
+		if (!B.IsValid()) { Notify(FString::Printf(TEXT("Block '%s' could not be read."), *Name)); return false; }
+		FString Level; B->TryGetStringField(TEXT("level"), Level);
+		if (!Level.IsEmpty() && Level != g_ss.CurrentLevel)
+			Notify(FString::Printf(TEXT("Heads up: block '%s' was built for %s."), *Name, *DisplayName(Level)));
+
+		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Place block %s"), *Name)));
+		TArray<AActor*> Spawned;
+		if (!BF6_SpawnBlockActors(Name, WorldPos, Spawned))
+		{ Notify(FString::Printf(TEXT("Block '%s': none of its objects could be spawned."), *Name)); return false; }
+		if (GEditor)
+		{
+			GEditor->SelectNone(false, true, false);
+			for (AActor* A : Spawned) GEditor->SelectActor(A, true, false);
+			GEditor->NoteSelectionChange();
+			if (Spawned.Num() > 1) GroupSelection();   // arrives as one movable group
+		}
+		BF6_RecomputeBudget();
+		Notify(FString::Printf(TEXT("Placed block '%s' (%d objects) - it's grouped; UNGROUP any time."), *Name, Spawned.Num()));
+		return true;
+	}
+
+	// Refresh every placed instance of a block (except the ones in Keep, which
+	// ARE the new definition): tear each copy down and respawn it at its stamped
+	// anchor from the just-saved JSON. One undoable transaction.
+	static int32 BF6_RefreshBlockInstances(const FString& Name, const TArray<AActor*>& Keep)
+	{
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		TSet<FString> KeepIds;
+		for (AActor* A : Keep) { const FString Id = TagValue(A, TEXT("blkid:")); if (!Id.IsEmpty()) KeepIds.Add(Id); }
+		TMap<FString, TArray<AActor*>> Instances;
+		const FName Want(*(TEXT("blk:") + Name));
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!It->Tags.Contains(Want)) continue;
+			const FString Id = TagValue(*It, TEXT("blkid:"));
+			if (Id.IsEmpty() || KeepIds.Contains(Id)) continue;
+			Instances.FindOrAdd(Id).Add(*It);
+		}
+		if (Instances.Num() == 0) return 0;
+
+		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Update block %s"), *Name)));
+		int32 n = 0;
+		for (auto& P : Instances)
+		{
+			FVector At = P.Value[0]->GetActorLocation();
+			const FString AtS = TagValue(P.Value[0], TEXT("blkat:"));
+			TArray<FString> Parts; AtS.ParseIntoArray(Parts, TEXT(","));
+			if (Parts.Num() == 3) At = FVector(FCString::Atod(*Parts[0]), FCString::Atod(*Parts[1]), FCString::Atod(*Parts[2]));
+			if (AGroupActor* G = AGroupActor::GetRootForActor(P.Value[0])) { G->Modify(); W->EditorDestroyActor(G, true); }
+			for (AActor* A : P.Value) { A->Modify(); W->EditorDestroyActor(A, true); }
+			TArray<AActor*> Fresh;
+			if (BF6_SpawnBlockActors(Name, At, Fresh) && Fresh.Num() > 1)
+			{
+				if (!UActorGroupingUtils::IsGroupingActive()) UActorGroupingUtils::SetGroupingActive(true);
+				UActorGroupingUtils::Get()->GroupActors(Fresh);
+			}
+			n++;
+		}
+		// hand the selection back to the definition the user was working on
+		GEditor->SelectNone(false, true, false);
+		for (AActor* A : Keep) if (IsValid(A)) GEditor->SelectActor(A, true, false);
+		GEditor->NoteSelectionChange();
+		BF6_RecomputeBudget();
+		return n;
+	}
+
+	void DeleteBlock(const FString& Name)
+	{
+		IFileManager::Get().Delete(*BF6_BlockPath(Name), false, false, true);
+		IFileManager::Get().Delete(*(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("thumbs")) / (TEXT("block_") + Name + TEXT(".png"))), false, false, true);
+	}
+
+	void OpenBlocksFolder()
+	{
+		IFileManager::Get().MakeDirectory(*BF6_BlocksDir(), true);
+		FPlatformProcess::ExploreFolder(*BF6_BlocksDir());
+	}
+
+	const FSlateBrush* GetBlockThumb(const FString& Name)
+	{
+		// same cache/queue as model thumbs, namespaced by the block:: key
+		return GetModelThumb(TEXT("block::") + Name);
+	}
+
+	// Shared ray-to-surface drop for both entry points below.
+	static bool TraceToSurface(const FVector& O, const FVector& D, FVector& OutWorld);
+
+	bool WorldFromViewportCenter(FVector& OutWorld)
+	{
+		// the spot in front of the camera: a ray through the viewport centre
+		if (!GCurrentLevelEditingViewportClient) return false;
+		const FViewportCameraTransform& Cam = GCurrentLevelEditingViewportClient->GetViewTransform();
+		return TraceToSurface(Cam.GetLocation(), Cam.GetRotation().Vector(), OutWorld);
+	}
+
 	bool WorldFromViewportCursor(FVector& OutWorld)
 	{
 		if (!GCurrentLevelEditingViewportClient) return false;
 		const FViewportCursorLocation Cursor = GCurrentLevelEditingViewportClient->GetCursorWorldLocationFromMousePos();
 		const FVector O = Cursor.GetOrigin(), D = Cursor.GetDirection();
 		if (D.IsNearlyZero()) return false;
+		return TraceToSurface(O, D, OutWorld);
+	}
+
+	static bool TraceToSurface(const FVector& O, const FVector& D, FVector& OutWorld)
+	{
 		// Trace the actual map surface (the context meshes carry collision), so
 		// placements land on the bridge deck / terrain under the crosshair instead
 		// of a flat z=0 plane below the map.
@@ -3290,6 +4012,7 @@ void FBF6UnrealSDKModule::StartupModule()
 {
 	g_postUndoHandle = FEditorDelegates::PostUndoRedo.AddStatic(&BF6_RepairAfterUndo);
 	g_pluginDir = IPluginManager::Get().FindPlugin(TEXT("BF6UnrealSDK"))->GetBaseDir();
+	BF6_LoadCatOverrides();   // the user's "move to category" choices
 
 	// One-time migration: saves/exports from before the plugin was renamed.
 	{
@@ -3356,6 +4079,9 @@ void FBF6UnrealSDKModule::StartupModule()
 	{
 		BF6Api::InstallInputHandler();
 		BF6Api::ShowStartupUI();
+		// Brand the editor window regardless of what the .uproject file is named
+		// (older installs still carry the BF6_High_Poly project name).
+		FGlobalTabmanager::Get()->SetApplicationTitle(FText::FromString(TEXT("BF6 Unreal SDK")));
 		BF6_ReportUpdateOutcome();        // "Updated to vX" / "did not apply"
 		BF6Api::CheckForUpdates(false);   // silent unless a newer release exists
 
@@ -3414,6 +4140,53 @@ void FBF6UnrealSDKModule::ShutdownModule()
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(kTabName);
 	if (g_ctx && g_close) { g_close(g_ctx); g_ctx = nullptr; }
 	if (DllHandle) { FPlatformProcess::FreeDllHandle(DllHandle); DllHandle = nullptr; }
+}
+
+namespace
+{
+	// Composite thumbnail for a Block: every object at its relative transform,
+	// framed together with the same iso camera the single-model thumbs use.
+	// (Down here because it reads the block JSON via the Blocks code above.)
+	bool BF6_RenderBlockThumb(const FString& Name)
+	{
+		if (!BF6_ThumbRigReady()) return false;
+		TSharedPtr<FJsonObject> B = BF6Api::BF6_LoadBlock(Name);
+		if (!B.IsValid()) return false;
+		const TArray<TSharedPtr<FJsonValue>>* Objs = nullptr;
+		if (!B->TryGetArrayField(TEXT("objects"), Objs) || Objs->Num() == 0) return false;
+
+		auto Vec = [](const TSharedPtr<FJsonObject>& O, const TCHAR* Key, const FVector& Def)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* A = nullptr;
+			if (!O->TryGetArrayField(Key, A) || A->Num() < 3) return Def;
+			return FVector((*A)[0]->AsNumber(), (*A)[1]->AsNumber(), (*A)[2]->AsNumber());
+		};
+
+		TArray<UProceduralMeshComponent*> Comps;
+		FBoxSphereBounds All; bool bAny = false;
+		for (const TSharedPtr<FJsonValue>& V : *Objs)
+		{
+			const TSharedPtr<FJsonObject> O = V->AsObject(); if (!O.IsValid()) continue;
+			FString Ms; O->TryGetStringField(TEXT("mesh"), Ms);
+			if (Ms.IsEmpty()) continue;
+			UProceduralMeshComponent* M = NewObject<UProceduralMeshComponent>(GetTransientPackage());
+			float Radius = 100.f;
+			if (!BF6_LoadSdkModelInto(M, Ms, Radius)) continue;
+			const FVector P = Vec(O, TEXT("pos"), FVector::ZeroVector);
+			const FVector R = Vec(O, TEXT("rot"), FVector::ZeroVector);
+			const FVector S = Vec(O, TEXT("scale"), FVector::OneVector);
+			const FTransform Xf(FRotator(R.X, R.Y, R.Z), P, S);
+			g_thumbs.Scene->AddComponent(M, Xf);
+			Comps.Add(M);
+			const FBoxSphereBounds CB = M->CalcBounds(Xf);
+			All = bAny ? (All + CB) : CB;
+			bAny = true;
+		}
+		bool bOk = false;
+		if (bAny) bOk = BF6_CaptureRigTo(BF6_ThumbPathForKey(TEXT("block::") + Name), All);
+		for (UProceduralMeshComponent* M : Comps) g_thumbs.Scene->RemoveComponent(M);
+		return bOk;
+	}
 }
 
 IMPLEMENT_MODULE(FBF6UnrealSDKModule, BF6UnrealSDK)

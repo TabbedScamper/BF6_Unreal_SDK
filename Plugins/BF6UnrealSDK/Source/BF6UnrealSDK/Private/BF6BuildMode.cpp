@@ -25,6 +25,7 @@
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SSlider.h"
 #include "Containers/Ticker.h"
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
@@ -34,6 +35,8 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STileView.h"
+#include "Input/DragAndDrop.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateColor.h"
@@ -43,6 +46,10 @@
 
 #include "LevelEditor.h"
 #include "SLevelViewport.h"
+#include "Editor.h"
+#include "EditorModeManager.h"
+#include "UnrealWidgetFwd.h"
+#include "Settings/LevelEditorViewportSettings.h"
 
 // ============================================================================
 // Build Mode implementation. All UI here consumes BF6Api (engine/session logic
@@ -281,6 +288,723 @@ private:
 	}
 };
 
+// fwd (defined with the pie further down; the library's context menu uses it)
+static void BF6_PushTransient(TSharedRef<SWidget> Content, const FVector2D& Center);
+
+// ---------------------------------------------------------------------------
+// Drag payload for library tiles: drop anywhere on the map to place the object
+// there. bActive gates the full-viewport drop catcher's hit-testing so it only
+// exists while one of OUR drags is in flight.
+// ---------------------------------------------------------------------------
+class FBF6LibDragOp : public FDragDropOperation
+{
+public:
+	DRAG_DROP_OPERATOR_TYPE(FBF6LibDragOp, FDragDropOperation)
+	FString PlaceableType;
+	static bool bActive;
+
+	static TSharedRef<FBF6LibDragOp> New(const FString& InType)
+	{
+		TSharedRef<FBF6LibDragOp> Op = MakeShared<FBF6LibDragOp>();
+		Op->PlaceableType = InType;
+		Op->Construct();
+		bActive = true;
+		return Op;
+	}
+	virtual ~FBF6LibDragOp() override { bActive = false; }
+
+	virtual TSharedPtr<SWidget> GetDefaultDecorator() const override
+	{
+		return SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(10, 5))
+			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(PlaceableType)) ];
+	}
+};
+bool FBF6LibDragOp::bActive = false;
+
+// A wrapper that makes any content a drag source for placing one object
+// (the pop-out preview's DRAG INTO WORLD grip).
+class SBF6DragSource : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6DragSource) {}
+		SLATE_ARGUMENT(FString, PlaceableType)
+		SLATE_DEFAULT_SLOT(FArguments, Content)
+	SLATE_END_ARGS()
+	void Construct(const FArguments& InArgs)
+	{
+		Type = InArgs._PlaceableType;
+		ChildSlot[ InArgs._Content.Widget ];
+	}
+	virtual FReply OnMouseButtonDown(const FGeometry&, const FPointerEvent& E) override
+	{
+		return E.GetEffectingButton() == EKeys::LeftMouseButton
+			? FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton)
+			: FReply::Unhandled();
+	}
+	virtual FReply OnDragDetected(const FGeometry&, const FPointerEvent&) override
+	{
+		return FReply::Handled().BeginDragDrop(FBF6LibDragOp::New(Type));
+	}
+private:
+	FString Type;
+};
+
+// Invisible full-viewport widget that only hit-tests while a library drag is in
+// flight, so the drop lands on the map instead of dying on the level viewport.
+class SBF6DropCatcher : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6DropCatcher) {}
+	SLATE_END_ARGS()
+	void Construct(const FArguments&)
+	{
+		SetVisibility(TAttribute<EVisibility>::CreateLambda([]
+			{ return FBF6LibDragOp::bActive ? EVisibility::Visible : EVisibility::SelfHitTestInvisible; }));
+		ChildSlot[ SNullWidget::NullWidget ];
+	}
+	virtual FReply OnDragOver(const FGeometry&, const FDragDropEvent& E) override
+	{
+		return E.GetOperationAs<FBF6LibDragOp>().IsValid() ? FReply::Handled() : FReply::Unhandled();
+	}
+	virtual FReply OnDrop(const FGeometry&, const FDragDropEvent& E) override
+	{
+		TSharedPtr<FBF6LibDragOp> Op = E.GetOperationAs<FBF6LibDragOp>();
+		if (!Op.IsValid()) return FReply::Unhandled();
+		FVector W;
+		if (BF6Api::WorldFromViewportCursor(W))
+		{
+			// "block::<name>" payloads place a whole prefab
+			if (Op->PlaceableType.StartsWith(TEXT("block::"))) BF6Api::PlaceBlock(Op->PlaceableType.Mid(7), W);
+			else BF6Api::PlaceType(Op->PlaceableType, W);
+		}
+		return FReply::Handled();
+	}
+};
+
+// ---------------------------------------------------------------------------
+// The Object Library: a panel that slides up from the bottom edge of the
+// viewport like an auto-hidden taskbar. Hover the bottom edge to peek, PIN to
+// keep it up. Two scopes: THIS MAP (only what the open level allows) and FULL
+// LIBRARY (everything in the SDK, reachable from the pie). Category tabs mirror
+// the pie's categories; right-click a tile to move it to another category.
+// ---------------------------------------------------------------------------
+class SBF6LibraryPanel : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6LibraryPanel) {}
+	SLATE_END_ARGS()
+
+	static constexpr float kBodyH = 300.f;
+
+	void Construct(const FArguments&)
+	{
+		SetCanTick(true);
+		// only the strip / panel borders hit-test; empty space stays clickable
+		SetVisibility(EVisibility::SelfHitTestInvisible);
+		bool bPinSaved = false;
+		GConfig->GetBool(TEXT("BF6UnrealSDK"), TEXT("LibraryPinned"), bPinSaved, GEditorPerProjectIni);
+		GConfig->GetFloat(TEXT("BF6UnrealSDK"), TEXT("LibraryTileSize"), TileSize, GEditorPerProjectIni);
+		TileSize = FMath::Clamp(TileSize, 72.f, 200.f);
+		bPinned = bPinSaved;
+		if (bPinned) SlideTarget = 1.f;
+
+		ChildSlot
+		[
+			SNew(SVerticalBox)
+
+			// the peek strip: a slim always-there tab at the very bottom edge
+			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+			[
+				SNew(SBox).Visibility_Lambda([this]{ return Slide < 0.05f ? EVisibility::Visible : EVisibility::Collapsed; })
+				[
+					SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(26, 3))
+					.OnMouseButtonDown_Lambda([this](const FGeometry&, const FPointerEvent&){ OpenPeek(); return FReply::Handled(); })
+					[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("OBJECT LIBRARY"))) ]
+				]
+			]
+
+			// the sliding body
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(SBox).Clipping(EWidgetClipping::ClipToBounds)
+				.HeightOverride_Lambda([this]{ return FMath::Max(1.f, kBodyH * Slide); })
+				.Visibility_Lambda([this]{ return Slide > 0.01f ? EVisibility::Visible : EVisibility::Collapsed; })
+				[
+					SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(12, 8))
+					[
+						SNew(SVerticalBox)
+
+						// header: title / scope / search / count / pin / close
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 14, 0)
+							[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("OBJECT LIBRARY"))) ]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+							[ MakeScopeButton(TEXT("THIS MAP"), false) ]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4, 0, 14, 0)
+							[ MakeScopeButton(TEXT("FULL LIBRARY"), true) ]
+							+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+							[
+								SAssignNew(SearchBox, SSearchBox)
+								.HintText(FText::FromString(TEXT("Search objects...")))
+								.OnTextChanged_Lambda([this](const FText& T){ Query = T.ToString(); RebuildItems(); })
+							]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10, 0)
+							[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+								.Text_Lambda([this]{ return FText::FromString(FString::Printf(TEXT("%d shown"), Items.Num())); }) ]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
+							[
+								SNew(SBox).WidthOverride(110.f)
+								[
+									SNew(SSlider).Value_Lambda([this]{ return (TileSize - 72.f) / 128.f; })
+									.OnValueChanged_Lambda([this](float V)
+									{
+										TileSize = 72.f + V * 128.f;
+										GConfig->SetFloat(TEXT("BF6UnrealSDK"), TEXT("LibraryTileSize"), TileSize, GEditorPerProjectIni);
+									})
+								]
+							]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
+							[
+								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(8, 2))
+								.OnClicked_Lambda([this]{ SetPinned(!bPinned); return FReply::Handled(); })
+								[ SNew(STextBlock).Font(FontBold(10))
+									.ColorAndOpacity_Lambda([this]{ return FSlateColor(bPinned ? BF6Theme::Accent : BF6Theme::TextDim); })
+									.Text_Lambda([this]{ return FText::FromString(bPinned ? TEXT("PINNED") : TEXT("PIN")); }) ]
+							]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+							[
+								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(8, 2))
+								.OnClicked_Lambda([this]{ ForceClose(); return FReply::Handled(); })
+								[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("CLOSE"))) ]
+							]
+						]
+
+						// category tabs
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+						[ SNew(SScrollBox).Orientation(Orient_Horizontal) + SScrollBox::Slot()[ SAssignNew(CatRow, SHorizontalBox) ] ]
+
+						// the card grid: iso thumbnail + name caption per object
+						+ SVerticalBox::Slot().FillHeight(1)
+						[
+							SAssignNew(Tiles, STileView<TSharedPtr<BF6Api::FPlaceableInfo>>)
+							.ListItemsSource(&Items).SelectionMode(ESelectionMode::Single)
+							.ItemWidth(TAttribute<float>::CreateLambda([this]{ return TileSize; }))
+							.ItemHeight(TAttribute<float>::CreateLambda([this]{ return TileSize + 20.f; }))
+							.OnGenerateTile(this, &SBF6LibraryPanel::OnGenerateTile)
+							.OnMouseButtonClick(this, &SBF6LibraryPanel::OnCardClick)
+							.OnMouseButtonDoubleClick(this, &SBF6LibraryPanel::OnActivate)
+						]
+					]
+				]
+			]
+		];
+	}
+
+	float CurrentHeight() const { return kBodyH * Slide; }
+	bool  IsOpen() const { return SlideTarget > 0.5f; }
+
+	void OpenPeek()
+	{
+		RefreshIfStale();
+		SlideTarget = 1.f;
+	}
+
+	// the pie's FULL LIBRARY pill: pin it up in the everything scope
+	void OpenFull()
+	{
+		bFull = true;
+		SetPinned(true);
+		RefreshIfStale(true);
+		SlideTarget = 1.f;
+		if (SearchBox.IsValid()) FSlateApplication::Get().SetKeyboardFocus(SearchBox);
+	}
+
+	void ForceClose()
+	{
+		SetPinned(false);
+		SlideTarget = 0.f;
+	}
+
+	virtual void Tick(const FGeometry& G, const double T, const float D) override
+	{
+		SCompoundWidget::Tick(G, T, D);
+		const float Prev = Slide;
+		const float Step = D * 7.f;
+		Slide = SlideTarget > Slide ? FMath::Min(Slide + Step, SlideTarget) : FMath::Max(Slide - Step, SlideTarget);
+		// the panel lives in flow: its height change must re-layout the HUD above
+		if (!FMath::IsNearlyEqual(Prev, Slide)) Invalidate(EInvalidateWidgetReason::Layout);
+	}
+
+	virtual void OnMouseEnter(const FGeometry& G, const FPointerEvent& E) override
+	{
+		SCompoundWidget::OnMouseEnter(G, E);
+		// taskbar behavior: touching the bottom-edge strip slides the panel up
+		if (!IsOpen()) OpenPeek();
+	}
+
+	virtual void OnMouseLeave(const FPointerEvent& E) override
+	{
+		SCompoundWidget::OnMouseLeave(E);
+		// taskbar behavior: slide away unless pinned (or mid drag-out)
+		if (!bPinned && !FBF6LibDragOp::bActive && !GTransientMenuUp()) SlideTarget = 0.f;
+	}
+
+private:
+	static inline const FString kBlocksTab = TEXT("::blocks");
+	bool bPinned = false, bFull = false;
+	float Slide = 0.f; float SlideTarget = 0.f;
+	float TileSize = 108.f;
+	FString ActiveCat, Query, CachedLevel;
+	bool bCachedFull = false;
+	TArray<TSharedPtr<BF6Api::FPlaceableInfo>> Items;
+	TSharedPtr<STileView<TSharedPtr<BF6Api::FPlaceableInfo>>> Tiles;
+	TSharedPtr<SHorizontalBox> CatRow;
+	TSharedPtr<SSearchBox> SearchBox;
+
+	static bool GTransientMenuUp();   // defined after GTransientMenu below
+
+	void SetPinned(bool bIn)
+	{
+		bPinned = bIn;
+		GConfig->SetBool(TEXT("BF6UnrealSDK"), TEXT("LibraryPinned"), bPinned, GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
+
+	void RefreshIfStale(bool bForce = false)
+	{
+		if (!bForce && CachedLevel == BF6Api::CurrentLevel() && bCachedFull == bFull) return;
+		CachedLevel = BF6Api::CurrentLevel(); bCachedFull = bFull;
+		ActiveCat.Reset();
+		RebuildCats();
+		RebuildItems();
+	}
+
+	TSharedRef<SWidget> MakeScopeButton(const FString& Label, bool bIsFull)
+	{
+		return SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(8, 2))
+			.OnClicked_Lambda([this, bIsFull]{ bFull = bIsFull; RefreshIfStale(true); return FReply::Handled(); })
+			[ SNew(STextBlock).Font(FontBold(10))
+				.ColorAndOpacity_Lambda([this, bIsFull]{ return FSlateColor(bFull == bIsFull ? BF6Theme::Accent : BF6Theme::TextDim); })
+				.Text(FText::FromString(Label)) ];
+	}
+
+	void RebuildCats()
+	{
+		if (!CatRow.IsValid()) return;
+		CatRow->ClearChildren();
+		auto AddTab = [this](const FString& Label, const FString& CatKey)
+		{
+			CatRow->AddSlot().AutoWidth().Padding(0, 0, 4, 0)
+			[
+				SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(9, 2))
+				.OnClicked_Lambda([this, CatKey]{ ActiveCat = CatKey; RebuildItems(); return FReply::Handled(); })
+				[ SNew(STextBlock).Font(FontBold(10))
+					.ColorAndOpacity_Lambda([this, CatKey]{ return FSlateColor(ActiveCat == CatKey ? BF6Theme::Accent : BF6Theme::TextBlue); })
+					.Text(FText::FromString(Label)) ]
+			];
+		};
+		AddTab(TEXT("ALL"), FString());
+		for (const FString& C : BF6Api::LibraryCategories(bFull))
+			AddTab(C.ToUpper(), C);
+		AddTab(TEXT("BLOCKS"), kBlocksTab);   // the user's saved prefabs
+	}
+
+	static bool IsBlockItem(const TSharedPtr<BF6Api::FPlaceableInfo>& I)
+	{
+		return I.IsValid() && I->Mesh.StartsWith(TEXT("block::"));
+	}
+
+	void RebuildItems()
+	{
+		Items.Reset();
+		if (ActiveCat == kBlocksTab)
+		{
+			// blocks as cards: Mesh carries the thumb key, cost shows the count
+			for (const BF6Api::FBlockInfo& B : BF6Api::ListBlocks())
+			{
+				if (!Query.IsEmpty() && !B.Name.Contains(Query)) continue;
+				TSharedPtr<BF6Api::FPlaceableInfo> I = MakeShared<BF6Api::FPlaceableInfo>();
+				I->Type = B.Name;
+				I->Mesh = TEXT("block::") + B.Name;
+				I->Directory = B.Level;
+				I->Category = TEXT("Blocks");
+				I->PhysicsCost = B.Count;
+				Items.Add(I);
+			}
+		}
+		else
+			for (const BF6Api::FPlaceableInfo& P : BF6Api::LibraryPlaceables(ActiveCat, Query, bFull))
+				Items.Add(MakeShared<BF6Api::FPlaceableInfo>(P));
+		if (Tiles.IsValid()) Tiles->RequestListRefresh();
+	}
+
+	// double-click = quick place in front of the camera (re-placing before the
+	// first was moved swaps it, so users can audition objects in one spot).
+	// The first click of the pair opened the pop-out - close it again.
+	void OnActivate(TSharedPtr<BF6Api::FPlaceableInfo> Item)
+	{
+		if (!Item.IsValid()) return;
+		BF6Api::HideTransientMenus();
+		if (IsBlockItem(Item))
+		{
+			FVector W;
+			if (BF6Api::WorldFromViewportCenter(W)) BF6Api::PlaceBlock(Item->Type, W);
+			return;
+		}
+		BF6Api::QuickPlace(Item->Type);
+	}
+
+	// single click = the pop-out: a live preview to spin around, with place/drag
+	void OnCardClick(TSharedPtr<BF6Api::FPlaceableInfo> Item)
+	{
+		if (!Item.IsValid()) return;
+		if (IsBlockItem(Item))
+		{
+			// blocks: big composite thumb + place/drag (no single-mesh spin view)
+			const FString Name = Item->Type;
+			BF6_PushTransient(
+				SNew(SBorder).BorderImage(PanelBrush()).Padding(10.f)
+				[
+					SNew(SBox).WidthOverride(340.f)
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+						[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(Name)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ SNew(SBox).HeightOverride(280.f)
+							[ SNew(SBorder).BorderImage(InkBrush()).Padding(1.f)
+								[ SNew(SImage).Image_Lambda([Name]{ return BF6Api::GetBlockThumb(Name); }) ] ] ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 8)
+						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+							.Text(FText::FromString(FString::Printf(TEXT("%s  -  %d objects"), *BF6Api::DisplayName(Item->Directory), Item->PhysicsCost))) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+							[ MakePrimaryButton(TEXT("Place in scene"), [Name]
+								{ FVector W; if (BF6Api::WorldFromViewportCenter(W)) BF6Api::PlaceBlock(Name, W); BF6Api::HideTransientMenus(); }) ]
+							+ SHorizontalBox::Slot().AutoWidth()
+							[
+								SNew(SBF6DragSource).PlaceableType(TEXT("block::") + Name)
+								[
+									SNew(SBorder).BorderImage(PanelLightBrush()).Padding(FMargin(12, 6))
+									[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text))
+										.Text(FText::FromString(TEXT("DRAG INTO WORLD"))) ]
+								]
+							]
+						]
+					]
+				],
+				FSlateApplication::Get().GetCursorPos() - FVector2D(160.f, 460.f));
+			return;
+		}
+		const FString Mesh = Item->Mesh.IsEmpty() ? Item->Type : Item->Mesh;
+		TSharedRef<SBF6PreviewViewport> PV = SNew(SBF6PreviewViewport);
+		PV->ShowModel(Mesh);
+		// open clear of the cursor so a double-click's second click still lands
+		// on the card underneath (double-click = quick place)
+		const FVector2D At = FSlateApplication::Get().GetCursorPos() - FVector2D(190.f, 510.f);
+		BF6_PushTransient(
+			SNew(SBorder).BorderImage(PanelBrush()).Padding(10.f)
+			[
+				SNew(SBox).WidthOverride(400.f).HeightOverride(470.f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+						[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+							.OverflowPolicy(ETextOverflowPolicy::Ellipsis).Text(FText::FromString(Item->Type)) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+							.Text(FText::FromString(FString::Printf(TEXT("%s   cost %d"), *Item->Category, Item->PhysicsCost))) ]
+					]
+					+ SVerticalBox::Slot().FillHeight(1)
+					[ SNew(SBorder).BorderImage(InkBrush()).Padding(2.f)[ PV ] ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 6)
+					[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+						.Text(FText::FromString(TEXT("drag in the preview to spin the model"))) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+						[ MakePrimaryButton(TEXT("Place in scene"), [Item]
+							{ BF6Api::QuickPlace(Item->Type); BF6Api::HideTransientMenus(); }) ]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[
+							SNew(SBF6DragSource).PlaceableType(Item->Type)
+							[
+								SNew(SBorder).BorderImage(PanelLightBrush()).Padding(FMargin(12, 6))
+								[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text))
+									.Text(FText::FromString(TEXT("DRAG INTO WORLD"))) ]
+							]
+						]
+					]
+				]
+			],
+			At);
+	}
+
+	void OpenMoveMenu(TSharedPtr<BF6Api::FPlaceableInfo> Item, const FVector2D& ScreenPos)
+	{
+		TSharedRef<SVerticalBox> Box = SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+				.Text(FText::FromString(FString::Printf(TEXT("MOVE  %s  TO..."), *Item->Type))) ];
+		auto AddChoice = [this, Item, Box](const FString& Label, const FString& NewCat)
+		{
+			Box->AddSlot().AutoHeight()
+			[
+				SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(8, 3)).HAlign(HAlign_Left)
+				.OnClicked_Lambda([this, Item, NewCat]
+				{
+					BF6Api::SetTypeCategory(Item->Type, NewCat);
+					BF6Api::HideTransientMenus();
+					RebuildCats(); RebuildItems();
+					return FReply::Handled();
+				})
+				[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Label)) ]
+			];
+		};
+		for (const FString& C : BF6Api::LibraryCategories(bFull))
+			if (C != Item->Category) AddChoice(C, C);
+		AddChoice(TEXT("(reset to default)"), FString());
+		// free-typed new category
+		Box->AddSlot().AutoHeight().Padding(0, 4, 0, 0)
+		[
+			SNew(SBox).WidthOverride(180.f)
+			[
+				SNew(SEditableTextBox).HintText(FText::FromString(TEXT("new category...")))
+				.OnTextCommitted_Lambda([this, Item](const FText& T, ETextCommit::Type C)
+				{
+					if (C != ETextCommit::OnEnter || T.IsEmpty()) return;
+					BF6Api::SetTypeCategory(Item->Type, T.ToString().TrimStartAndEnd());
+					BF6Api::HideTransientMenus();
+					RebuildCats(); RebuildItems();
+				})
+			]
+		];
+		BF6_PushTransient(
+			SNew(SBorder).BorderImage(PanelBrush()).Padding(8.f)
+			[ SNew(SBox).MaxDesiredHeight(320.f)[ SNew(SScrollBox) + SScrollBox::Slot()[ Box ] ] ],
+			ScreenPos);
+	}
+
+	TSharedRef<ITableRow> OnGenerateTile(TSharedPtr<BF6Api::FPlaceableInfo> Item, const TSharedRef<STableViewBase>& Owner)
+	{
+		const FString Mesh = Item->Mesh.IsEmpty() ? Item->Type : Item->Mesh;
+		return SNew(STableRow<TSharedPtr<BF6Api::FPlaceableInfo>>, Owner).Padding(FMargin(3, 3))
+			.OnDragDetected_Lambda([Item](const FGeometry&, const FPointerEvent&)
+			{
+				if (!Item.IsValid()) return FReply::Unhandled();
+				// blocks travel as "block::<name>" so the drop places the prefab
+				return FReply::Handled().BeginDragDrop(FBF6LibDragOp::New(IsBlockItem(Item) ? Item->Mesh : Item->Type));
+			})
+			[
+				// a map-selector-style card: iso render on top, caption bar below
+				SNew(SBorder).BorderImage(InkBrush()).Padding(0.f)
+				.OnMouseButtonDown_Lambda([this, Item](const FGeometry&, const FPointerEvent& E)
+				{
+					if (E.GetEffectingButton() == EKeys::RightMouseButton && Item.IsValid())
+					{
+						if (IsBlockItem(Item))
+						{
+							if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(
+								TEXT("Delete block '%s'? The file is removed permanently."), *Item->Type))) == EAppReturnType::Yes)
+							{ BF6Api::DeleteBlock(Item->Type); RebuildItems(); }
+						}
+						else OpenMoveMenu(Item, E.GetScreenSpacePosition());
+						return FReply::Handled();
+					}
+					return FReply::Unhandled();
+				})
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().FillHeight(1)
+					[
+						SNew(SOverlay)
+						+ SOverlay::Slot()
+						[ SNew(SImage).Image_Lambda([Mesh]{ return BF6Api::GetModelThumb(Mesh); }) ]
+						+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center)
+						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+							.Visibility_Lambda([Mesh]{ return BF6Api::GetModelThumb(Mesh) ? EVisibility::Collapsed : EVisibility::HitTestInvisible; })
+							.Text(FText::FromString(TEXT("rendering..."))) ]
+					]
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SBorder).BorderImage(PanelLightBrush()).Padding(FMargin(5, 2))
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+							[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::Text))
+								.OverflowPolicy(ETextOverflowPolicy::Ellipsis).Text(FText::FromString(Item->Type)) ]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4, 0, 0, 0)
+							[ SNew(STextBlock).Font(FontReg(8)).ColorAndOpacity(FSlateColor(Item->PhysicsCost > 0 ? BF6Theme::AccentDim : BF6Theme::TextDim))
+								.Text(FText::FromString(FString::Printf(TEXT("%d"), Item->PhysicsCost))) ]
+						]
+					]
+				]
+			];
+	}
+};
+
+// The one live library panel (the build overlay owns the widget).
+static TWeakPtr<SBF6LibraryPanel> GLibraryPanel;
+
+static void BF6_MiniToast(const FString& Msg);   // defined with the input handler
+
+// ---------------------------------------------------------------------------
+// "SAVE BLOCK": name the current selection and store it as a reusable prefab.
+// ---------------------------------------------------------------------------
+class SBF6SaveBlockPopup : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6SaveBlockPopup) {}
+	SLATE_END_ARGS()
+	void Construct(const FArguments&)
+	{
+		ChildSlot
+		[
+			SNew(SBorder).BorderImage(PanelBrush()).Padding(12.f)
+			[
+				SNew(SBox).WidthOverride(280.f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+					[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("SAVE SELECTION AS BLOCK"))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+					[
+						SNew(SEditableTextBox).HintText(FText::FromString(TEXT("block name... (Enter saves)")))
+						.OnTextCommitted_Lambda([](const FText& T, ETextCommit::Type C)
+						{
+							if (C != ETextCommit::OnEnter || T.IsEmpty()) return;
+							const int32 N = BF6Api::SaveBlockFromSelection(T.ToString());
+							if (N > 0) BF6_MiniToast(FString::Printf(TEXT("Block '%s' saved (%d objects, %s)."),
+								*T.ToString(), N, *BF6Api::DisplayName(BF6Api::CurrentLevel())));
+							BF6Api::HideTransientMenus();
+						})
+					]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ SNew(STextBlock).Font(FontReg(9)).AutoWrapText(true).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+						.Text(FText::FromString(TEXT("Place it later from the radial's BLOCKS pill. It arrives grouped; UNGROUP splits it."))) ]
+				]
+			]
+		];
+	}
+};
+
+// ---------------------------------------------------------------------------
+// "BLOCKS": browse saved prefabs - composite preview, source map, object count.
+// Double-click places at the spot the radial was aimed at.
+// ---------------------------------------------------------------------------
+class SBF6BlocksPopup : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6BlocksPopup) {}
+	SLATE_END_ARGS()
+	void Construct(const FArguments&)
+	{
+		Refresh();
+		ChildSlot
+		[
+			SNew(SBorder).BorderImage(PanelBrush()).Padding(10.f)
+			[
+				SNew(SBox).WidthOverride(480.f).HeightOverride(420.f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("BLOCKS"))) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("double-click = place at the aimed spot"))) ]
+					]
+					+ SVerticalBox::Slot().FillHeight(1)
+					[
+						SAssignNew(List, SListView<TSharedPtr<BF6Api::FBlockInfo>>)
+						.ListItemsSource(&Blocks).SelectionMode(ESelectionMode::Single)
+						.OnGenerateRow(this, &SBF6BlocksPopup::OnGenerateRow)
+						.OnMouseButtonDoubleClick(this, &SBF6BlocksPopup::OnPlace)
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+						[ MakeToolButton(TEXT("Open blocks folder"), []{ BF6Api::OpenBlocksFolder(); }) ]
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+						[ SNew(STextBlock).Font(FontReg(9)).AutoWrapText(true).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+							.Text(FText::FromString(TEXT("Share a block by sending its .json from this folder; drop received ones in and reopen."))) ]
+					]
+				]
+			]
+		];
+	}
+
+private:
+	TArray<TSharedPtr<BF6Api::FBlockInfo>> Blocks;
+	TSharedPtr<SListView<TSharedPtr<BF6Api::FBlockInfo>>> List;
+
+	void Refresh()
+	{
+		Blocks.Reset();
+		for (const BF6Api::FBlockInfo& B : BF6Api::ListBlocks())
+			Blocks.Add(MakeShared<BF6Api::FBlockInfo>(B));
+		if (List.IsValid()) List->RequestListRefresh();
+	}
+
+	void OnPlace(TSharedPtr<BF6Api::FBlockInfo> Item)
+	{
+		if (!Item.IsValid()) return;
+		extern FVector GBF6PendingWorld;
+		BF6Api::PlaceBlock(Item->Name, GBF6PendingWorld);
+		BF6Api::HideTransientMenus();
+	}
+
+	TSharedRef<ITableRow> OnGenerateRow(TSharedPtr<BF6Api::FBlockInfo> Item, const TSharedRef<STableViewBase>& Owner)
+	{
+		const bool bOtherMap = !Item->Level.IsEmpty() && Item->Level != BF6Api::CurrentLevel();
+		return SNew(STableRow<TSharedPtr<BF6Api::FBlockInfo>>, Owner).Padding(FMargin(2, 3))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+				[
+					SNew(SBox).WidthOverride(56.f).HeightOverride(56.f)
+					[
+						SNew(SBorder).BorderImage(InkBrush()).Padding(1.f)
+						[ SNew(SImage).Image_Lambda([Name = Item->Name]{ return BF6Api::GetBlockThumb(Name); }) ]
+					]
+				]
+				+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Item->Name)) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ SNew(STextBlock).Font(FontReg(9))
+						.ColorAndOpacity(FSlateColor(bOtherMap ? BF6Theme::AccentDim : BF6Theme::TextDim))
+						.Text(FText::FromString(FString::Printf(TEXT("%s  -  %d objects%s"),
+							*BF6Api::DisplayName(Item->Level), Item->Count, bOtherMap ? TEXT("  (other map)") : TEXT("")))) ]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 2))
+					.OnClicked_Lambda([this, Item]
+					{
+						if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(
+							TEXT("Delete block '%s'? The file is removed permanently."), *Item->Name))) == EAppReturnType::Yes)
+						{ BF6Api::DeleteBlock(Item->Name); Refresh(); }
+						return FReply::Handled();
+					})
+					[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("delete"))) ]
+				]
+			];
+	}
+};
+
 // ---------------------------------------------------------------------------
 // Directional pie menu (Blender-style). Fills the viewport (hit-test invisible -
 // the input handler drives it). Wedges ring the centre; the highlighted wedge is
@@ -304,6 +1028,12 @@ public:
 			Cats = BF6Api::Categories();
 			Subs.Reset();
 			for (const FString& C : Cats) Subs.Add(FString::Printf(TEXT("%d"), BF6Api::CategoryCount(C)));
+			// pins the Object Library open on everything the SDK has, any map
+			Cats.Add(TEXT("FULL LIBRARY"));
+			Subs.Add(TEXT("search everything"));
+			// the user's own prefabs
+			Cats.Add(TEXT("BLOCKS"));
+			Subs.Add(FString::Printf(TEXT("%d saved"), BF6Api::ListBlocks().Num()));
 		}
 		Subs.SetNum(Cats.Num());
 		const int32 N = FMath::Max(1, Cats.Num());
@@ -486,9 +1216,23 @@ public:
 		// The HUD spans the whole viewport: empty space must pass clicks through
 		// to the level viewport below, so only the actual bars/buttons hit-test.
 		SetVisibility(EVisibility::SelfHitTestInvisible);
+		// The library panel sits IN FLOW below the HUD canvas: when it slides up
+		// its desired height grows, the canvas shrinks, and every bottom-anchored
+		// panel rides up with it through plain layout (slot-offset attribute
+		// bindings proved unreliable for per-frame animation).
 		ChildSlot
 		[
-			SNew(SConstraintCanvas).Visibility(EVisibility::SelfHitTestInvisible)
+			SNew(SVerticalBox).Visibility(EVisibility::SelfHitTestInvisible)
+
+			+ SVerticalBox::Slot().FillHeight(1.f)
+			[
+			SAssignNew(RootCanvas, SConstraintCanvas).Visibility(EVisibility::SelfHitTestInvisible)
+
+			// --- drop catcher: hit-tests ONLY while a library tile drag is live,
+			// so the drop lands on the map through all the other overlay layers ---
+			+ SConstraintCanvas::Slot()
+				.Anchors(FAnchors(0.f, 0.f, 1.f, 1.f)).Offset(FMargin(0.f))
+				[ SNew(SBF6DropCatcher) ]
 
 			// --- budget bar (top, full width) ---
 			+ SConstraintCanvas::Slot()
@@ -574,7 +1318,14 @@ public:
 					]
 				]
 
+			]   // (end of the HUD canvas slot)
+
+			// --- the Object Library: in flow at the very bottom ---
+			+ SVerticalBox::Slot().AutoHeight()
+			[ SAssignNew(Library, SBF6LibraryPanel) ]
+
 		];
+		GLibraryPanel = Library;
 	}
 
 	virtual void Tick(const FGeometry& G, const double T, const float D) override
@@ -582,6 +1333,7 @@ public:
 		SCompoundWidget::Tick(G, T, D);
 		BF6Api::TickZoneAutoEdit();   // selecting a zone starts point editing, like Godot
 		BF6Api::TickVolumeEdit();     // live zone-wall rebuild while handles are dragged
+		BF6Api::TickGroupEdit();      // group edit mode: members-only selection
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
 		// the tool's own autosave: closing the editor can never cost more than
 		// a minute of work (session files are tiny)
@@ -597,6 +1349,8 @@ private:
 	double LastCalc = 0.0;
 	double LastAutoSave = 0.0;
 	TSharedPtr<SEditableTextBox> NameBox;
+	TSharedPtr<SBF6LibraryPanel> Library;
+	TSharedPtr<SConstraintCanvas> RootCanvas;
 	FSimpleDelegate OnChooseMap;
 };
 
@@ -1022,6 +1776,9 @@ namespace
 	static const int32            kPiePropsPerPage = 10;
 }
 
+// the library's auto-hide must not fire while its context menu is up
+bool SBF6LibraryPanel::GTransientMenuUp() { return GTransientMenu.IsValid(); }
+
 static bool BF6Pie_Active() { return GPie.IsValid(); }
 
 // Push a popup and ALWAYS clear our pointer when the menu stack dismisses it
@@ -1061,6 +1818,13 @@ static void BF6Pie_Attach()
 	{
 		GPieProps = BF6Api::PropsForType(GPieTargetType);
 		if (BF6Api::IsVolumeActor(GPieTarget.Get())) { Items.Add(TEXT("EDIT POINTS")); Subs.Add(TEXT("zone shape")); }
+		// selection tools, on every placed object
+		Items.Add(TEXT("SELECT SIMILAR")); Subs.Add(TEXT("every copy on the map"));
+		if (BF6Api::SelectionGrouped() && !BF6Api::IsGroupEditing())
+		{ Items.Add(TEXT("EDIT GROUP")); Subs.Add(TEXT("tab into its members")); }
+		Items.Add(TEXT("GROUP"));          Subs.Add(TEXT("move as one"));
+		Items.Add(TEXT("UNGROUP"));        Subs.Add(TEXT("split group or block"));
+		Items.Add(TEXT("SAVE BLOCK"));     Subs.Add(TEXT("selection as a prefab"));
 		int32 Start = GPiePage * kPiePropsPerPage;
 		if (Start >= GPieProps.Num()) { GPiePage = 0; Start = 0; }
 		for (int32 i = Start; i < GPieProps.Num() && i < Start + kPiePropsPerPage; i++)
@@ -1170,6 +1934,11 @@ static void BF6Pie_Confirm()
 		AActor* Target = GPieTarget.Get();
 		if (!Target) return;
 		if (Pick == TEXT("EDIT POINTS")) { BF6Api::BeginVolumeEdit(Target); return; }
+		if (Pick == TEXT("SELECT SIMILAR")) { BF6Api::SelectSimilar(); return; }
+		if (Pick == TEXT("EDIT GROUP")) { BF6Api::BeginGroupEditFromSelection(); return; }
+		if (Pick == TEXT("GROUP"))   { BF6Api::GroupSelection(); return; }
+		if (Pick == TEXT("UNGROUP")) { BF6Api::UngroupSelection(); return; }
+		if (Pick == TEXT("SAVE BLOCK")) { BF6_PushTransient(SNew(SBF6SaveBlockPopup), Center); return; }
 		if (Pick == TEXT("MORE...")) { GPiePage++; BF6Pie_Attach(); return; }
 		const BF6Api::FPropDef* Def = GPieProps.FindByPredicate([&](const BF6Api::FPropDef& D){ return D.Name == Pick; });
 		if (!Def) return;
@@ -1183,7 +1952,18 @@ static void BF6Pie_Confirm()
 		return;
 	}
 
-	// Place mode: open the category's object list
+	// Place mode: FULL LIBRARY pins the object library up; BLOCKS browses the
+	// user's prefabs; a category opens its object list
+	if (Pick == TEXT("FULL LIBRARY"))
+	{
+		if (TSharedPtr<SBF6LibraryPanel> L = GLibraryPanel.Pin()) L->OpenFull();
+		return;
+	}
+	if (Pick == TEXT("BLOCKS"))
+	{
+		BF6_PushTransient(SNew(SBF6BlocksPopup), Center);
+		return;
+	}
 	BF6_PushTransient(SNew(SBF6CategoryPopup).Category(Pick), Center);
 }
 
@@ -1193,6 +1973,165 @@ static void BF6Pie_Cancel() { BF6Pie_Close(); }
 // Input handler: SPACE over the viewport opens the pie; mouse direction picks a
 // wedge; SPACE or LEFT-CLICK confirms; centre + confirm, or ESC, cancels.
 // ---------------------------------------------------------------------------
+// True while the user is typing in any text field - our single-key binds must
+// never fire then (T, Space, F1 are all normal characters).
+static bool BF6_TextFieldFocused()
+{
+	TSharedPtr<SWidget> W = FSlateApplication::Get().GetKeyboardFocusedWidget();
+	return W.IsValid() && W->GetTypeAsString().Contains(TEXT("EditableText"));
+}
+
+static void BF6_MiniToast(const FString& Msg)
+{
+	FNotificationInfo Info(FText::FromString(Msg));
+	Info.ExpireDuration = 1.6f;
+	FSlateNotificationManager::Get().AddNotification(Info);
+}
+
+// ---- Godot-style hold-Ctrl snapping ----
+// While Ctrl is down, grid + angle snap turn on at Godot's default increments
+// (1 m / 15 degrees); releasing restores the user's own toolbar toggles.
+static bool  GSnapHeld = false;
+static bool  GSnapPrevGrid = false, GSnapPrevRot = false;
+static int32 GSnapPrevPosIdx = 0, GSnapPrevRotIdx = 0;
+
+static void BF6_SnapHold(bool bDown)
+{
+	ULevelEditorViewportSettings* S = GetMutableDefault<ULevelEditorViewportSettings>();
+	if (!S) return;
+	if (bDown && !GSnapHeld)
+	{
+		GSnapHeld = true;
+		GSnapPrevGrid = S->GridEnabled; GSnapPrevRot = S->RotGridEnabled;
+		GSnapPrevPosIdx = S->CurrentPosGridSize; GSnapPrevRotIdx = S->CurrentRotGridSize;
+		S->GridEnabled = true; S->RotGridEnabled = true;
+		for (int32 i = 0; i < S->DecimalGridSizes.Num(); i++)
+			if (FMath::IsNearlyEqual(S->DecimalGridSizes[i], 100.f)) { S->CurrentPosGridSize = i; break; }
+		for (int32 i = 0; i < S->CommonRotGridSizes.Num(); i++)
+			if (FMath::IsNearlyEqual(S->CommonRotGridSizes[i], 15.f)) { S->CurrentRotGridSize = i; break; }
+	}
+	else if (!bDown && GSnapHeld)
+	{
+		GSnapHeld = false;
+		S->GridEnabled = GSnapPrevGrid; S->RotGridEnabled = GSnapPrevRot;
+		S->CurrentPosGridSize = GSnapPrevPosIdx; S->CurrentRotGridSize = GSnapPrevRotIdx;
+	}
+}
+
+// ---- the F1 controls overlay (Portal-styled cheat sheet) ----
+static TSharedPtr<SWidget>      GControls;
+static TWeakPtr<SLevelViewport> GControlsVP;
+static void BF6_ControlsClose();
+
+namespace
+{
+	struct FBF6Bind { const TCHAR* Keys; const TCHAR* What; bool bGodot; };
+
+	TSharedRef<SWidget> MakeKeyChip(const FString& Keys)
+	{
+		static FSlateColorBrush ChipBg(FLinearColor::White);
+		return SNew(SBorder)
+			.BorderImage(&ChipBg).BorderBackgroundColor(BF6Theme::PanelLight)
+			.Padding(FMargin(8, 2))
+			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(BF6Theme::Text).Text(FText::FromString(Keys)) ];
+	}
+
+	TSharedRef<SWidget> MakeBindRow(const FBF6Bind& B)
+	{
+		TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[ SNew(SBox).WidthOverride(190).HAlign(HAlign_Left) [ MakeKeyChip(B.Keys) ] ]
+			+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).Padding(10, 0, 0, 0)
+			[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(BF6Theme::TextBlue).Text(FText::FromString(B.What)) ];
+		if (B.bGodot)
+			Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0, 0, 0)
+			[ SNew(STextBlock).Font(FontBold(8)).ColorAndOpacity(BF6Theme::TextDim).Text(FText::FromString(TEXT("SAME AS GODOT"))) ];
+		return Row;
+	}
+
+	TSharedRef<SWidget> MakeBindSection(const FString& Title, const TArray<FBF6Bind>& Binds)
+	{
+		TSharedRef<SVerticalBox> Box = SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 14, 0, 6)
+			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(BF6Theme::TextDim).Text(FText::FromString(Title)) ];
+		for (const FBF6Bind& B : Binds)
+			Box->AddSlot().AutoHeight().Padding(0, 3) [ MakeBindRow(B) ];
+		return Box;
+	}
+
+	TSharedRef<SWidget> BF6_ControlsPanel()
+	{
+		static FSlateColorBrush ScrimBrush(FLinearColor(0.f, 0.f, 0.f, 0.65f));
+		static FSlateColorBrush LineBrush(FLinearColor::White);
+		static FSlateColorBrush PanelBrush(FLinearColor::White);
+
+		const TArray<FBF6Bind> Camera = {
+			{ TEXT("RMB + WASD"),        TEXT("Fly the camera (scroll wheel changes speed)"), true },
+			{ TEXT("F"),                 TEXT("Frame the selected object"), true },
+			{ TEXT("Alt + LMB"),         TEXT("Orbit around the selection"), false } };
+		const TArray<FBF6Bind> Transform = {
+			{ TEXT("Q / W / E / R"),     TEXT("Select / Move / Rotate / Scale"), true },
+			{ TEXT("Hold Ctrl"),         TEXT("Snap while dragging (1 m, 15 degrees)"), true },
+			{ TEXT("T"),                 TEXT("Toggle local / world space"), true },
+			{ TEXT("Ctrl + D"),          TEXT("Duplicate the selection"), true },
+			{ TEXT("Del"),               TEXT("Delete the selection"), true },
+			{ TEXT("Ctrl + Z / Ctrl + Shift + Z"), TEXT("Undo / Redo"), true } };
+		const TArray<FBF6Bind> Build = {
+			{ TEXT("Space"),             TEXT("Object radial at the crosshair; with a gameplay object selected, its attributes"), false },
+			{ TEXT("Double-click"),      TEXT("Place the highlighted library object"), false },
+			{ TEXT("Esc"),               TEXT("Cancel / close / back"), false } };
+		const TArray<FBF6Bind> Zones = {
+			{ TEXT("Click a zone"),      TEXT("Its points appear for editing"), true },
+			{ TEXT("Ctrl + LMB"),        TEXT("Add a point on the nearest edge"), true },
+			{ TEXT("Ctrl + RMB"),        TEXT("Delete the point under the cursor"), true },
+			{ TEXT("Enter or Esc"),      TEXT("Finish editing the zone"), false } };
+
+		return SNew(SBorder)
+			.BorderImage(&ScrimBrush)
+			.HAlign(HAlign_Center).VAlign(VAlign_Center)
+			.OnMouseButtonDown_Lambda([](const FGeometry&, const FPointerEvent&) { BF6_ControlsClose(); return FReply::Handled(); })
+			[
+				SNew(SBox).WidthOverride(680)
+				[
+					SNew(SBorder).BorderImage(&LineBrush).BorderBackgroundColor(BF6Theme::Line).Padding(1)
+					[
+						SNew(SBorder).BorderImage(&PanelBrush).BorderBackgroundColor(BF6Theme::Panel).Padding(FMargin(28, 20, 28, 22))
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot().AutoHeight()
+							[ SNew(STextBlock).Font(FontBold(16)).ColorAndOpacity(BF6Theme::Text).Text(FText::FromString(TEXT("CONTROLS"))) ]
+							+ SVerticalBox::Slot().AutoHeight() [ MakeBindSection(TEXT("CAMERA"), Camera) ]
+							+ SVerticalBox::Slot().AutoHeight() [ MakeBindSection(TEXT("TRANSFORM"), Transform) ]
+							+ SVerticalBox::Slot().AutoHeight() [ MakeBindSection(TEXT("BUILDING"), Build) ]
+							+ SVerticalBox::Slot().AutoHeight() [ MakeBindSection(TEXT("ZONES"), Zones) ]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 18, 0, 0)
+							[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(BF6Theme::TextDim).Text(FText::FromString(TEXT("F1, Esc, or click anywhere to close. Sessions autosave every 60 seconds."))) ]
+						]
+					]
+				]
+			];
+	}
+}
+
+static void BF6_ControlsClose()
+{
+	if (GControls.IsValid())
+		if (TSharedPtr<SLevelViewport> VP = GControlsVP.Pin())
+			VP->RemoveOverlayWidget(GControls.ToSharedRef());
+	GControls.Reset(); GControlsVP.Reset();
+}
+
+static void BF6_ControlsToggle()
+{
+	if (GControls.IsValid()) { BF6_ControlsClose(); return; }
+	FLevelEditorModule& LE = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
+	if (!VP.IsValid()) return;
+	GControls = BF6_ControlsPanel();
+	VP->AddOverlayWidget(GControls.ToSharedRef(), 200);
+	GControlsVP = VP;
+}
+
 class FBF6InputProcessor : public IInputProcessor
 {
 public:
@@ -1201,6 +2140,35 @@ public:
 	virtual bool HandleKeyDownEvent(FSlateApplication& App, const FKeyEvent& E) override
 	{
 		const FKey K = E.GetKey();
+		// typing in a text box: none of our binds may fire
+		if (BF6_TextFieldFocused()) return false;
+
+		// Godot-style hold-Ctrl snapping (never consumed - Ctrl still combines)
+		if ((K == EKeys::LeftControl || K == EKeys::RightControl) && !E.IsRepeat() && BF6Api::IsBuildOverlayActive())
+			BF6_SnapHold(true);
+
+		// Godot's redo chord alongside Unreal's Ctrl+Y
+		if (K == EKeys::Z && E.IsControlDown() && E.IsShiftDown() && BF6Api::IsBuildOverlayActive())
+		{
+			if (GEditor) GEditor->RedoTransaction();
+			return true;
+		}
+		// Godot's local/world toggle
+		if (K == EKeys::T && !E.IsControlDown() && !E.IsShiftDown() && !E.IsAltDown()
+			&& BF6Api::IsBuildOverlayActive() && !GTransientMenu.IsValid() && !BF6Pie_Active())
+		{
+			FEditorModeTools& MT = GLevelEditorModeTools();
+			const bool bWorld = MT.GetCoordSystem() == COORD_World;
+			MT.SetCoordSystem(bWorld ? COORD_Local : COORD_World);
+			BF6_MiniToast(bWorld ? TEXT("Local space") : TEXT("World space"));
+			return true;
+		}
+		// the controls cheat sheet
+		if (K == EKeys::F1 && BF6Api::IsBuildOverlayActive() && !E.IsRepeat())
+		{
+			BF6_ControlsToggle();
+			return true;
+		}
 		if (K == EKeys::SpaceBar)
 		{
 			if (BF6Pie_Active()) { if (!E.IsRepeat()) BF6Pie_Confirm(); return true; }
@@ -1214,9 +2182,13 @@ public:
 		}
 		if (K == EKeys::Escape)
 		{
+			if (GControls.IsValid()) { BF6_ControlsClose(); return true; }
 			if (BF6Pie_Active()) { BF6Pie_Cancel(); return true; }
+			if (TSharedPtr<SBF6LibraryPanel> L = GLibraryPanel.Pin())
+				if (L->IsOpen() && !GTransientMenu.IsValid()) { L->ForceClose(); return true; }
 			if (BF6Api::IsLinkPicking()) { BF6Api::CancelLinkPick(); return true; }
 			if (BF6Api::IsVolumeEditing()) { BF6Api::FinishVolumeEdit(); return true; }
+			if (BF6Api::IsGroupEditing()) { BF6Api::FinishGroupEdit(); BF6_MiniToast(TEXT("Group locked.")); return true; }
 			// on the map screen with a session running: ESC returns to the build
 			if (GRoot.IsValid() && !GRoot->IsBuildScreen() && !BF6Api::CurrentLevel().IsEmpty() && !GTransientMenu.IsValid())
 			{
@@ -1230,6 +2202,21 @@ public:
 			BF6Api::FinishVolumeEdit();
 			return true;
 		}
+		// ...and locks a group being edited
+		if (K == EKeys::Enter && !BF6Pie_Active() && !GTransientMenu.IsValid() && BF6Api::IsGroupEditing())
+		{
+			BF6Api::FinishGroupEdit();
+			BF6_MiniToast(TEXT("Group locked."));
+			return true;
+		}
+		return false;
+	}
+
+	virtual bool HandleKeyUpEvent(FSlateApplication& App, const FKeyEvent& E) override
+	{
+		// always restore snapping on Ctrl release, even if focus moved mid-hold
+		if (E.GetKey() == EKeys::LeftControl || E.GetKey() == EKeys::RightControl)
+			BF6_SnapHold(false);
 		return false;
 	}
 
@@ -1242,7 +2229,20 @@ public:
 
 	virtual bool HandleMouseButtonDownEvent(FSlateApplication& App, const FPointerEvent& E) override
 	{
+		if (GControls.IsValid()) { BF6_ControlsClose(); return true; }
 		if (BF6Pie_Active() && E.GetEffectingButton() == EKeys::LeftMouseButton) { BF6Pie_Confirm(); return true; }
+
+		// Godot's zone gestures: Ctrl+LMB adds a point on the nearest edge
+		// (where the hover marker sits), Ctrl+RMB deletes the nearest point
+		if (E.IsControlDown() && BF6Api::IsVolumeEditing() && !BF6Pie_Active())
+		{
+			FVector W;
+			if (E.GetEffectingButton() == EKeys::LeftMouseButton && BF6Api::WorldFromViewportCursor(W))
+			{ BF6Api::VolumeAddPointAt(W); return true; }
+			if (E.GetEffectingButton() == EKeys::RightMouseButton && BF6Api::WorldFromViewportCursor(W))
+			{ BF6Api::VolumeDeletePointAt(W); return true; }
+		}
+
 		if (E.GetEffectingButton() == EKeys::RightMouseButton)
 		{
 			bRightDown = true;
@@ -1321,10 +2321,12 @@ void BF6Api::DetachUI()
 	{
 		BF6_LeakForExit(GTransientMenu);
 		BF6_LeakForExit(GPie); BF6_LeakForExit(GPieViewport);
+		BF6_LeakForExit(GControls);
 		BF6_LeakForExit(GRoot); BF6_LeakForExit(GRootViewport);
 		return;
 	}
 	BF6Pie_Close();
+	BF6_ControlsClose();
 	HideTransientMenus();
 	if (GRoot.IsValid() && GRootViewport.IsValid())
 		GRootViewport->RemoveOverlayWidget(GRoot.ToSharedRef());

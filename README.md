@@ -37,13 +37,13 @@ Every [release](../../releases/latest) has two downloads. Which one you want:
 
 1. Install Unreal Engine 5.8 from the Epic Games Launcher.
 2. Download the **Project** zip from the latest release and unzip it anywhere.
-3. Open `BF6_High_Poly.uproject`.
+3. Open `BF6_Unreal_SDK.uproject`.
 4. On first launch the tool asks for your unzipped Portal SDK folder. Point it at the SDK and hit **Import SDK data**. The tool copies the catalogue, parses every map's base setup, and converts all 9,700+ low poly models and every map mesh by driving the SDK's own bundled Godot in the background, with live progress. This runs once and takes a while; grab a coffee.
 5. Pick a map and build.
 
 From then on, new versions install themselves: the tool checks this repo on launch and offers a one-click update.
 
-**Building from source instead:** clone the repo and open `BF6_High_Poly.uproject`; Unreal compiles the plugin on first open (requires Visual Studio 2022 with the C++ game development workload).
+**Building from source instead:** clone the repo and open `BF6_Unreal_SDK.uproject`; Unreal compiles the plugin on first open (requires Visual Studio 2022 with the C++ game development workload).
 
 When a new SDK version drops, unzip it and run **SDK Setup** again from the map screen. The import skips everything already converted, so a re-sync only processes what changed.
 
@@ -58,7 +58,7 @@ When a new SDK version drops, unzip it and run **SDK Setup** again from the map 
 ## Roadmap
 
 - Model colors and materials, so the low poly models look as good as they do in the Godot SDK
-- Drag objects straight from the library into the world
+- A Godot-style camera option (middle mouse orbit, Shift+middle mouse pan)
 - A wide-screen hotkey build mode for faster placement
 - High-poly overlay as a separate add-on plugin: full-detail meshes, materials, and extended terrain decoded from the game itself
 
@@ -66,7 +66,7 @@ When a new SDK version drops, unzip it and run **SDK Setup** again from the map 
 
 The tool is in open beta and every report helps.
 
-- **Bugs**: open an [issue](../../issues). Include what you did, what happened, and the log from `Saved/Logs/BF6_High_Poly.log` (attach the file, or the last 50 lines). If the editor crashed, the crash folder under `Saved/Crashes` is gold.
+- **Bugs**: open an [issue](../../issues). Include what you did, what happened, and the newest `.log` from `Saved/Logs` (attach the file, or the last 50 lines). If the editor crashed, the crash folder under `Saved/Crashes` is gold.
 - **Ideas and suggestions**: open an issue with the feature request template, or start a [discussion](../../discussions).
 - **Updates**: the tool checks this repo's releases on launch. When a new version is out you can install it from inside the editor.
 

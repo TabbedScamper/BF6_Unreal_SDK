@@ -18,6 +18,7 @@ namespace BF6Api
 		FString Type;
 		FString Directory;
 		FString Mesh;
+		FString Category;      // effective category (user override, else top directory)
 		int32   PhysicsCost = 0;
 	};
 
@@ -40,6 +41,16 @@ namespace BF6Api
 	// Placeables in a category, optional fuzzy filter, capped for the popup list.
 	TArray<FPlaceableInfo> PlaceablesIn(const FString& Category, const FString& Query, int32 Max = 400);
 
+	// ---- the slide-up Object Library ----
+	// Categories/objects for the library panel. bAllLevels=false browses only
+	// what is placeable on the OPEN map; true is the Full Library (everything).
+	// Empty Category = all categories.
+	TArray<FString>        LibraryCategories(bool bAllLevels);
+	TArray<FPlaceableInfo> LibraryPlaceables(const FString& Category, const FString& Query, bool bAllLevels, int32 Max = 800);
+	// Persist a user "move to category" (empty NewCategory = back to default).
+	// Effective everywhere: the pie, the popups, and the library.
+	void    SetTypeCategory(const FString& Type, const FString& NewCategory);
+
 	// ---- map list (for the selector) ----
 	TArray<FString> AllLevels();
 	FString         DisplayName(const FString& Level);   // "MP_Dumbo" -> "Manhattan Bridge"
@@ -54,6 +65,12 @@ namespace BF6Api
 	void    OpenMapWorld(const FString& Level, const FString& SaveName);
 	// Place a placeable by type at a world position; tagged + budget-counted.
 	AActor* PlaceType(const FString& Type, const FVector& WorldPos);
+	// Place in front of the camera; re-placing before the first was touched
+	// swaps it in place (library double-click / "Place in scene").
+	AActor* QuickPlace(const FString& Type);
+	// The card image for a model: an isometric 256px render, generated on demand
+	// and cached under Saved/BF6UnrealSDK/thumbs. Null while it is still queued.
+	const struct FSlateBrush* GetModelThumb(const FString& Mesh);
 	void    ExportSpatial();
 	// Opens a file dialog; detects the map from the file, loads it, and names the
 	// session after the file. Returns true when a map was actually imported.
@@ -65,6 +82,8 @@ namespace BF6Api
 	void    CreateCustom(const FString& Name);
 	// Deproject the current viewport cursor to the ground plane. False if no viewport.
 	bool    WorldFromViewportCursor(FVector& OutWorld);
+	// The surface point straight ahead of the camera (library double-click placement).
+	bool    WorldFromViewportCenter(FVector& OutWorld);
 
 	// ============================================================================
 	// Entry points implemented in BF6BuildMode.cpp
@@ -108,14 +127,42 @@ namespace BF6Api
 	bool IsVolumeEditing();
 	void BeginVolumeEdit(AActor* Volume);   // spawn a drag handle at every vertex
 	void VolumeAddPoint();                  // insert after the selected handle
-	// insert a point on the loop edge nearest to WorldPos (right-click on an edge)
+	// insert a point on the loop edge nearest to WorldPos (Ctrl+LMB / right-click on an edge)
 	void VolumeAddPointAt(const FVector& WorldPos);
+	// closest point on the loop's edges to WorldPos (the Ctrl hover marker)
+	bool VolumeNearestEdgePoint(const FVector& WorldPos, FVector& OutPoint);
 	void VolumeDeletePoint();               // remove the selected handle (min 3)
+	// remove the point nearest to WorldPos, Godot-style Ctrl+RMB (min 3)
+	void VolumeDeletePointAt(const FVector& WorldPos);
 	void FinishVolumeEdit();                // bake the handles back into the walls
 	void TickVolumeEdit();                  // live wall rebuild while handles move
 	// selecting a zone starts point editing automatically; selecting something
 	// else ends it (like the Godot SDK)
 	void TickZoneAutoEdit();
+
+	// ---- selection tools + Blocks (user prefabs) ----
+	// Select every placed copy of the selected object's type.
+	void SelectSimilar();
+	// Native editor grouping: a group moves as one; ungroup any time. Placed
+	// blocks arrive grouped. Groups are TEMPORARY (not saved in the session).
+	void GroupSelection();
+	void UngroupSelection();
+	// Revit-style group editing: tab in, members-only selection, Enter/Esc locks.
+	bool SelectionGrouped();               // is the selected object in a group?
+	bool IsGroupEditing();
+	void BeginGroupEditFromSelection();
+	void FinishGroupEdit();
+	void TickGroupEdit();                  // enforce members-only selection
+	// One shareable JSON per block under Saved/BF6UnrealSDK/blocks. A block
+	// remembers the map it was built for and its objects (relative transforms
+	// + attribute tags). Returns how many objects were captured (0 = failed).
+	struct FBlockInfo { FString Name; FString Level; int32 Count = 0; };
+	int32               SaveBlockFromSelection(const FString& Name);
+	TArray<FBlockInfo>  ListBlocks();
+	bool                PlaceBlock(const FString& Name, const FVector& WorldPos);
+	void                DeleteBlock(const FString& Name);
+	void                OpenBlocksFolder();          // sharing: send/receive the files
+	const struct FSlateBrush* GetBlockThumb(const FString& Name);   // composite iso render
 
 	// ---- link picking (assign spawn points / volumes to an object) ----
 	bool IsLinkPicking();
