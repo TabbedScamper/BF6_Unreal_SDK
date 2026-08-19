@@ -25,12 +25,24 @@ Open the project and the editor becomes a map builder:
 
 You do not need Battlefield 6 installed to build maps.
 
-## Setup
+## Install
 
-1. Clone the repo (or grab a release).
-2. Open `BF6_High_Poly.uproject` and let it compile the plugin.
-3. On first launch the tool asks for your unzipped Portal SDK folder. Point it at the SDK and hit **Import SDK data**. The tool copies the catalogue, parses every map's base setup, and converts all 9,700+ low poly models and every map mesh by driving the SDK's own bundled Godot in the background, with live progress. This runs once and takes a while; grab a coffee.
-4. Pick a map and build.
+Every [release](../../releases/latest) has two downloads. Which one you want:
+
+| File | Who it's for |
+| --- | --- |
+| `BF6UnrealSDK_Project_*.zip` | **New users, start here.** The complete prebuilt project. No Visual Studio, no compiling. |
+| `BF6UnrealSDK_Plugin_*.zip` | **Existing installs.** Just the plugin folder. The in-editor update button downloads and installs this one for you, so you rarely need it by hand. |
+
+1. Install Unreal Engine 5.8 from the Epic Games Launcher.
+2. Download the **Project** zip from the latest release and unzip it anywhere.
+3. Open `BF6_High_Poly.uproject`.
+4. On first launch the tool asks for your unzipped Portal SDK folder. Point it at the SDK and hit **Import SDK data**. The tool copies the catalogue, parses every map's base setup, and converts all 9,700+ low poly models and every map mesh by driving the SDK's own bundled Godot in the background, with live progress. This runs once and takes a while; grab a coffee.
+5. Pick a map and build.
+
+From then on, new versions install themselves: the tool checks this repo on launch and offers a one-click update.
+
+**Building from source instead:** clone the repo and open `BF6_High_Poly.uproject`; Unreal compiles the plugin on first open (requires Visual Studio 2022 with the C++ game development workload).
 
 When a new SDK version drops, unzip it and run **SDK Setup** again from the map screen. The import skips everything already converted, so a re-sync only processes what changed.
 
