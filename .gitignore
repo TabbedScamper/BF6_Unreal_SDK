@@ -27,5 +27,5 @@ Plugins/**/Intermediate/
 # (or downloaded as a release data pack):
 #   objmodels/  - all SDK low-poly object models (.bf6mesh, ~2.7 GB)
 #   mapmesh/    - per-map low-poly terrain + assets meshes (~4.4 GB)
-Plugins/BF6HighPoly/Source/ThirdParty/libbf6/data/objmodels/
-Plugins/BF6HighPoly/Source/ThirdParty/libbf6/data/mapmesh/
+Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/objmodels/
+Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/mapmesh/

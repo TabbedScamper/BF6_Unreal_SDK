@@ -1,9 +1,9 @@
 using System.IO;
 using UnrealBuildTool;
 
-public class BF6HighPoly : ModuleRules
+public class BF6UnrealSDK : ModuleRules
 {
-	public BF6HighPoly(ReadOnlyTargetRules Target) : base(Target)
+	public BF6UnrealSDK(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
@@ -24,7 +24,8 @@ public class BF6HighPoly : ModuleRules
 			"SlateCore",
 			"InputCore",
 			"WorkspaceMenuStructure",   // the Window > Tools menu group
-			"ImageWrapper"              // decode the map thumbnail PNGs for Slate
+			"ImageWrapper",             // decode the map thumbnail PNGs for Slate
+			"HTTP"                      // update check + download from GitHub releases
 		});
 
 		if (Target.bBuildEditor)

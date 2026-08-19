@@ -6,7 +6,7 @@
 // Build Mode: the full-screen "building program" experience layered over
 // Unreal's real level viewport. This header is the seam between the new Slate
 // widgets (implemented in BF6BuildMode.cpp) and the engine/session logic
-// (implemented in BF6HighPoly.cpp). The docked SBF6Browser tab stays as-is; the
+// (implemented in BF6UnrealSDK.cpp). The docked SBF6Browser tab stays as-is; the
 // new system is parallel and self-contained.
 // ============================================================================
 
@@ -21,7 +21,7 @@ namespace BF6Api
 		int32   PhysicsCost = 0;
 	};
 
-	// ---- session state (implemented in BF6HighPoly.cpp) ----
+	// ---- session state (implemented in BF6UnrealSDK.cpp) ----
 	bool     IsEditing();
 	FString  CurrentLevel();
 	FString  CurrentSave();
@@ -87,4 +87,12 @@ namespace BF6Api
 	void RemoveInputHandler();
 	void HideTransientMenus();   // dismiss the category object popup
 	bool IsBuildOverlayActive();
+
+	// ---- versioning + updates (GitHub releases, staged like the Godot plugin) ----
+	// The plugin's VersionName from the .uplugin (e.g. "0.1.0").
+	FString PluginVersion();
+	// Ask github.com/TabbedScamper/BF6_Unreal_SDK for the latest release. If it's
+	// newer, offer to download and restart-to-apply (a compiled plugin can't be
+	// swapped while the editor runs). bManual: also report "up to date"/errors.
+	void CheckForUpdates(bool bManual);
 }

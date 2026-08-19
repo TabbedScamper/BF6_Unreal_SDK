@@ -1,4 +1,4 @@
-#include "BF6HighPoly.h"
+#include "BF6UnrealSDK.h"
 
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -51,6 +51,10 @@
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HttpModule.h"
+#include "Interfaces/IHttpRequest.h"
+#include "Interfaces/IHttpResponse.h"
+#include "Misc/MessageDialog.h"
 
 #include "BF6MapManifest.h"
 #include "BF6BuildMode.h"
@@ -462,7 +466,7 @@ static void BuildWalls(UProceduralMeshComponent* M, const TArray<FVector>& Loop,
 // ---- session save / load (JSON of placed objects) ----
 static FString SessionDir(const FString& Level)
 {
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6HighPoly"), Level);
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), Level);
 }
 
 static TArray<FString> ListSaves(const FString& Level)
@@ -1079,7 +1083,7 @@ private:
 		FString Out;
 		TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> W = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
 		FJsonSerializer::Serialize(Root.ToSharedRef(), W);
-		const FString Path = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6HighPoly"), TEXT("export"), CurrentLevel + TEXT(".spatial.json"));
+		const FString Path = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("export"), CurrentLevel + TEXT(".spatial.json"));
 		FFileHelper::SaveStringToFile(Out, *Path);
 		Notify(FString::Printf(TEXT("Exported %d objects -> %s"), Dynamic.Num(), *Path));
 		UE_LOG(LogBF6, Warning, TEXT("Exported spatial.json (%d dynamic, %d static): %s"), Dynamic.Num(), Static.Num(), *Path);
@@ -1100,7 +1104,7 @@ private:
 		IDesktopPlatform* DP = FDesktopPlatformModule::Get();
 		if (!DP) { Notify(TEXT("File dialog unavailable.")); return FReply::Handled(); }
 		TArray<FString> Picked;
-		const FString DefaultDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6HighPoly"), TEXT("export"));
+		const FString DefaultDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("export"));
 		const void* Parent = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(SharedThis(this));
 		if (!DP->OpenFileDialog(Parent, TEXT("Import Portal .spatial.json"), DefaultDir, TEXT(""),
 			TEXT("Portal spatial (*.spatial.json)|*.spatial.json|JSON (*.json)|*.json"), EFileDialogFlags::None, Picked)
@@ -1657,7 +1661,7 @@ static void BF6_ExportSpatial()
 	Root->SetArrayField(TEXT("Portal_Dynamic"),Dynamic); Root->SetArrayField(TEXT("Static"),Static);
 	FString Out; TSharedRef<TJsonWriter<TCHAR,TCondensedJsonPrintPolicy<TCHAR>>> W=TJsonWriterFactory<TCHAR,TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
 	FJsonSerializer::Serialize(Root.ToSharedRef(),W);
-	const FString Path=FPaths::Combine(FPaths::ProjectSavedDir(),TEXT("BF6HighPoly"),TEXT("export"),Level+TEXT(".spatial.json"));
+	const FString Path=FPaths::Combine(FPaths::ProjectSavedDir(),TEXT("BF6UnrealSDK"),TEXT("export"),Level+TEXT(".spatial.json"));
 	FFileHelper::SaveStringToFile(Out,*Path);
 	Notify(FString::Printf(TEXT("Exported %d objects -> %s"), Dynamic.Num(), *Path));
 	UE_LOG(LogBF6, Warning, TEXT("Exported spatial.json (%d dynamic): %s"), Dynamic.Num(), *Path);
@@ -1670,7 +1674,7 @@ static bool BF6_ImportSpatialDialog()
 	if (!GEditor) return false;
 	IDesktopPlatform* DP = FDesktopPlatformModule::Get(); if (!DP) { Notify(TEXT("File dialog unavailable.")); return false; }
 	TArray<FString> Picked;
-	const FString DefaultDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6HighPoly"), TEXT("export"));
+	const FString DefaultDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("export"));
 	const void* Parent = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
 	if (!DP->OpenFileDialog(Parent, TEXT("Import Portal .spatial.json"), DefaultDir, TEXT(""), TEXT("Portal spatial (*.spatial.json)|*.spatial.json|JSON (*.json)|*.json"), EFileDialogFlags::None, Picked) || Picked.Num() == 0) return false;
 	const FString File = Picked[0];
@@ -1730,9 +1734,138 @@ static bool BF6_ImportSpatialDialog()
 	return true;
 }
 
+// ============================================================================
+// Versioning + updates. GitHub releases are the update channel; a compiled
+// plugin can't hot-swap its own DLL, so the flow is the Godot staged-lane one:
+// check -> download to Saved/ -> restart, and a script applies it while the
+// editor is closed, then relaunches the project.
+// ============================================================================
+static const TCHAR* kUpdateRepoApi = TEXT("https://api.github.com/repos/TabbedScamper/BF6_Unreal_SDK/releases/latest");
+
+static bool BF6_ParseSemver(const FString& In, int32& A, int32& B, int32& C)
+{
+	FString S = In.TrimStartAndEnd();
+	if (S.StartsWith(TEXT("v")) || S.StartsWith(TEXT("V"))) S = S.RightChop(1);
+	TArray<FString> Parts;
+	S.ParseIntoArray(Parts, TEXT("."));
+	if (Parts.Num() < 3) return false;
+	A = FCString::Atoi(*Parts[0]); B = FCString::Atoi(*Parts[1]); C = FCString::Atoi(*Parts[2]);
+	return true;
+}
+
+static bool BF6_IsNewer(const FString& Remote, const FString& Local)
+{
+	int32 ra, rb, rc, la, lb, lc;
+	if (!BF6_ParseSemver(Remote, ra, rb, rc) || !BF6_ParseSemver(Local, la, lb, lc)) return false;
+	if (ra != la) return ra > la;
+	if (rb != lb) return rb > lb;
+	return rc > lc;
+}
+
+// Stage the downloaded zip, write the apply script, close the editor. The
+// script waits for us to exit, unzips over the plugin, and relaunches.
+static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FString& Tag)
+{
+	const FString UpdateDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("update"));
+	const FString ZipPath   = FPaths::Combine(UpdateDir, TEXT("plugin_update.zip"));
+	const FString Staging   = FPaths::Combine(UpdateDir, TEXT("staging"));
+	const FString Script    = FPaths::Combine(UpdateDir, TEXT("apply_update.ps1"));
+	const FString PluginDir = FPaths::ConvertRelativePathToFull(g_pluginDir);
+	const FString Project   = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / FApp::GetProjectName()) + TEXT(".uproject");
+	if (!FFileHelper::SaveArrayToFile(ZipBytes, *ZipPath)) { Notify(TEXT("Could not write the update file.")); return; }
+
+	const uint32 Pid = FPlatformProcess::GetCurrentProcessId();
+	FString Ps;
+	Ps += FString::Printf(TEXT("try { Wait-Process -Id %u -ErrorAction SilentlyContinue } catch {}\r\n"), Pid);
+	Ps += TEXT("Start-Sleep -Seconds 2\r\n");
+	Ps += FString::Printf(TEXT("Remove-Item -Recurse -Force \"%s\" -ErrorAction SilentlyContinue\r\n"), *Staging);
+	Ps += FString::Printf(TEXT("Expand-Archive -Path \"%s\" -DestinationPath \"%s\" -Force\r\n"), *ZipPath, *Staging);
+	// the zip may carry a BF6UnrealSDK/ root folder or the plugin files directly
+	Ps += FString::Printf(TEXT("$src = Join-Path \"%s\" \"BF6UnrealSDK\"\r\n"), *Staging);
+	Ps += TEXT("if (-not (Test-Path $src)) { $src = \"") + Staging + TEXT("\" }\r\n");
+	Ps += FString::Printf(TEXT("robocopy $src \"%s\" /E /NFL /NDL /NJH /NJS\r\n"), *PluginDir);
+	Ps += FString::Printf(TEXT("Start-Process \"%s\"\r\n"), *Project);
+	FFileHelper::SaveStringToFile(Ps, *Script);
+
+	FPlatformProcess::CreateProc(TEXT("powershell.exe"),
+		*FString::Printf(TEXT("-ExecutionPolicy Bypass -WindowStyle Hidden -File \"%s\""), *Script),
+		true, false, false, nullptr, 0, nullptr, nullptr);
+	UE_LOG(LogBF6, Warning, TEXT("Update %s staged - closing the editor to apply."), *Tag);
+	FPlatformMisc::RequestExit(false);
+}
+
+static void BF6_DownloadUpdate(const FString& Url, const FString& Tag)
+{
+	Notify(FString::Printf(TEXT("Downloading update %s..."), *Tag));
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
+	Req->SetURL(Url);
+	Req->SetVerb(TEXT("GET"));
+	Req->SetHeader(TEXT("User-Agent"), TEXT("BF6UnrealSDK"));
+	Req->OnProcessRequestComplete().BindLambda([Tag](FHttpRequestPtr, FHttpResponsePtr Resp, bool bOk)
+	{
+		if (!bOk || !Resp.IsValid() || Resp->GetResponseCode() != 200)
+		{ Notify(TEXT("Update download failed - try again later.")); return; }
+		BF6_StageUpdateAndRestart(Resp->GetContent(), Tag);
+	});
+	Req->ProcessRequest();
+}
+
 // ---- BF6Api: data + action surface consumed by the Build Mode widgets ----
 namespace BF6Api
 {
+	FString PluginVersion()
+	{
+		if (TSharedPtr<IPlugin> P = IPluginManager::Get().FindPlugin(TEXT("BF6UnrealSDK")))
+			return P->GetDescriptor().VersionName;
+		return TEXT("0.0.0");
+	}
+
+	void CheckForUpdates(bool bManual)
+	{
+		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
+		Req->SetURL(kUpdateRepoApi);
+		Req->SetVerb(TEXT("GET"));
+		Req->SetHeader(TEXT("User-Agent"), TEXT("BF6UnrealSDK"));
+		Req->SetHeader(TEXT("Accept"), TEXT("application/vnd.github+json"));
+		Req->OnProcessRequestComplete().BindLambda([bManual](FHttpRequestPtr, FHttpResponsePtr Resp, bool bOk)
+		{
+			if (!bOk || !Resp.IsValid() || Resp->GetResponseCode() != 200)
+			{ if (bManual) Notify(TEXT("Update check failed (no connection, or no releases yet).")); return; }
+			TSharedPtr<FJsonObject> Root;
+			TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(Resp->GetContentAsString());
+			if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid())
+			{ if (bManual) Notify(TEXT("Update check failed (bad response).")); return; }
+
+			FString Tag; Root->TryGetStringField(TEXT("tag_name"), Tag);
+			const FString Local = PluginVersion();
+			if (Tag.IsEmpty() || !BF6_IsNewer(Tag, Local))
+			{ if (bManual) Notify(FString::Printf(TEXT("You're up to date (v%s)."), *Local)); return; }
+
+			// find the plugin zip asset ("...Plugin....zip" preferred, else first zip)
+			FString AssetUrl, AssetName;
+			const TArray<TSharedPtr<FJsonValue>>* Assets = nullptr;
+			if (Root->TryGetArrayField(TEXT("assets"), Assets))
+				for (const auto& v : *Assets)
+				{
+					const TSharedPtr<FJsonObject> a = v->AsObject(); if (!a.IsValid()) continue;
+					FString Nm, Url;
+					a->TryGetStringField(TEXT("name"), Nm);
+					a->TryGetStringField(TEXT("browser_download_url"), Url);
+					if (!Nm.EndsWith(TEXT(".zip"))) continue;
+					if (AssetUrl.IsEmpty() || Nm.Contains(TEXT("Plugin"))) { AssetUrl = Url; AssetName = Nm; }
+					if (Nm.Contains(TEXT("Plugin"))) break;
+				}
+			if (AssetUrl.IsEmpty())
+			{ if (bManual) Notify(FString::Printf(TEXT("%s is out, but has no plugin package attached yet."), *Tag)); return; }
+
+			const EAppReturnType::Type Choice = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(
+				TEXT("BF6 Unreal SDK %s is available (you have v%s).\n\nDownload now? The editor will close to apply the update and reopen when it's done."),
+				*Tag, *Local)));
+			if (Choice == EAppReturnType::Yes) BF6_DownloadUpdate(AssetUrl, Tag);
+		});
+		Req->ProcessRequest();
+	}
+
 	bool     IsEditing()      { return g_ss.bEditing; }
 	FString  CurrentLevel()   { return g_ss.CurrentLevel; }
 	FString  CurrentSave()    { return g_ss.CurrentSave; }
@@ -1870,9 +2003,17 @@ namespace BF6Api
 // (The old docked tab is gone: the tool UI now attaches straight onto the level
 // viewport via BF6Api::ShowStartupUI, so it always fills the editor's centre.)
 
-void FBF6HighPolyModule::StartupModule()
+void FBF6UnrealSDKModule::StartupModule()
 {
-	g_pluginDir = IPluginManager::Get().FindPlugin(TEXT("BF6HighPoly"))->GetBaseDir();
+	g_pluginDir = IPluginManager::Get().FindPlugin(TEXT("BF6UnrealSDK"))->GetBaseDir();
+
+	// One-time migration: saves/exports from before the plugin was renamed.
+	{
+		const FString OldDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6") TEXT("HighPoly"));
+		const FString NewDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"));
+		if (IFileManager::Get().DirectoryExists(*OldDir) && !IFileManager::Get().DirectoryExists(*NewDir))
+			IFileManager::Get().Move(*NewDir, *OldDir);
+	}
 	const FString DllPath = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/bin/Win64/bf6_core.dll"));
 	DllHandle = FPlatformProcess::GetDllHandle(*DllPath);
 	if (!DllHandle) { UE_LOG(LogBF6, Error, TEXT("could not load bf6_core.dll")); return; }
@@ -1923,6 +2064,7 @@ void FBF6HighPolyModule::StartupModule()
 	{
 		BF6Api::InstallInputHandler();
 		BF6Api::ShowStartupUI();
+		BF6Api::CheckForUpdates(false);   // silent unless a newer release exists
 	};
 	if (MainFrame.IsWindowInitialized())
 	{
@@ -1945,7 +2087,7 @@ void FBF6HighPolyModule::StartupModule()
 		}));
 }
 
-void FBF6HighPolyModule::ShutdownModule()
+void FBF6UnrealSDKModule::ShutdownModule()
 {
 	BF6Api::DetachUI();
 	BF6Api::RemoveInputHandler();
@@ -1954,4 +2096,4 @@ void FBF6HighPolyModule::ShutdownModule()
 	if (DllHandle) { FPlatformProcess::FreeDllHandle(DllHandle); DllHandle = nullptr; }
 }
 
-IMPLEMENT_MODULE(FBF6HighPolyModule, BF6HighPoly)
+IMPLEMENT_MODULE(FBF6UnrealSDKModule, BF6UnrealSDK)

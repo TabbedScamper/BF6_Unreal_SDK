@@ -5,8 +5,8 @@
 #
 $ErrorActionPreference = "Stop"
 $proj   = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\BF6_High_Poly.uproject"
-$tp     = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\Plugins\BF6HighPoly\Source\ThirdParty\libbf6\bin\Win64"
-$bin    = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\Plugins\BF6HighPoly\Binaries\Win64"
+$tp     = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\Plugins\BF6UnrealSDK\Source\ThirdParty\libbf6\bin\Win64"
+$bin    = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\Plugins\BF6UnrealSDK\Binaries\Win64"
 $ue     = "C:\Program Files\Epic Games\UE_5.8"
 
 $editor = Get-Process -Name 'UnrealEditor','BF6_High_Poly' -ErrorAction SilentlyContinue
@@ -21,7 +21,7 @@ if (Test-Path "$tp\bf6_core.dll.pending") {
     Write-Host "DLL swapped in (184832 bytes expected)." -ForegroundColor Green
 }
 
-# 2. rebuild the editor module (picks up the new BF6HighPoly.cpp + Build.cs)
+# 2. rebuild the editor module (picks up the new BF6UnrealSDK.cpp + Build.cs)
 $ubt = Join-Path $ue "Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.exe"
 & $ubt BF6_High_PolyEditor Win64 Development "-Project=$proj" -WaitMutex
 Write-Host "`nDone. Reopen the editor and use Window > Tools > BF6 Objects." -ForegroundColor Green

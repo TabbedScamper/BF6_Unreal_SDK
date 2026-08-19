@@ -2,8 +2,8 @@
 	"FileVersion": 3,
 	"Version": 1,
 	"VersionName": "0.1.0",
-	"FriendlyName": "BF6 High-Poly",
-	"Description": "Reads Battlefield 6 assets from your own installed game (Unreal edition).",
+	"FriendlyName": "BF6 Unreal SDK",
+	"Description": "Build Battlefield 6 Portal maps inside Unreal Engine: map selector, SDK object placement, physics budget, and spatial.json export for Portal.",
 	"Category": "Editing",
 	"CreatedBy": "TabbedScamper",
 	"EnabledByDefault": true,
@@ -12,7 +12,7 @@
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "BF6HighPoly",
+			"Name": "BF6UnrealSDK",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		}

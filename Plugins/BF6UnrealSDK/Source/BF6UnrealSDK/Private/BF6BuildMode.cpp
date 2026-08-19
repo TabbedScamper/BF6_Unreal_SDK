@@ -39,7 +39,7 @@
 
 // ============================================================================
 // Build Mode implementation. All UI here consumes BF6Api (engine/session logic
-// in BF6HighPoly.cpp) so this file stays free of engine internals.
+// in BF6UnrealSDK.cpp) so this file stays free of engine internals.
 // ============================================================================
 
 namespace
@@ -455,7 +455,7 @@ public:
 			[
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(32, 24, 32, 0))
-				[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("B F 6   H I G H - P O L Y"))) ]
+				[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("B F 6   U N R E A L   S D K"))) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(32, 2, 32, 4))
 				[
 					SNew(SHorizontalBox)
@@ -464,8 +464,10 @@ public:
 					+ SHorizontalBox::Slot().FillWidth(1)[ SNew(SSpacer) ]
 					// Import lives on this screen: it detects the map from the file
 					// and opens straight into build mode named after the file.
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
 					[ MakeToolButton(TEXT("Import .spatial.json"), [this]{ OnImport.ExecuteIfBound(); }) ]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
+					[ MakeToolButton(FString::Printf(TEXT("v%s - Check for updates"), *BF6Api::PluginVersion()), []{ BF6Api::CheckForUpdates(true); }) ]
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(32, 0, 32, 18))
 				[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(FString::Printf(TEXT("%d maps  -  click a map to open its base, or resume a saved project below it."), MapCount))) ]

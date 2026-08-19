@@ -28,8 +28,8 @@ You do not need Battlefield 6 installed to build maps. You do need the official 
 
 1. Clone the repo.
 2. Add the data packs (the low-poly mesh libraries, about 7 GB total, too large for the repo):
-   - `Plugins/BF6HighPoly/Source/ThirdParty/libbf6/data/objmodels/` : the SDK object models
-   - `Plugins/BF6HighPoly/Source/ThirdParty/libbf6/data/mapmesh/` : per-map terrain and asset meshes
+   - `Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/objmodels/` : the SDK object models
+   - `Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/mapmesh/` : per-map terrain and asset meshes
 
    These are generated from a local install of the official Portal SDK by the extraction pipeline, or grab them from a release when one is up.
 3. Right click `BF6_High_Poly.uproject` and generate project files, then build, or just open the project and let it compile the plugin.
