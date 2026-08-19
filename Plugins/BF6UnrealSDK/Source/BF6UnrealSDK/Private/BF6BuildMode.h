@@ -58,8 +58,9 @@ namespace BF6Api
 	// Opens a file dialog; detects the map from the file, loads it, and names the
 	// session after the file. Returns true when a map was actually imported.
 	bool    ImportSpatial();
-	// Write the current custom map's session to disk.
-	void    SaveCurrent();
+	// Write the current custom map's session to disk. bSilent skips the toast
+	// (used by the tool's own periodic autosave).
+	void    SaveCurrent(bool bSilent = false);
 	// Turn the read-only base preview into an editable custom map named Name.
 	void    CreateCustom(const FString& Name);
 	// Deproject the current viewport cursor to the ground plane. False if no viewport.

@@ -109,6 +109,18 @@ namespace
 			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Ink)).Text(FText::FromString(Label.ToUpper())) ];
 	}
 
+	// Leaving an active session wipes the world (open/import) - never silently.
+	bool ConfirmLeaveSession()
+	{
+		if (!BF6Api::IsEditing()) return true;
+		const EAppReturnType::Type R = FMessageDialog::Open(EAppMsgType::YesNoCancel, FText::FromString(FString::Printf(
+			TEXT("Save changes to '%s' before leaving?\n\nYes = save and continue. No = discard changes. Cancel = stay."),
+			*BF6Api::CurrentSave())));
+		if (R == EAppReturnType::Cancel) return false;
+		if (R == EAppReturnType::Yes) BF6Api::SaveCurrent();
+		return true;
+	}
+
 	const FBF6MapCard* FindMapCard(const FString& Level)
 	{
 		for (int i = 0; i < GBF6MapCardCount; i++)
@@ -569,11 +581,19 @@ public:
 		BF6Api::TickZoneAutoEdit();   // selecting a zone starts point editing, like Godot
 		BF6Api::TickVolumeEdit();     // live zone-wall rebuild while handles are dragged
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
+		// the tool's own autosave: closing the editor can never cost more than
+		// a minute of work (session files are tiny)
+		if (BF6Api::IsEditing() && T - LastAutoSave > 60.0)
+		{
+			LastAutoSave = T;
+			BF6Api::SaveCurrent(true);
+		}
 	}
 
 private:
 	bool bBarHidden = false;
 	double LastCalc = 0.0;
+	double LastAutoSave = 0.0;
 	TSharedPtr<SEditableTextBox> NameBox;
 	FSimpleDelegate OnChooseMap;
 };
@@ -591,6 +611,7 @@ public:
 		SLATE_EVENT(FOnOpen, OnOpen)
 		SLATE_EVENT(FSimpleDelegate, OnImport)
 		SLATE_EVENT(FSimpleDelegate, OnSdkSetup)
+		SLATE_EVENT(FSimpleDelegate, OnReturn)   // back to the active build session
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
@@ -598,6 +619,7 @@ public:
 		OnOpen = InArgs._OnOpen;
 		OnImport = InArgs._OnImport;
 		OnSdkSetup = InArgs._OnSdkSetup;
+		OnReturn = InArgs._OnReturn;
 
 		// Two sections instead of a price badge: full-game maps, then the free
 		// RedSec maps (a $ on the tile read like the PLUGIN costs money).
@@ -627,6 +649,12 @@ public:
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
 					[ SNew(STextBlock).Font(FontBold(30)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("CHOOSE MAPS"))) ]
 					+ SHorizontalBox::Slot().FillWidth(1)[ SNew(SSpacer) ]
+					// back to the active build session (ESC does the same)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
+					[
+						SNew(SBox).Visibility(BF6Api::CurrentLevel().IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
+						[ MakePrimaryButton(TEXT("Return to build"), [this]{ OnReturn.ExecuteIfBound(); }) ]
+					]
 					// Import lives on this screen: it detects the map from the file
 					// and opens straight into build mode named after the file.
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
@@ -654,6 +682,7 @@ private:
 	FOnOpen OnOpen;
 	FSimpleDelegate OnImport;
 	FSimpleDelegate OnSdkSetup;
+	FSimpleDelegate OnReturn;
 
 	void Open(const FString& Level, const FString& Save)
 	{
@@ -952,9 +981,10 @@ private:
 		if (!BF6Api::IsDataInstalled()) { ShowSetup(); return; }
 		SelectorHost->SetContent(
 			SNew(SBF6MapSelector)
-			.OnOpen_Lambda([](FString Level, FString Save){ BF6Api::EnterBuild(Level, Save); })
-			.OnImport_Lambda([this]{ if (BF6Api::ImportSpatial()) ShowBuild(); })
+			.OnOpen_Lambda([](FString Level, FString Save){ if (ConfirmLeaveSession()) BF6Api::EnterBuild(Level, Save); })
+			.OnImport_Lambda([this]{ if (ConfirmLeaveSession() && BF6Api::ImportSpatial()) ShowBuild(); })
 			.OnSdkSetup_Lambda([this]{ ShowSetup(); })
+			.OnReturn_Lambda([this]{ ShowBuild(); })
 		);
 	}
 };
@@ -1170,6 +1200,18 @@ public:
 			if (BF6Pie_Active()) { BF6Pie_Cancel(); return true; }
 			if (BF6Api::IsLinkPicking()) { BF6Api::CancelLinkPick(); return true; }
 			if (BF6Api::IsVolumeEditing()) { BF6Api::FinishVolumeEdit(); return true; }
+			// on the map screen with a session running: ESC returns to the build
+			if (GRoot.IsValid() && !GRoot->IsBuildScreen() && !BF6Api::CurrentLevel().IsEmpty() && !GTransientMenu.IsValid())
+			{
+				GRoot->ShowBuild();
+				return true;
+			}
+		}
+		// ENTER also bakes and ends a zone-point edit (when no popup is up)
+		if (K == EKeys::Enter && !BF6Pie_Active() && !GTransientMenu.IsValid() && BF6Api::IsVolumeEditing())
+		{
+			BF6Api::FinishVolumeEdit();
+			return true;
 		}
 		return false;
 	}

@@ -218,6 +218,7 @@ static AActor* SpawnResource(const FString& ResName, const FString& Label, const
 	if (!Label.IsEmpty()) Actor->Tags.Add(FName(*(FString(TEXT("label:")) + Label)));
 
 	UProceduralMeshComponent* Mesh = NewObject<UProceduralMeshComponent>(Actor, TEXT("ProcMesh"));
+	Mesh->SetFlags(RF_Transactional);
 	Actor->SetRootComponent(Mesh);
 	Mesh->RegisterComponent();
 	Actor->AddInstanceComponent(Mesh);
@@ -369,6 +370,9 @@ static void ClearActorsWithTag(FName Tag)
 static UProceduralMeshComponent* MakeProcMesh(AActor* A, const FName Name)
 {
 	UProceduralMeshComponent* M = NewObject<UProceduralMeshComponent>(A, Name);
+	// The gizmo records moves on the ROOT COMPONENT; NewObject creates with no
+	// flags, so without this Modify() silently fails and Ctrl+Z can't undo moves.
+	M->SetFlags(RF_Transactional);
 	A->SetRootComponent(M);
 	M->RegisterComponent();
 	A->AddInstanceComponent(M);
@@ -492,10 +496,20 @@ struct FBF6LinkPick
 };
 static FBF6LinkPick GLinkPick;
 
+// Handles draw in the foreground pass (visible through walls/floors) in the
+// accent orange, so a vertex buried inside geometry stays visible and grabbable.
+static void ApplyHandleStyle(UProceduralMeshComponent* M)
+{
+	if (!M) return;
+	M->SetDepthPriorityGroup(SDPG_Foreground);
+	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_LevelAssets.M_LevelAssets")))
+		for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mat);
+}
+
 // A small centered cube the user can grab with the normal move gizmo.
 static void BuildHandleCube(UProceduralMeshComponent* M)
 {
-	const float r = 35.f;
+	const float r = 45.f;
 	TArray<FVector> V = {
 		{-r,-r,-r},{r,-r,-r},{r,r,-r},{-r,r,-r}, {-r,-r,r},{r,-r,r},{r,r,r},{-r,r,r} };
 	const int32 F[6][4] = {{0,3,2,1},{4,5,6,7},{0,1,5,4},{1,2,6,5},{2,3,7,6},{3,0,4,7}};
@@ -511,7 +525,7 @@ static AActor* SpawnVolumeHandle(UWorld* W, const FVector& Pos, int32 Idx)
 	if (!A) return nullptr;
 	UProceduralMeshComponent* M = MakeProcMesh(A, TEXT("Handle"));
 	BuildHandleCube(M);
-	ApplyObjectWhite(M);
+	ApplyHandleStyle(M);
 	A->SetActorLocation(Pos);
 	A->SetActorLabel(FString::Printf(TEXT("BF6_Point_%d"), Idx));
 	A->Tags.Add(kHandleTag);
@@ -603,9 +617,46 @@ static void SaveSession(const FString& Level, const FString& Name)
 		if (PTags.Num()) O->SetArrayField(TEXT("props"), PTags);
 		Objs.Add(MakeShared<FJsonValueObject>(O));
 	}
+	// base-object edits: attribute values, gizmo moves, and reshaped zones on
+	// the map's shipped gameplay objects also belong to the custom map
+	TArray<TSharedPtr<FJsonValue>> BaseArr;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (!It->Tags.Contains(kBaseTag)) continue;
+		TSharedPtr<FJsonObject> B = MakeShared<FJsonObject>();
+		FString Nm = It->GetActorLabel();
+		Nm.RemoveFromStart(TEXT("BF6_"));
+		B->SetStringField(TEXT("name"), Nm);
+		const FTransform Xf = It->GetActorTransform();
+		const FVector L = Xf.GetLocation(); const FRotator R = Xf.Rotator(); const FVector Sc = Xf.GetScale3D();
+		B->SetNumberField(TEXT("x"), L.X); B->SetNumberField(TEXT("y"), L.Y); B->SetNumberField(TEXT("z"), L.Z);
+		B->SetNumberField(TEXT("pitch"), R.Pitch); B->SetNumberField(TEXT("yaw"), R.Yaw); B->SetNumberField(TEXT("roll"), R.Roll);
+		B->SetNumberField(TEXT("sx"), Sc.X); B->SetNumberField(TEXT("sy"), Sc.Y); B->SetNumberField(TEXT("sz"), Sc.Z);
+		TArray<TSharedPtr<FJsonValue>> PTags;
+		for (const FName& T : It->Tags)
+		{
+			const FString TS = T.ToString();
+			if (TS.StartsWith(TEXT("p:"))) PTags.Add(MakeShared<FJsonValueString>(TS.Mid(2)));
+		}
+		if (PTags.Num()) B->SetArrayField(TEXT("props"), PTags);
+		if (const TArray<FVector>* Loop = GVolumeLoops.Find(*It))
+		{
+			TArray<TSharedPtr<FJsonValue>> LArr;
+			for (const FVector& V : *Loop)
+			{
+				LArr.Add(MakeShared<FJsonValueNumber>(V.X));
+				LArr.Add(MakeShared<FJsonValueNumber>(V.Y));
+				LArr.Add(MakeShared<FJsonValueNumber>(V.Z));
+			}
+			B->SetArrayField(TEXT("loop"), LArr);
+		}
+		BaseArr.Add(MakeShared<FJsonValueObject>(B));
+	}
+
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetStringField(TEXT("level"), Level);
 	Root->SetArrayField(TEXT("objects"), Objs);
+	Root->SetArrayField(TEXT("base"), BaseArr);
 	FString Out;
 	TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
 	FJsonSerializer::Serialize(Root.ToSharedRef(), W);
@@ -647,6 +698,58 @@ static void LoadSession(const FString& Level, const FString& Name)
 					if (PV->TryGetString(KV) && !KV.IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("p:")) + KV)));
 				}
 			n++;
+		}
+	}
+
+	// apply saved base-object edits (attributes, moves, reshaped zones) on top
+	// of the freshly loaded base setup
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* BaseArr = nullptr;
+	if (World && Root->TryGetArrayField(TEXT("base"), BaseArr))
+	{
+		TMap<FString, AActor*> ByName;
+		for (TActorIterator<AActor> It(World); It; ++It)
+			if (It->Tags.Contains(kBaseTag))
+			{
+				FString Lb = It->GetActorLabel();
+				Lb.RemoveFromStart(TEXT("BF6_"));
+				ByName.Add(Lb, *It);
+			}
+		for (const auto& BV : *BaseArr)
+		{
+			const TSharedPtr<FJsonObject> B = BV->AsObject();
+			if (!B.IsValid()) continue;
+			AActor* A = ByName.FindRef(B->GetStringField(TEXT("name")));
+			if (!A) continue;
+			// zone loops rebuild the walls; point objects take the transform
+			const TArray<TSharedPtr<FJsonValue>>* LArr = nullptr;
+			if (B->TryGetArrayField(TEXT("loop"), LArr) && LArr->Num() >= 9)
+			{
+				TArray<FVector> Loop;
+				for (int32 i = 0; i + 2 < LArr->Num(); i += 3)
+					Loop.Add(FVector((*LArr)[i]->AsNumber(), (*LArr)[i+1]->AsNumber(), (*LArr)[i+2]->AsNumber()));
+				GVolumeLoops.Add(A, Loop);
+				RebuildVolumeWalls(A, Loop);
+			}
+			else if (B->HasField(TEXT("x")))
+			{
+				const FVector L(B->GetNumberField(TEXT("x")), B->GetNumberField(TEXT("y")), B->GetNumberField(TEXT("z")));
+				const FRotator Rt(B->GetNumberField(TEXT("pitch")), B->GetNumberField(TEXT("yaw")), B->GetNumberField(TEXT("roll")));
+				const FVector Sc(B->GetNumberField(TEXT("sx")), B->GetNumberField(TEXT("sy")), B->GetNumberField(TEXT("sz")));
+				A->SetActorTransform(FTransform(Rt, L, Sc));
+			}
+			const TArray<TSharedPtr<FJsonValue>>* PTags = nullptr;
+			if (B->TryGetArrayField(TEXT("props"), PTags))
+			{
+				// saved values replace the shipped ones
+				for (int32 i = A->Tags.Num() - 1; i >= 0; i--)
+					if (A->Tags[i].ToString().StartsWith(TEXT("p:"))) A->Tags.RemoveAt(i);
+				for (const auto& PV : *PTags)
+				{
+					FString KV;
+					if (PV->TryGetString(KV) && !KV.IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("p:")) + KV)));
+				}
+			}
 		}
 	}
 	UE_LOG(LogBF6, Warning, TEXT("Loaded %d object(s) from %s"), n, *Path);
@@ -2695,11 +2798,11 @@ namespace BF6Api
 	}
 	bool ImportSpatial() { return BF6_ImportSpatialDialog(); }
 
-	void SaveCurrent()
+	void SaveCurrent(bool bSilent)
 	{
-		if (g_ss.CurrentSave.IsEmpty()) { Notify(TEXT("Name and create your custom map first.")); return; }
+		if (g_ss.CurrentSave.IsEmpty()) { if (!bSilent) Notify(TEXT("Name and create your custom map first.")); return; }
 		SaveSession(g_ss.CurrentLevel, g_ss.CurrentSave);
-		Notify(FString::Printf(TEXT("Saved '%s'."), *g_ss.CurrentSave));
+		if (!bSilent) Notify(FString::Printf(TEXT("Saved '%s'."), *g_ss.CurrentSave));
 	}
 
 	void CreateCustom(const FString& Name)
@@ -2855,19 +2958,26 @@ namespace BF6Api
 	void TickZoneAutoEdit()
 	{
 		if (!GEditor || !g_ss.bEditing) return;
-		AActor* Sel = nullptr;
-		if (USelection* S = GEditor->GetSelectedActors())
-			for (int32 i = 0; i < S->Num() && !Sel; i++) Sel = Cast<AActor>(S->GetSelectedObject(i));
+		USelection* S = GEditor->GetSelectedActors();
+		if (!S) return;
 
 		if (IsVolumeEditing())
 		{
-			// keep the session while the zone or its handles are selected (or
-			// nothing is - the user may just be orbiting); end it when the user
-			// moves on to a different object
-			const bool bKeep = !Sel || Sel == GVolEdit.Volume.Get() || Sel->Tags.Contains(kHandleTag);
-			if (!bKeep) FinishVolumeEdit();
+			// while a zone's points are up, ONLY the handles are selectable -
+			// clicks on anything else are stripped so buried points stay easy to
+			// grab. The session ends only on ESC or ENTER.
+			TArray<AActor*> Strip;
+			for (int32 i = 0; i < S->Num(); i++)
+				if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
+					if (!A->Tags.Contains(kHandleTag)) Strip.Add(A);
+			for (AActor* A : Strip) GEditor->SelectActor(A, false, true);
+			return;
 		}
-		if (!IsVolumeEditing() && Sel && GVolumeLoops.Contains(Sel))
+
+		// selecting a zone begins point editing automatically
+		AActor* Sel = nullptr;
+		for (int32 i = 0; i < S->Num() && !Sel; i++) Sel = Cast<AActor>(S->GetSelectedObject(i));
+		if (Sel && GVolumeLoops.Contains(Sel))
 			BeginVolumeEdit(Sel);
 	}
 
@@ -3003,7 +3113,7 @@ static void BF6_RepairAfterUndo()
 		if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kHandleTag)) continue;
 		UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
 		if (!M || M->GetNumSections() > 0) continue;
-		if (A->Tags.Contains(kHandleTag)) { BuildHandleCube(M); ApplyObjectWhite(M); continue; }
+		if (A->Tags.Contains(kHandleTag)) { BuildHandleCube(M); ApplyHandleStyle(M); continue; }
 		if (const TArray<FVector>* Loop = GVolumeLoops.Find(A)) { RebuildVolumeWalls(A, *Loop); continue; }
 		FString Mesh = TagValue(A, TEXT("mesh:"));
 		if (Mesh.IsEmpty()) Mesh = TagValue(A, TEXT("type:"));
