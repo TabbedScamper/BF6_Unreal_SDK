@@ -726,12 +726,14 @@ static void RebuildVolumeWalls(AActor* Vol, const TArray<FVector>& Loop)
 {
 	UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(Vol->GetRootComponent());
 	if (!M) return;
-	// the zone's real height (Godot metres) when it carries one
+	// the zone's real height (Godot metres) when it carries one; 0 means
+	// INFINITE in the SDK, which Godot's gizmo draws at 5 m - match that
 	double H = 5.0;
 	const FString HS = BF6Api::GetActorProp(Vol, TEXT("height"));
 	if (HS.IsNumeric()) H = FCString::Atod(*HS);
+	if (H <= 0.01) H = 5.0;
 	M->ClearAllMeshSections();
-	BuildWalls(M, Loop, (float)FMath::Max(H, 0.5) * 100.f);
+	BuildWalls(M, Loop, (float)H * 100.f);
 	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume")))
 		M->SetMaterial(0, Mat);
 }
@@ -938,6 +940,10 @@ static void LoadSession(const FString& Level, const FString& Name)
 					FString KV;
 					if (PV->TryGetString(KV) && !KV.IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("p:")) + KV)));
 				}
+				// props land AFTER the loop rebuild above: if this is a zone and
+				// the session saved a custom height, stretch the walls to it now
+				if (const TArray<FVector>* Lp = GVolumeLoops.Find(A))
+					RebuildVolumeWalls(A, *Lp);
 			}
 		}
 	}
@@ -2019,7 +2025,8 @@ static void BF6_LoadBaseSetup(const FString& Level)
 					VolH = FCString::Atod(*hs);
 			}
 			A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,(float)FMath::Max(VolH,0.5)*100.f); if(UMaterialInterface* Mat=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0,Mat); GVolumeLoops.Add(A, Loop); }
+			if (VolH <= 0.01) VolH = 5.0;   // SDK: 0 = infinite, drawn at 5 m like Godot
+			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,(float)VolH*100.f); if(UMaterialInterface* Mat=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0,Mat); GVolumeLoops.Add(A, Loop); }
 		}
 		else
 		{
@@ -3315,6 +3322,10 @@ namespace BF6Api
 		for (int32 i = A->Tags.Num() - 1; i >= 0; i--)
 			if (A->Tags[i].ToString().StartsWith(Prefix)) A->Tags.RemoveAt(i);
 		A->Tags.Add(FName(*(Prefix + Value)));
+		// a zone's height is part of its look: stretch the walls immediately
+		if (Key.Equals(TEXT("height"), ESearchCase::IgnoreCase))
+			if (const TArray<FVector>* Lp = GVolumeLoops.Find(A))
+				RebuildVolumeWalls(A, *Lp);
 	}
 
 	// ---- zone point editing ----
@@ -3362,6 +3373,18 @@ namespace BF6Api
 		if (!IsVolumeEditing()) return;
 		AActor* Vol = GVolEdit.Volume.Get();
 		if (!Vol) { GVolEdit = FBF6VolEdit(); return; }
+
+		// Points can vanish mid-session - Del on a selected handle, or Ctrl+Z of
+		// an add. Treat a missing handle as "that point was deleted": prune it
+		// and let the gather below resync the loop and the walls. Fewer than 3
+		// survivors ends the edit.
+		for (int32 i = GVolEdit.Handles.Num() - 1; i >= 0; i--)
+			if (!GVolEdit.Handles[i].IsValid()) GVolEdit.Handles.RemoveAt(i);
+		if (GVolEdit.Handles.Num() < 3)
+		{
+			FinishVolumeEdit();
+			return;
+		}
 
 		// Godot-style add preview: while Ctrl is held, a white marker rides the
 		// nearest edge under the cursor; Ctrl+LMB inserts a point there.
