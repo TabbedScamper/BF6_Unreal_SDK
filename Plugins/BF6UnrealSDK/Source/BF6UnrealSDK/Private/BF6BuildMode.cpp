@@ -30,6 +30,8 @@
 #include "IDesktopPlatform.h"
 #include "Misc/MessageDialog.h"
 #include "Widgets/Notifications/SProgressBar.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
 #include "Styling/CoreStyle.h"
@@ -1070,7 +1072,19 @@ static void BF6Pie_Attach()
 		}
 		break;
 	}
-	default: break;   // Place: empty items = the object categories
+	default:
+		// Place: empty items = the object categories. If the catalogue never
+		// loaded (bf6_core failed, or the data import never ran), say so
+		// instead of presenting an empty ring with nothing but Cancel.
+		if (BF6Api::Categories().Num() == 0)
+		{
+			FNotificationInfo Info(FText::FromString(TEXT(
+				"No object catalogue is loaded. Check Saved/Logs/BF6_High_Poly.log for bf6_core errors, or run SDK Setup from the map screen.")));
+			Info.ExpireDuration = 8.0f;
+			FSlateNotificationManager::Get().AddNotification(Info);
+			return;
+		}
+		break;
 	}
 
 	GPie = SNew(SBF6PieMenu).Items(Items).Subs(Subs);

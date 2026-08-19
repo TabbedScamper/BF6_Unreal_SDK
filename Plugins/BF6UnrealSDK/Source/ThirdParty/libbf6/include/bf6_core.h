@@ -43,7 +43,10 @@ typedef struct bf6_ctx bf6_ctx;
 
 /* Open an install: mount, read the type schema, and OOA-lift the executable in
  * memory if it is DRM-wrapped (EA App). All storefront divergence lives behind
- * this one call. Returns NULL on failure and writes a reason into err. */
+ * this one call. Returns NULL on failure and writes a reason into err.
+ * An empty game_dir is the explicit no-install mode: it always succeeds and
+ * returns a context with nothing mounted. Mesh reads fail on it, but the
+ * placeable catalogue (bf6_load_placeables and friends) works fully. */
 BF6_API bf6_ctx* bf6_open(const char* game_dir, char* err, int err_len);
 BF6_API void     bf6_close(bf6_ctx*);
 

@@ -3152,6 +3152,14 @@ void FBF6UnrealSDKModule::StartupModule()
 
 	char err[256] = {0};
 	g_ctx = g_open(kGameDir, err, sizeof(err));
+	if (!g_ctx)
+	{
+		// No game install on this machine (or not at the Steam path). Fall back
+		// to libbf6's no-install mode: mesh decode is unavailable, but the
+		// placeable catalogue is SDK data and works fully without the game.
+		UE_LOG(LogBF6, Log, TEXT("no game install (%hs); running catalogue-only"), err);
+		g_ctx = g_open("", err, sizeof(err));
+	}
 	if (!g_ctx) { UE_LOG(LogBF6, Warning, TEXT("bf6_open failed: %hs"), err); }
 	else
 	{
