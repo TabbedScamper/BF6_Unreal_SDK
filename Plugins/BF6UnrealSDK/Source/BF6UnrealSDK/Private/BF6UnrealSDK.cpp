@@ -522,8 +522,12 @@ static void RebuildVolumeWalls(AActor* Vol, const TArray<FVector>& Loop)
 {
 	UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(Vol->GetRootComponent());
 	if (!M) return;
+	// the zone's real height (Godot metres) when it carries one
+	double H = 5.0;
+	const FString HS = BF6Api::GetActorProp(Vol, TEXT("height"));
+	if (HS.IsNumeric()) H = FCString::Atod(*HS);
 	M->ClearAllMeshSections();
-	BuildWalls(M, Loop, 500.f);
+	BuildWalls(M, Loop, (float)FMath::Max(H, 0.5) * 100.f);
 	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume")))
 		M->SetMaterial(0, Mat);
 }
@@ -1659,8 +1663,15 @@ static void BF6_LoadBaseSetup(const FString& Level)
 		{
 			TArray<FVector> Loop;
 			for (int32 i = 0; i + 1 < pts->Num(); i += 2){ const float px=(*pts)[i]->AsNumber(), pz=(*pts)[i+1]->AsNumber(); Loop.Add(ToUnreal(FVector(gw.X+px, gw.Y, gw.Z+pz))); }
+			// the shipped zone height when the scene carries one (Godot metres)
+			double VolH = 5.0;
+			{
+				const TSharedPtr<FJsonObject>* PP = nullptr; FString hs;
+				if (o->TryGetObjectField(TEXT("props"), PP) && PP->IsValid() && (*PP)->TryGetStringField(TEXT("height"), hs) && hs.IsNumeric())
+					VolH = FCString::Atod(*hs);
+			}
 			A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,500.f); if(UMaterialInterface* Mat=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0,Mat); GVolumeLoops.Add(A, Loop); }
+			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,(float)FMath::Max(VolH,0.5)*100.f); if(UMaterialInterface* Mat=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0,Mat); GVolumeLoops.Add(A, Loop); }
 		}
 		else
 		{
@@ -1776,34 +1787,43 @@ static void BF6_ExportSpatial(bool bMinify)
 			e->SetObjectField(TEXT("position"), Vec(gw.X,gw.Y,gw.Z));
 			e->SetStringField(TEXT("id"), ShortName(nm));
 			AActor* Live = LiveByName.FindRef(nm);
-			// zone polygon: a reshaped loop from the point editor wins over the json
+			// zone polygon: the REAL spatial format wants GLOBAL Godot {x,y,z}
+			// vectors plus a height field (verified against shipped experiences).
+			// A reshaped loop from the point editor wins over the json.
 			const TArray<TSharedPtr<FJsonValue>>* pts=nullptr;
 			if (o->TryGetArrayField(TEXT("points"),pts))
 			{
+				TArray<TSharedPtr<FJsonValue>> PtsArr;
 				const TArray<FVector>* EditedLoop = Live ? GVolumeLoops.Find(Live) : nullptr;
 				if (EditedLoop && EditedLoop->Num() >= 3)
 				{
-					TArray<TSharedPtr<FJsonValue>> PtsArr;
 					for (const FVector& Wv : *EditedLoop)
-					{
-						PtsArr.Add(MakeShared<FJsonValueNumber>(Wv.X / 100.0 - gw.X));
-						PtsArr.Add(MakeShared<FJsonValueNumber>(Wv.Y / 100.0 - gw.Z));
-					}
-					e->SetArrayField(TEXT("points"), PtsArr);
+						PtsArr.Add(MakeShared<FJsonValueObject>(Vec(Wv.X / 100.0, Wv.Z / 100.0, Wv.Y / 100.0)));
 				}
-				else e->SetArrayField(TEXT("points"), *pts);
+				else
+				{
+					for (int32 i = 0; i + 1 < pts->Num(); i += 2)
+						PtsArr.Add(MakeShared<FJsonValueObject>(Vec(gw.X + (*pts)[i]->AsNumber(), gw.Y, gw.Z + (*pts)[i + 1]->AsNumber())));
+				}
+				e->SetArrayField(TEXT("points"), PtsArr);
 			}
 			// field values: live edits win, else the shipped values from the scene
 			{
 				const TArray<BF6Api::FPropDef> Defs = BF6Api::PropsForType(ty);
 				const TSharedPtr<FJsonObject>* JP = nullptr;
 				o->TryGetObjectField(TEXT("props"), JP);
+				TArray<TSharedPtr<FJsonValue>> LinkedNames;
 				for (const BF6Api::FPropDef& D : Defs)
 				{
 					FString V = Live ? BF6Api::GetActorProp(Live, D.Name) : FString();
 					if (V.IsEmpty() && JP && JP->IsValid()) (*JP)->TryGetStringField(D.Name, V);
+					if (V.IsEmpty() || V.Contains(TEXT("NodePath")) || V.Contains(TEXT("ExtResource"))) continue;
 					EmitTyped(e, D, V);
+					if (D.Type.Contains(TEXT("Volume")) || D.Type.Contains(TEXT("Array[")) || D.Type.Contains(TEXT("Path")) || D.Type.Contains(TEXT("SpawnPoint")))
+						LinkedNames.Add(MakeShared<FJsonValueString>(D.Name));
 				}
+				// the format's "linked" array: which fields are object references
+				if (LinkedNames.Num()) e->SetArrayField(TEXT("linked"), LinkedNames);
 			}
 			Dynamic.Add(MakeShared<FJsonValueObject>(e));
 		}
@@ -1826,8 +1846,16 @@ static void BF6_ExportSpatial(bool bMinify)
 		// edited attribute values from the context radial
 		{
 			const TArray<BF6Api::FPropDef> Defs = BF6Api::PropsForType(Type);
+			TArray<TSharedPtr<FJsonValue>> LinkedNames;
 			for (const BF6Api::FPropDef& D : Defs)
-				EmitTyped(e, D, BF6Api::GetActorProp(*It, D.Name));
+			{
+				const FString V = BF6Api::GetActorProp(*It, D.Name);
+				if (V.IsEmpty() || V.Contains(TEXT("NodePath")) || V.Contains(TEXT("ExtResource"))) continue;
+				EmitTyped(e, D, V);
+				if (D.Type.Contains(TEXT("Volume")) || D.Type.Contains(TEXT("Array[")) || D.Type.Contains(TEXT("Path")) || D.Type.Contains(TEXT("SpawnPoint")))
+					LinkedNames.Add(MakeShared<FJsonValueString>(D.Name));
+			}
+			if (LinkedNames.Num()) e->SetArrayField(TEXT("linked"), LinkedNames);
 		}
 		Dynamic.Add(MakeShared<FJsonValueObject>(e)); pid++;
 	}
@@ -1890,6 +1918,40 @@ static bool BF6_ImportSpatialDialog()
 	auto Swap = [](const FVector& v){ return FVector(v.X,v.Z,v.Y); };
 	auto ReadVec = [](const TSharedPtr<FJsonObject>& o, const TCHAR* key, const FVector& def){ const TSharedPtr<FJsonObject>* v=nullptr; if(!o->TryGetObjectField(key,v)||!v->IsValid()) return def; return FVector((*v)->GetNumberField(TEXT("x")),(*v)->GetNumberField(TEXT("y")),(*v)->GetNumberField(TEXT("z"))); };
 
+	// restore every non-structural field as an editable attribute (p: tags)
+	auto RestoreProps = [](AActor* A, const TSharedPtr<FJsonObject>& o)
+	{
+		static const TCHAR* Skip[] = { TEXT("name"), TEXT("type"), TEXT("id"), TEXT("right"), TEXT("up"), TEXT("front"), TEXT("position"), TEXT("points"), TEXT("linked") };
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& KV : o->Values)
+		{
+			if (KV.Key.StartsWith(TEXT("metadata"))) continue;
+			bool bSkip = false;
+			for (const TCHAR* S : Skip) if (KV.Key == S) { bSkip = true; break; }
+			if (bSkip || !KV.Value.IsValid()) continue;
+			FString V;
+			switch (KV.Value->Type)
+			{
+			case EJson::String:  V = KV.Value->AsString(); break;
+			case EJson::Boolean: V = KV.Value->AsBool() ? TEXT("true") : TEXT("false"); break;
+			case EJson::Number:
+			{
+				const double N = KV.Value->AsNumber();
+				V = FMath::Frac(N) == 0.0 ? FString::Printf(TEXT("%lld"), (int64)N) : FString::SanitizeFloat(N);
+				break;
+			}
+			case EJson::Array:
+			{
+				TArray<FString> Parts;
+				for (const auto& av : KV.Value->AsArray()) { FString s; if (av->TryGetString(s)) Parts.Add(s); }
+				V = FString::Join(Parts, TEXT(","));
+				break;
+			}
+			default: break;
+			}
+			if (!V.IsEmpty()) A->Tags.Add(FName(*FString::Printf(TEXT("p:%s=%s"), *KV.Key, *V)));
+		}
+	};
+
 	int32 spawned = 0;
 	for (const auto& dv : *Dyn)
 	{
@@ -1898,15 +1960,38 @@ static bool BF6_ImportSpatialDialog()
 		if (Type.IsEmpty() || Type.StartsWith(TEXT("MP_"))) continue;
 		const FVector gpos = ReadVec(o, TEXT("position"), FVector::ZeroVector);
 		const TArray<TSharedPtr<FJsonValue>>* pts = nullptr;
-		if (o->TryGetArrayField(TEXT("points"), pts) && pts->Num() >= 6)
+		if (o->TryGetArrayField(TEXT("points"), pts) && pts->Num() >= 3)
 		{
-			TArray<FVector> Loop; for (int32 i=0;i+1<pts->Num();i+=2) Loop.Add(ToUnreal(gpos.X+(*pts)[i]->AsNumber(), gpos.Y, gpos.Z+(*pts)[i+1]->AsNumber()));
-			AActor* A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator); if (!A) continue;
-			UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume")); BuildWalls(VM, Loop, 500.f);
-			if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0, Mat);
-			A->SetActorLabel(FString::Printf(TEXT("BF6_%s"), *Type)); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient);
-			GVolumeLoops.Add(A, Loop);   // imported zones are point-editable too
-			spawned++; continue;
+			// the real format: global Godot {x,y,z} vectors; our older files and
+			// the base setups use flat local x,z pairs - accept both
+			TArray<FVector> Loop;
+			if ((*pts)[0]->Type == EJson::Object)
+			{
+				for (const auto& pv : *pts)
+				{
+					const TSharedPtr<FJsonObject> po = pv->AsObject(); if (!po.IsValid()) continue;
+					Loop.Add(ToUnreal(po->GetNumberField(TEXT("x")), po->GetNumberField(TEXT("y")), po->GetNumberField(TEXT("z"))));
+				}
+			}
+			else if (pts->Num() >= 6)
+			{
+				for (int32 i = 0; i + 1 < pts->Num(); i += 2)
+					Loop.Add(ToUnreal(gpos.X + (*pts)[i]->AsNumber(), gpos.Y, gpos.Z + (*pts)[i + 1]->AsNumber()));
+			}
+			if (Loop.Num() >= 3)
+			{
+				double H = 5.0;
+				o->TryGetNumberField(TEXT("height"), H);
+				AActor* A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator); if (!A) continue;
+				UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
+				BuildWalls(VM, Loop, (float)FMath::Max(H, 0.5) * 100.f);
+				if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0, Mat);
+				A->SetActorLabel(FString::Printf(TEXT("BF6_%s"), *Type)); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient);
+				RestoreProps(A, o);
+				GVolumeLoops.Add(A, Loop);   // imported zones are point-editable too
+				spawned++;
+			}
+			continue;
 		}
 		const FVector Rg=ReadVec(o,TEXT("right"),FVector(1,0,0)), Ug=ReadVec(o,TEXT("up"),FVector(0,1,0)), Fg=ReadVec(o,TEXT("front"),FVector(0,0,1));
 		const FVector Ax=Swap(Rg), Ay=Swap(Fg), Az=Swap(Ug);
@@ -1914,6 +1999,7 @@ static bool BF6_ImportSpatialDialog()
 		const FString Mesh = BF6_ResolveMeshForType(Type);
 		AActor* A = Mesh.IsEmpty() ? nullptr : SpawnSdkModel(Mesh, Type, Xf);
 		if (!A){ A=World->SpawnActor<AActor>(AActor::StaticClass(),FVector::ZeroVector,FRotator::ZeroRotator); if(!A)continue; UProceduralMeshComponent* MM=MakeProcMesh(A,TEXT("Model")); BuildMarker(MM); A->SetActorTransform(Xf); A->SetActorLabel(FString::Printf(TEXT("BF6_%s"),*Type)); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient); }
+		RestoreProps(A, o);   // ObjId, teams, links - everything editable again
 		spawned++;
 	}
 	BF6_RecomputeBudget();
