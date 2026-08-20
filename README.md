@@ -11,11 +11,31 @@ Open the project and the editor becomes a map builder:
 - **Map selector**: a full-screen picker styled after the Portal site's choose-maps page. Every map shows its key art, name, and placeable object count. Click a map to open its base, or resume one of your saved projects on it.
 - **Base setup**: every map loads with its shipped gameplay layout, including HQs, spawn points (with correct facings), deploy cameras, and the combat area volume, plus the low-poly terrain and asset meshes so you always know where you are.
 - **Placement**: aim anywhere on the map and press **Space**. A radial menu opens with the object categories (Architecture, Props, Nature, Gameplay, and so on). Pick a category, search it, hover an object for a live 3D preview of its model, and double click to place it right where you aimed. All 9,700+ SDK low-poly models are supported.
+- **Object library**: a slide-up library of every placeable as cards with generated 3D thumbnails. Search it, reorganize objects into your own categories, drag a card straight into the world, or click one for an orbitable preview (drag to spin, scroll to zoom) before you commit.
+- **Blocks**: save any selection as a reusable block. Place copies anywhere, and blocks are single files you can share with anyone. Double-click a placed copy to edit inside it; press Enter and every copy on the map updates to match, or Esc to revert the whole edit.
+- **Group editing**: double-click any group to tab into it. Everything outside the group turns transparent and unclickable, so you only ever touch what you meant to. Enter keeps the changes, Esc puts everything back.
 - **Physics budget**: a live budget bar sits on top of the viewport, tracking the same per-map physics cost limit the SDK's memory tool enforces. It fills from blue to red as you build and can be hidden.
-- **Gameplay editing**: select any gameplay object and press **Space** for its context radial. Edit the full attribute suite (HQ teams, MCOM settings, combat area timers, vehicle spawner types, and more, with real dropdowns from the SDK data), link spawn points and volumes with a pick mode, and edit zone polygons Godot-style: points appear on selection, drag to move, right click an edge to add.
+- **Gameplay editing**: select any gameplay object and press **Space** for its context radial. Edit the full attribute suite (HQ teams, MCOM settings, combat area timers, vehicle spawner types, and more, with real dropdowns from the SDK data) right inside the menu, and edit zone polygons Godot-style: orange point handles appear on selection, drag to move, Ctrl+click an edge to add, Del to remove.
+- **Assign mode**: when a field links objects together (spawn points to an HQ, volumes to a combat area), everything that can't be assigned fades out, valid targets get color-coded markers with lines showing what's already assigned, and clicking the markers picks them. Enter confirms and drops you back in the attributes menu.
+- **SDK hints**: a toggle that explains SDK concepts on hover, so new builders learn teams, spawns, and volumes without leaving the editor.
+- **Camera your way**: standard Unreal navigation, or switch on the Godot-style camera (middle mouse orbit, Shift+middle mouse pan) if that is what your hands know. A pinned panel in the corner always shows the controls for whatever you are doing.
 - **Save / resume**: name your custom map, save it, and pick it back up later from the map selector. Sessions autosave every 60 seconds and the tool asks before you leave unsaved work.
 - **Export**: writes your map to `<map>.spatial.json` in the SDK's Portal format, verified against shipped Portal experiences. Export with readable names, or minified ([PortalSpatialMinifier](https://github.com/dfanz0r/PortalSpatialMinifier)-style) so it fits Portal's upload size limits. Drop the file into an SDK mod folder and run the SDK's experience exporter to package it for Portal.
 - **Import**: load any `.spatial.json` (your own exports or SDK samples) straight back into the editor as an editable project. The tool detects which map the file belongs to and opens it there.
+
+## Why Unreal instead of the official SDK
+
+This tool covers the official Godot SDK's workflow, and then adds what it never gave you:
+
+- **Blocks**: reusable, shareable prefabs where editing one copy updates every copy on the map. The Godot SDK has nothing like it; repeated layouts mean repeated hand-placement.
+- **Tab-in editing** for groups and blocks, with the rest of the world ghosted out.
+- **Assign mode** for linking objects, with fading, markers, and assignment lines instead of hunting through a node tree.
+- **A visual object library** with thumbnails, search, drag-to-place, and orbitable previews, instead of a name list.
+- **In-editor hints** that teach the SDK's concepts as you hover.
+- **One-click self-updates** from inside the editor.
+- **Import of existing experiences**, including minified ones, straight back to an editable state.
+
+Beyond the feature list, Unreal is the industry-standard world editor: a faster viewport, better gizmos, dependable undo everywhere, and a tooling ecosystem the stock Godot SDK does not match. That foundation is what lets this project spend its time on creator features instead of basics, and it is where the planned high-poly add-on will render the real game assets instead of placeholder models. Same export, same Portal upload, a better place to build.
 
 ## Requirements
 
@@ -58,7 +78,6 @@ When a new SDK version drops, unzip it and run **SDK Setup** again from the map 
 ## Roadmap
 
 - Model colors and materials, so the low poly models look as good as they do in the Godot SDK
-- A Godot-style camera option (middle mouse orbit, Shift+middle mouse pan)
 - A wide-screen hotkey build mode for faster placement
 - High-poly overlay as a separate add-on plugin: full-detail meshes, materials, and extended terrain decoded from the game itself
 
