@@ -84,6 +84,10 @@ namespace BF6Api
 	bool    WorldFromViewportCursor(FVector& OutWorld);
 	// The surface point straight ahead of the camera (library double-click placement).
 	bool    WorldFromViewportCenter(FVector& OutWorld);
+	// Godot-style camera navigation (the input processor's MMB handling).
+	bool    ComputeOrbitPivot(FVector& Out);
+	void    CameraOrbit(const FVector2D& DeltaPx, const FVector& Pivot);
+	void    CameraPan(const FVector2D& DeltaPx, const FVector& DepthRef);
 
 	// ============================================================================
 	// Entry points implemented in BF6BuildMode.cpp
@@ -134,6 +138,19 @@ namespace BF6Api
 	void VolumeDeletePoint();               // remove the selected handle (min 3)
 	// remove the point nearest to WorldPos, Godot-style Ctrl+RMB (min 3)
 	void VolumeDeletePointAt(const FVector& WorldPos);
+	// ---- the zone's screen-space dots (Godot-style handles) ----
+	// Viewport-pixel positions of the edited zone's handles - TWO per point,
+	// [0..N) bottom ring then [N..2N) top ring - plus the Ctrl edge-preview
+	// dot (computed in screen space so it hugs the cursor). False = not editing.
+	bool  GetZoneDots(TArray<FVector2D>& OutPx, int32& OutPointCount, int32& OutActive, int32& OutDrag, FVector2D& OutEdgePx, bool& bOutEdge);
+	int32 ZoneDotUnderMouse();            // grab test at the cursor, -1 = none
+	bool  IsZoneDotDragging();
+	void  BeginZoneDotDrag(int32 Index);  // opens the undo transaction
+	void  DragZoneDotToCursor();          // slide on the handle's height plane
+	void  EndZoneDotDrag();               // closes the transaction
+	void  VolumeAddPointAtPreview();      // Ctrl+LMB: insert at the edge preview
+	void  VolumeDeletePointByIndex(int32 RawIndex);   // Ctrl+RMB on a dot
+	void  ClearSelection();               // deselect everything (Esc from an edit)
 	void FinishVolumeEdit();                // bake the handles back into the walls
 	void TickVolumeEdit();                  // live wall rebuild while handles move
 	// selecting a zone starts point editing automatically; selecting something
@@ -147,12 +164,18 @@ namespace BF6Api
 	// blocks arrive grouped. Groups are TEMPORARY (not saved in the session).
 	void GroupSelection();
 	void UngroupSelection();
-	// Revit-style group editing: tab in, members-only selection, Enter/Esc locks.
-	bool SelectionGrouped();               // is the selected object in a group?
+	// Revit-style focus editing: double-click (or GROUPING > Edit) tabs into a
+	// group or placed block - only members stay solid/selectable, the rest of
+	// the world ghosts. Enter keeps the edits (a block also re-saves and
+	// refreshes every placed copy); Esc reverts everything from this edit.
+	bool SelectionGrouped();               // selected object in a group or block?
 	bool IsGroupEditing();
+	bool GroupEditIsBlock();               // the active focus edit is a block
 	void BeginGroupEditFromSelection();
-	void FinishGroupEdit();
+	bool BeginGroupEditFromActor(AActor* Seed);   // double-click entry point
+	void FinishGroupEdit(bool bKeepEdits);
 	void TickGroupEdit();                  // enforce members-only selection
+	AActor* ActorUnderCursor();            // hit-proxy pick under the mouse
 	// One shareable JSON per block under Saved/BF6UnrealSDK/blocks. A block
 	// remembers the map it was built for and its objects (relative transforms
 	// + attribute tags). Returns how many objects were captured (0 = failed).
@@ -164,11 +187,25 @@ namespace BF6Api
 	void                OpenBlocksFolder();          // sharing: send/receive the files
 	const struct FSlateBrush* GetBlockThumb(const FString& Name);   // composite iso render
 
+	// ---- OBB (box) volume editing, Godot-style face handles ----
+	bool IsObbActor(class AActor* A);
+	bool IsObbEditing();
+	void BeginObbEdit(class AActor* Obb);   // six face handles; selecting one auto-starts
+	void FinishObbEdit();
+	void TickObbEdit();                     // apply face drags (ALT = symmetric)
+
 	// ---- link picking (assign spawn points / volumes to an object) ----
+	// Assign mode ghosts everything non-assignable (translucent, unselectable)
+	// and marks candidates with colour-coded screen dots: free / assigned
+	// (green, with a line to the owner) / pending-selected (orange line).
 	bool IsLinkPicking();
 	void BeginLinkPick(AActor* Owner, const FString& PropName, bool bArray);
 	void ConfirmLinkPick();                 // write the current selection as the link
 	void CancelLinkPick();
+	void TickLinkPick();                    // project the overlay markers
+	bool GetLinkOverlay(TArray<FVector2D>& OutPx, TArray<uint8>& OutState, FVector2D& OutOwnerPx, bool& bOutOwner);
+	int32 LinkDotUnderMouse();              // marker grab test, -1 = none
+	void ToggleLinkCandidate(int32 Index);  // click a marker to (de)select it
 
 	// ---- SDK data import (first-run setup + re-sync) ----
 	// The tool generates its data packs from the user's own unzipped Portal SDK

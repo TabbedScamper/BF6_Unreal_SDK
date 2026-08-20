@@ -5,8 +5,10 @@
 #include "EditorViewportClient.h"
 #include "ProceduralMeshComponent.h"
 #include "UObject/Package.h"
+#include "Widgets/SLeafWidget.h"
+#include "Widgets/SOverlay.h"
 
-// --- viewport client: turntable orbit around the model ---
+// --- viewport client: just renders; the widget's input layer moves the camera ---
 class FBF6PreviewClient : public FEditorViewportClient
 {
 public:
@@ -17,10 +19,9 @@ public:
 		bSetListenerPosition = false;
 		EngineShowFlags.SetGrid(false);
 		EngineShowFlags.SetSelectionOutline(false);
-
-		// Orbit navigation, like an asset preview.
-		bUsingOrbitCamera = true;
-		SetViewLocationForOrbiting(FVector::ZeroVector, 300.0f);
+		// repaint every frame - camera moves come from outside the viewport's
+		// own input path, so we can't rely on its invalidate-on-input
+		SetRealtime(true);
 	}
 
 	// Keep the preview world ticking so lighting/rotation update.
@@ -32,24 +33,72 @@ public:
 			PreviewScene->GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
 		}
 	}
+};
 
-	void FrameBounds(const FVector& Center, float Radius)
+// --- invisible layer above the viewport: LMB/RMB drag spins, wheel zooms.
+// Sits on top of the SViewport so it gets the events FIRST, which makes the
+// orbit work identically whether the preview is docked or inside a popup. ---
+class SBF6OrbitLayer : public SLeafWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6OrbitLayer) : _Owner(nullptr) {}
+		SLATE_ARGUMENT(SBF6PreviewViewport*, Owner)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
 	{
-		const float Dist = FMath::Max(60.0f, Radius * 2.4f);
-		// Three-quarter top-down (near-isometric): look down at the model from a
-		// corner so its shape reads instantly. Front-on made objects hard to read.
-		const FRotator Rot(-35.264f, -135.f, 0.f);
-		SetViewLocationForOrbiting(Center, Dist);
-		SetViewLocation(Center - Rot.Vector() * Dist);
-		SetViewRotation(Rot);
-		Invalidate();
+		Owner = InArgs._Owner;
+		SetCursor(EMouseCursor::GrabHand);
 	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(1.f, 1.f); }
+	virtual int32 OnPaint(const FPaintArgs&, const FGeometry&, const FSlateRect&,
+		FSlateWindowElementList&, int32 LayerId, const FWidgetStyle&, bool) const override
+	{ return LayerId; }   // draws nothing
+
+	virtual FReply OnMouseButtonDown(const FGeometry&, const FPointerEvent& E) override
+	{
+		if (E.GetEffectingButton() == EKeys::LeftMouseButton || E.GetEffectingButton() == EKeys::RightMouseButton)
+			return FReply::Handled().CaptureMouse(SharedThis(this));
+		return FReply::Unhandled();
+	}
+
+	virtual FReply OnMouseMove(const FGeometry&, const FPointerEvent& E) override
+	{
+		if (!HasMouseCapture() || !Owner) return FReply::Unhandled();
+		Owner->OrbitBy(E.GetCursorDelta());
+		return FReply::Handled();
+	}
+
+	virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent& E) override
+	{
+		if (HasMouseCapture()) return FReply::Handled().ReleaseMouseCapture();
+		return FReply::Unhandled();
+	}
+
+	virtual FReply OnMouseWheel(const FGeometry&, const FPointerEvent& E) override
+	{
+		if (Owner) { Owner->ZoomBy(E.GetWheelDelta()); return FReply::Handled(); }
+		return FReply::Unhandled();
+	}
+
+private:
+	SBF6PreviewViewport* Owner = nullptr;   // parent widget; lifetimes are tied
 };
 
 void SBF6PreviewViewport::Construct(const FArguments& InArgs)
 {
 	PreviewScene = MakeShareable(new FAdvancedPreviewScene(FPreviewScene::ConstructionValues()));
 	SEditorViewport::Construct(SEditorViewport::FArguments());
+
+	// wrap whatever SEditorViewport built with our orbit input layer on top
+	TSharedRef<SWidget> Inner = ChildSlot.GetWidget();
+	ChildSlot
+	[
+		SNew(SOverlay)
+		+ SOverlay::Slot()[ Inner ]
+		+ SOverlay::Slot()[ SNew(SBF6OrbitLayer).Owner(this) ]
+	];
 }
 
 SBF6PreviewViewport::~SBF6PreviewViewport()
@@ -72,6 +121,28 @@ void SBF6PreviewViewport::ClearModel()
 	}
 }
 
+void SBF6PreviewViewport::OrbitBy(const FVector2D& CursorDelta)
+{
+	Yaw  += CursorDelta.X * 0.5f;
+	Pitch = FMath::Clamp(Pitch - CursorDelta.Y * 0.5f, -85.f, 85.f);
+	ApplyCamera();
+}
+
+void SBF6PreviewViewport::ZoomBy(float WheelDelta)
+{
+	Dist = FMath::Clamp(Dist * (1.f - WheelDelta * 0.12f), MinDist, MaxDist);
+	ApplyCamera();
+}
+
+void SBF6PreviewViewport::ApplyCamera()
+{
+	if (!Client.IsValid()) return;
+	const FRotator Rot((float)Pitch, (float)Yaw, 0.f);
+	Client->SetViewLocation(Center - Rot.Vector() * Dist);
+	Client->SetViewRotation(Rot);
+	Client->Invalidate();
+}
+
 void SBF6PreviewViewport::ShowModel(const FString& MeshName)
 {
 	ClearModel();
@@ -86,7 +157,14 @@ void SBF6PreviewViewport::ShowModel(const FString& MeshName)
 	}
 	PreviewScene->AddComponent(Mesh, FTransform::Identity);
 	// frame the model's real centre (object origins sit at the base, so aiming
-	// at the world origin cut tall models off)
+	// at the world origin cut tall models off) from the corner iso, then let
+	// the orbit layer take it from there
 	const FBoxSphereBounds B = Mesh->CalcBounds(FTransform::Identity);
-	if (Client.IsValid()) Client->FrameBounds(B.Origin, Radius);
+	Center  = B.Origin;
+	Dist    = FMath::Max(60.f, Radius * 2.4f);
+	MinDist = FMath::Max(20.f, Radius * 0.7f);
+	MaxDist = FMath::Max(300.f, Radius * 10.f);
+	Yaw     = -135.f;
+	Pitch   = -35.264f;
+	ApplyCamera();
 }
