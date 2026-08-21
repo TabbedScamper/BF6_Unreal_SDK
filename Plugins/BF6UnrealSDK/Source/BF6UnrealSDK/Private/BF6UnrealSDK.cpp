@@ -15,6 +15,7 @@
 #include "Serialization/JsonReader.h"
 #include "ProceduralMeshComponent.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "GameFramework/Actor.h"
 #include "EngineUtils.h"
 #include "Editor.h"
@@ -811,12 +812,39 @@ struct FBF6LinkPick
 	FVector2D OwnerPx = FVector2D::ZeroVector;
 	bool bOwnerPx = false;
 	TArray<FBF6Ghosted> Ghosted;
+	// candidates glow solid neon so they never blend into the map; their real
+	// materials are stored here and restored on exit. One MID per state so the
+	// mesh colour matches the marker and the line to the owner.
+	TArray<FBF6Ghosted> Neon;
+	TArray<uint8> NeonApplied;       // last state a candidate was painted with
+	TStrongObjectPtr<UMaterialInstanceDynamic> Mid[3];
 };
 static FBF6LinkPick GLinkPick;
+
+// marker, line, and mesh share these: free cyan / assigned green / pending orange
+static const FLinearColor kLinkNeon[3] = {
+	FLinearColor(0.f, 0.9f, 1.f),
+	FLinearColor(0.22f, 1.f, 0.08f),
+	FLinearColor(1.f, 0.63f, 0.f) };
+
+static void BF6_LinkApplyNeon(int32 i)
+{
+	if (!GLinkPick.Candidates.IsValidIndex(i) || !GLinkPick.CandState.IsValidIndex(i)) return;
+	const uint8 St = FMath::Min<uint8>(GLinkPick.CandState[i], 2);
+	UMaterialInstanceDynamic* Mid = GLinkPick.Mid[St].Get();
+	AActor* C = GLinkPick.Candidates[i].Get();
+	if (!Mid || !C) return;
+	if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(C->GetRootComponent()))
+		for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mid);
+	if (GLinkPick.NeonApplied.IsValidIndex(i)) GLinkPick.NeonApplied[i] = St;
+}
 
 static void BF6_LinkGhostRestore()
 {
 	BF6_GhostRestoreSet(GLinkPick.Ghosted);
+	BF6_GhostRestoreSet(GLinkPick.Neon);
+	GLinkPick.NeonApplied.Reset();
+	for (int32 s = 0; s < 3; s++) GLinkPick.Mid[s].Reset();
 	GLinkPick.Candidates.Reset();
 	GLinkPick.CandPx.Reset();
 	GLinkPick.CandState.Reset();
@@ -2485,6 +2513,11 @@ static void BF6_RecomputeBudget()
 		g_upRawBytes = (int64)(g_upBytes * (g_upRatio > 0.0 ? g_upRatio : 1.9));
 		g_upObjects  = g_ss.TotalObjects;
 		g_upWhen     = Now;
+		// perf tripwire: a slow estimate here is invisible to users except as
+		// a mystery hitch - make it show up in reports
+		const double Ms = (FPlatformTime::Seconds() - Now) * 1000.0;
+		if (Ms > 250.0)
+			UE_LOG(LogBF6, Warning, TEXT("upload estimator took %.0f ms for %d objects - report this if the editor hitches"), Ms, g_ss.TotalObjects);
 	}
 	const float SizeFrac = (g_upBytes > 0 && g_limPerMap > 0)
 		? FMath::Clamp((float)((double)g_upBytes / (double)g_limPerMap), 0.f, 1.f) : 0.f;
@@ -2719,11 +2752,27 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 	TArray<TSharedPtr<FJsonValue>> Dynamic;
 	FString In; TSharedPtr<FJsonObject> BaseRoot;
 	if (FFileHelper::LoadFileToString(In, *BF6_BaseJsonPath(Level))) { TSharedRef<TJsonReader<>> R=TJsonReaderFactory<>::Create(In); FJsonSerializer::Deserialize(R,BaseRoot); }
+	// duplicate-id defenses (the Portal site rejects any repeated id)
+	TSet<FString> LivePlacedNames;   // placed actors' link names, collected up front
+	TSet<FString> BaseEmitted;       // base entries actually emitted
 	const TArray<TSharedPtr<FJsonValue>>* BObjs = nullptr;
 	if (BaseRoot.IsValid() && BaseRoot->TryGetArrayField(TEXT("objects"), BObjs))
 	{
 		TMap<FString, FBF6GNode> GMap;
 		BF6_BuildGNodeMap(*BObjs, GMap);
+		// A live PLACED copy of a base object (a re-imported export carries
+		// the base setup as placed objects) SUPERSEDES the shipped entry.
+		// Emitting both gave two objects the same name, the minifier's
+		// memoized shortener handed them the same id, and the Portal site
+		// rejected the whole experience with "duplicate ids".
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if (!It->Tags.Contains(kPlacedTag)) continue;
+			FString T2 = TagValue(*It, TEXT("label:")); if (T2.IsEmpty()) T2 = TagValue(*It, TEXT("mesh:"));
+			if (T2.IsEmpty() || BF6_IsEngineNodeType(T2)) continue;
+			FString PLn = It->GetActorLabel(); PLn.RemoveFromStart(TEXT("BF6_"));
+			if (!PLn.IsEmpty()) LivePlacedNames.Add(PLn);
+		}
 		for (const auto& v:*BObjs)
 		{
 			const TSharedPtr<FJsonObject> o=v->AsObject(); if(!o.IsValid())continue;
@@ -2731,6 +2780,12 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 			// statics emit separately; Godot engine pivots/cameras never emit
 			// (the site errors on them as "unknown types")
 			if (ty.StartsWith(TEXT("MP_")) || BF6_IsEngineNodeType(ty)) continue;
+			if (LivePlacedNames.Contains(nm))
+			{
+				UE_LOG(LogBF6, Warning, TEXT("export: base '%s' superseded by a placed object with the same name"), *nm);
+				continue;
+			}
+			BaseEmitted.Add(nm);
 			// ACCUMULATED transform (parent pivots carry the deploy camera's
 			// aim), unless the actor was MOVED in the editor - then the live
 			// transform wins, converted like the placed-object path
@@ -2821,7 +2876,9 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 		// (wizard flags -> spawns) survive in the file; a duplicate label
 		// falls back to placed_N so ids stay unique
 		FString Ln = It->GetActorLabel(); Ln.RemoveFromStart(TEXT("BF6_"));
-		if (Ln.IsEmpty() || UsedPlacedNames.Contains(Ln)) Ln = FString::Printf(TEXT("placed_%d"), pid);
+		// dedupe against OTHER placed names AND the emitted base entries - a
+		// name shared with a base entry would minify to the same id
+		if (Ln.IsEmpty() || UsedPlacedNames.Contains(Ln) || BaseEmitted.Contains(Ln)) Ln = FString::Printf(TEXT("placed_%d"), pid);
 		UsedPlacedNames.Add(Ln);
 		const FString nm=ShortName(Ln);
 		e->SetStringField(TEXT("name"),nm); e->SetStringField(TEXT("type"),Type);
@@ -2867,6 +2924,24 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 		e->SetObjectField(TEXT("right"),Vec(1,0,0)); e->SetObjectField(TEXT("up"),Vec(0,1,0)); e->SetObjectField(TEXT("front"),Vec(0,0,1)); e->SetObjectField(TEXT("position"),Vec(0,0,0));
 		e->SetStringField(TEXT("id"),FString::Printf(TEXT("Static/%s"),*snm));
 		Static.Add(MakeShared<FJsonValueObject>(e));
+	}
+
+	// final guarantee: no duplicate non-empty ids leave this function - the
+	// site rejects the whole experience over a single collision
+	{
+		TSet<FString> Seen; int32 Dups = 0;
+		for (const TSharedPtr<FJsonValue>& v : Dynamic)
+		{
+			const TSharedPtr<FJsonObject> o = v->AsObject();
+			FString Id;
+			if (o.IsValid() && o->TryGetStringField(TEXT("id"), Id) && !Id.IsEmpty())
+			{
+				if (Seen.Contains(Id)) Dups++;
+				Seen.Add(Id);
+			}
+		}
+		if (Dups > 0)
+			Notify(FString::Printf(TEXT("Export warning: %d duplicate id(s) remain - the Portal site will reject this file. Please report this with the export attached."), Dups));
 	}
 
 	TSharedPtr<FJsonObject> Root=MakeShared<FJsonObject>();
@@ -3758,6 +3833,7 @@ static FString BF6_MapScript(const FString& OutDir, int32 Shard = 0, int32 Shard
 }
 
 static void BF6_CloseGodotPipe();   // fwd (defined with the launch helpers below)
+namespace BF6Api { static void BF6_SnapshotSdkHistory(const FString& SdkRoot); }   // fwd (history section)
 
 static void BF6_ImportFail(const FString& Why)
 {
@@ -3910,6 +3986,8 @@ static void BF6_ImportTickPhase()
 	// a re-sync next launch instead of being recorded as current
 	UE_LOG(LogBF6, Warning, TEXT("Map meshes: %d of %d converted."), Count, Target);
 	IFileManager::Get().Copy(*(BF6_DataDir() / TEXT("sdk.version.json")), *(g_imp.SdkRoot / TEXT("sdk.version.json")));
+	// snapshot for the NEXT update's version-history diff
+	BF6Api::BF6_SnapshotSdkHistory(g_imp.SdkRoot);
 	g_imp.Phase = FBF6Import::EPhase::Done;
 	g_imp.Status = FString::Printf(TEXT("Import complete - %d of %d models, %d of %d map meshes"), g_imp.ObjDone, g_imp.ObjTotal, Count, Target);
 	g_imp.Frac = 1.f;
@@ -4135,11 +4213,17 @@ namespace BF6Api
 		return true;
 	}
 
+	static void BF6_GenerateSdkChanges(const FString& NewRoot);   // defined with the history section below
+	static void BF6_SnapshotSdkHistory(const FString& SdkRoot);
+
 	void StartSdkImport(const FString& SdkRoot, bool bFullResync)
 	{
 		if (IsImporting()) return;
 		FString Err;
 		if (!ValidateSdkRoot(SdkRoot, Err)) { Notify(Err); return; }
+		// SDK version history: diff the NEW SDK against the previous
+		// snapshot BEFORE anything gets overwritten
+		BF6_GenerateSdkChanges(SdkRoot);
 
 		if (bFullResync)
 		{
@@ -4521,6 +4605,177 @@ namespace BF6Api
 			if (Va != Vb) return Va > Vb;
 		}
 		return false;
+	}
+
+	// ---- SDK version history ----
+	// The plugin ships a baked history of every Portal SDK release
+	// (Resources/sdkhistory, generated by tools/sdk_history from the
+	// community archive). Every SDK UPDATE extends it locally: before the
+	// import overwrites anything, the new SDK is diffed against the snapshot
+	// of the previous one - placeable types, maps, models, and the scripting
+	// API surface - into data/sdkhistory/changes_<ver>.md, shown in the
+	// History screen with a summary toast.
+	static FString BF6_SdkHistoryDir() { return BF6_DataDir() / TEXT("sdkhistory"); }
+
+	static FString BF6_SdkVersionOf(const FString& Root)
+	{
+		FString S;
+		if (!FFileHelper::LoadFileToString(S, *(Root / TEXT("sdk.version.json")))) return FString();
+		TSharedPtr<FJsonObject> J;
+		TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(S);
+		FString V;
+		if (FJsonSerializer::Deserialize(R, J) && J.IsValid()) J->TryGetStringField(TEXT("version"), V);
+		return V;
+	}
+
+	static void BF6_TypeSetOf(const FString& AssetTypesPath, TSet<FString>& Out)
+	{
+		FString S;
+		if (!FFileHelper::LoadFileToString(S, *AssetTypesPath)) return;
+		TSharedPtr<FJsonObject> J;
+		TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(S);
+		if (!FJsonSerializer::Deserialize(R, J) || !J.IsValid()) return;
+		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+		if (!J->TryGetArrayField(TEXT("AssetTypes"), Rows)) return;
+		for (const TSharedPtr<FJsonValue>& v : *Rows)
+		{
+			const TSharedPtr<FJsonObject> o = v->AsObject();
+			FString T;
+			if (o.IsValid() && o->TryGetStringField(TEXT("type"), T) && !T.IsEmpty()) Out.Add(T);
+		}
+	}
+
+	static void BF6_ApiSetOf(const FString& DtsPath, TSet<FString>& Out)
+	{
+		FString S;
+		if (!FFileHelper::LoadFileToString(S, *DtsPath)) return;
+		TArray<FString> Lines;
+		S.ParseIntoArrayLines(Lines, true);
+		for (FString L : Lines)
+		{
+			L.TrimStartInline();
+			if (!L.StartsWith(TEXT("export "))) continue;
+			L.RightChopInline(7);
+			if (L.StartsWith(TEXT("declare "))) L.RightChopInline(8);
+			FString Kind;
+			for (const TCHAR* K : { TEXT("function "), TEXT("enum "), TEXT("const "), TEXT("class "), TEXT("interface ") })
+				if (L.StartsWith(K)) { Kind = FString(K).TrimEnd(); L.RightChopInline(FCString::Strlen(K)); break; }
+			if (Kind.IsEmpty()) continue;
+			FString Name;
+			for (const TCHAR C : L) { if (FChar::IsAlnum(C) || C == TEXT('_')) Name.AppendChar(C); else break; }
+			if (!Name.IsEmpty()) Out.Add(Kind + TEXT(" ") + Name);
+		}
+	}
+
+	static void BF6_FileBasenames(const FString& Dir, const TCHAR* Pattern, TSet<FString>& Out)
+	{
+		TArray<FString> F;
+		IFileManager::Get().FindFiles(F, *(Dir / Pattern), true, false);
+		for (const FString& x : F) Out.Add(FPaths::GetBaseFilename(x));
+	}
+
+	static void BF6_LoadLineSet(const FString& Path, TSet<FString>& Out)
+	{
+		FString S;
+		if (!FFileHelper::LoadFileToString(S, *Path)) return;
+		TArray<FString> Lines;
+		S.ParseIntoArrayLines(Lines, true);
+		for (const FString& L : Lines) if (!L.IsEmpty()) Out.Add(L);
+	}
+
+	static void BF6_SnapshotSdkHistory(const FString& SdkRoot)
+	{
+		const FString Ver = BF6_SdkVersionOf(SdkRoot);
+		if (Ver.IsEmpty()) return;
+		const FString Dir = BF6_SdkHistoryDir() / Ver;
+		if (FPaths::FileExists(Dir / TEXT("asset_types.json"))) return;   // already snapshotted
+		IFileManager::Get().MakeDirectory(*Dir, true);
+		IFileManager::Get().Copy(*(Dir / TEXT("asset_types.json")), *(SdkRoot / TEXT("FbExportData/asset_types.json")));
+		IFileManager::Get().Copy(*(Dir / TEXT("index.d.ts")), *(SdkRoot / TEXT("code/types/mod/index.d.ts")));
+		TSet<FString> Lv, Md;
+		BF6_FileBasenames(SdkRoot / TEXT("GodotProject/levels"), TEXT("MP_*.tscn"), Lv);
+		BF6_FileBasenames(SdkRoot / TEXT("GodotProject/raw/models"), TEXT("*.glb"), Md);
+		FFileHelper::SaveStringToFile(FString::Join(Lv.Array(), TEXT("\n")), *(Dir / TEXT("levels.txt")));
+		FFileHelper::SaveStringToFile(FString::Join(Md.Array(), TEXT("\n")), *(Dir / TEXT("models.txt")));
+	}
+
+	static FString BF6_JoinCapped(const TSet<FString>& In, int32 Cap)
+	{
+		TArray<FString> A = In.Array();
+		A.Sort();
+		FString Out;
+		for (int32 i = 0; i < A.Num() && i < Cap; i++) { if (i) Out += TEXT(", "); Out += A[i]; }
+		if (A.Num() > Cap) Out += FString::Printf(TEXT(", ... and %d more"), A.Num() - Cap);
+		return Out;
+	}
+
+	static void BF6_GenerateSdkChanges(const FString& NewRoot)
+	{
+		const FString NewVer = BF6_SdkVersionOf(NewRoot);
+		if (NewVer.IsEmpty()) return;
+		// newest PREVIOUS snapshot (a same-version re-sync diffs nothing)
+		TArray<FString> Dirs;
+		IFileManager::Get().FindFiles(Dirs, *(BF6_SdkHistoryDir() / TEXT("*")), false, true);
+		Dirs.Remove(NewVer);
+		if (Dirs.Num() == 0) return;
+		Dirs.Sort([](const FString& A, const FString& B){ return BF6_VersionNewer(A, B); });
+		const FString OldVer = Dirs[0];
+		const FString Snap = BF6_SdkHistoryDir() / OldVer;
+
+		TSet<FString> TOld, TNew, AOld, ANew, LOld, LNew, MOld, MNew;
+		BF6_TypeSetOf(Snap / TEXT("asset_types.json"), TOld);
+		BF6_TypeSetOf(NewRoot / TEXT("FbExportData/asset_types.json"), TNew);
+		BF6_ApiSetOf(Snap / TEXT("index.d.ts"), AOld);
+		BF6_ApiSetOf(NewRoot / TEXT("code/types/mod/index.d.ts"), ANew);
+		BF6_LoadLineSet(Snap / TEXT("levels.txt"), LOld);
+		BF6_FileBasenames(NewRoot / TEXT("GodotProject/levels"), TEXT("MP_*.tscn"), LNew);
+		BF6_LoadLineSet(Snap / TEXT("models.txt"), MOld);
+		BF6_FileBasenames(NewRoot / TEXT("GodotProject/raw/models"), TEXT("*.glb"), MNew);
+
+		const TSet<FString> TAdd = TNew.Difference(TOld), TDel = TOld.Difference(TNew);
+		const TSet<FString> AAdd = ANew.Difference(AOld), ADel = AOld.Difference(ANew);
+		const TSet<FString> LAdd = LNew.Difference(LOld), LDel = LOld.Difference(LNew);
+		const TSet<FString> MAdd = MNew.Difference(MOld), MDel = MOld.Difference(MNew);
+		if (TOld.Num() == 0 && AOld.Num() == 0) return;   // no usable snapshot
+
+		FString Md = FString::Printf(TEXT("## %s  (installed %s, replacing %s)\n\n"),
+			*NewVer, *FDateTime::Now().ToString(TEXT("%Y-%m-%d")), *OldVer);
+		if (LAdd.Num()) Md += FString::Printf(TEXT("- New maps: %s\n"), *BF6_JoinCapped(LAdd, 10));
+		if (LDel.Num()) Md += FString::Printf(TEXT("- Maps removed: %s\n"), *BF6_JoinCapped(LDel, 10));
+		if (TAdd.Num()) Md += FString::Printf(TEXT("- New placeable types: %d (%s)\n"), TAdd.Num(), *BF6_JoinCapped(TAdd, 30));
+		if (TDel.Num()) Md += FString::Printf(TEXT("- Placeable types removed: %s\n"), *BF6_JoinCapped(TDel, 30));
+		if (MAdd.Num()) Md += FString::Printf(TEXT("- New models: %d (%s)\n"), MAdd.Num(), *BF6_JoinCapped(MAdd, 15));
+		if (MDel.Num()) Md += FString::Printf(TEXT("- Models removed: %s\n"), *BF6_JoinCapped(MDel, 15));
+		if (AAdd.Num()) Md += FString::Printf(TEXT("- New scripting API: %s\n"), *BF6_JoinCapped(AAdd, 40));
+		if (ADel.Num()) Md += FString::Printf(TEXT("- Scripting API removed: %s\n"), *BF6_JoinCapped(ADel, 40));
+		if (TAdd.Num() + TDel.Num() + AAdd.Num() + ADel.Num() + LAdd.Num() + MAdd.Num() == 0)
+			Md += TEXT("- No placeable, map, model, or scripting API changes detected.\n");
+		Md += TEXT("\n");
+		FFileHelper::SaveStringToFile(Md, *(BF6_SdkHistoryDir() / FString::Printf(TEXT("changes_%s.md"), *NewVer)));
+		Notify(FString::Printf(TEXT("Portal SDK %s: %d new placeables, %d new models, %d API additions%s. The History screen has the full list."),
+			*NewVer, TAdd.Num(), MAdd.Num(), AAdd.Num(),
+			LAdd.Num() ? *FString::Printf(TEXT(", new map %s"), *BF6_JoinCapped(LAdd, 3)) : TEXT("")));
+	}
+
+	FString VersionHistoryText()
+	{
+		FString Out, S;
+		if (FFileHelper::LoadFileToString(S, *(g_pluginDir / TEXT("Resources/CHANGELOG.md"))))
+			Out += S + TEXT("\n");
+		Out += TEXT("# Portal SDK version history\n\n");
+		// locally generated updates first (SDKs newer than the baked history)
+		TArray<FString> Changes;
+		IFileManager::Get().FindFiles(Changes, *(BF6_SdkHistoryDir() / TEXT("changes_*.md")), true, false);
+		Changes.Sort([](const FString& A, const FString& B){ return BF6_VersionNewer(A, B); });
+		for (const FString& C : Changes)
+			if (FFileHelper::LoadFileToString(S, *(BF6_SdkHistoryDir() / C))) Out += S;
+		if (FFileHelper::LoadFileToString(S, *(g_pluginDir / TEXT("Resources/sdkhistory/SDK-HISTORY.md"))))
+		{
+			// the baked doc's own title would duplicate the section header
+			S.ReplaceInline(TEXT("# Portal SDK version history\n"), TEXT(""));
+			Out += S;
+		}
+		return Out;
 	}
 
 	// Ask for the newest SDK version: EA's official manifest first, the
@@ -5532,11 +5787,21 @@ namespace BF6Api
 			const double d = FVector::DotProduct(U, w0);
 			const double e = FVector::DotProduct(Dir, w0);
 			const double t = (b * e - c * d) / denom;
-			const double NewH = FMath::Clamp((Base.Z + t - GVolEdit.DragBottomZ) / 100.0, 0.5, 2000.0);
+			const double RawH = (Base.Z + t - GVolEdit.DragBottomZ) / 100.0;
+			// Season 4: height 0 = INFINITE. Dragging the top through the
+			// floor snaps to it; dragging back up restores a real height.
+			const double NewH = RawH < 0.5 ? 0.0 : FMath::Clamp(RawH, 0.5, 2000.0);
+			if (NewH <= 0.01)
+			{
+				const FString OldHS = GetActorProp(Vol, TEXT("height"));
+				const bool bWasInf = !OldHS.IsNumeric() || FCString::Atod(*OldHS) <= 0.01;
+				if (!bWasInf) Notify(TEXT("Height 0 - this zone is now INFINITE height (drawn at 5 m, Season 4 rule)."));
+			}
 			// SetActorProp stretches the walls immediately; its transaction
 			// folds into the drag's own, so one undo reverts the whole drag
 			SetActorProp(Vol, TEXT("height"), FString::Printf(TEXT("%.2f"), NewH));
-			GVolEdit.DragZ = GVolEdit.DragBottomZ + NewH * 100.0;
+			// infinite draws at 5 m - the handle follows the DRAWN top
+			GVolEdit.DragZ = GVolEdit.DragBottomZ + (NewH <= 0.01 ? 5.0 : NewH) * 100.0;
 			return;
 		}
 
@@ -5657,6 +5922,30 @@ namespace BF6Api
 			for (const TWeakObjectPtr<AActor>& C : GLinkPick.Candidates)
 				if (AActor* CA = C.Get()) Keep.Add(CA);
 			BF6_GhostAllExcept(Keep, GLinkPick.Ghosted);
+
+			// ...and the candidates themselves glow solid neon (unlit emissive),
+			// colour-matched to their marker and link line, restored on exit
+			if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_NeonHighlight.M_NeonHighlight")))
+			{
+				for (int32 s = 0; s < 3; s++)
+				{
+					UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(Base, GetTransientPackage());
+					Mid->SetVectorParameterValue(TEXT("Color"), kLinkNeon[s]);
+					GLinkPick.Mid[s] = TStrongObjectPtr<UMaterialInstanceDynamic>(Mid);
+				}
+				GLinkPick.NeonApplied.Init(255, GLinkPick.Candidates.Num());
+				for (int32 i = 0; i < GLinkPick.Candidates.Num(); i++)
+					if (AActor* C = GLinkPick.Candidates[i].Get())
+						if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(C->GetRootComponent()))
+						{
+							FBF6Ghosted G;
+							G.Comp = M;
+							G.bWasSelectable = M->bSelectable;
+							for (int32 s = 0; s < M->GetNumSections(); s++) G.Mats.Add(M->GetMaterial(s));
+							GLinkPick.Neon.Add(MoveTemp(G));
+							BF6_LinkApplyNeon(i);
+						}
+			}
 		}
 
 		Notify(FString::Printf(TEXT("Assigning %s: click a highlighted marker or object, then SPACE or ENTER confirms (ESC cancels)."),
@@ -5694,7 +5983,43 @@ namespace BF6Api
 		if (!GLinkPick.bActive) return;
 		GLinkPick.bActive = false;
 		BF6_LinkGhostRestore();
+		// whatever was clicked mid-pick stays selected otherwise - hand the
+		// selection back to the owner the attributes menu reopens for
+		if (GEditor)
+		{
+			GEditor->SelectNone(false, true, false);
+			if (AActor* Owner = GLinkPick.Owner.Get()) GEditor->SelectActor(Owner, true, true);
+		}
 		Notify(TEXT("Link assignment cancelled."));
+	}
+
+	// banner text for the assign-mode screen chrome
+	FString LinkPickLabel()
+	{
+		if (!GLinkPick.bActive) return FString();
+		FString Own;
+		if (AActor* O = GLinkPick.Owner.Get())
+		{
+			Own = O->GetActorLabel();
+			Own.RemoveFromStart(TEXT("BF6_"));
+		}
+		return Own.IsEmpty()
+			? FString::Printf(TEXT("ASSIGNING %s"), *GLinkPick.Prop.ToUpper())
+			: FString::Printf(TEXT("ASSIGNING %s FOR %s"), *GLinkPick.Prop.ToUpper(), *Own.ToUpper());
+	}
+
+	bool HasSelection()
+	{
+		if (!GEditor) return false;
+		USelection* Sel = GEditor->GetSelectedActors();
+		return Sel && Sel->Num() > 0;
+	}
+
+	// the viewport is piloting an actor (right-click > Pilot): Esc belongs to
+	// the pilot exit, never to our deselect fallback
+	bool IsViewportPiloting()
+	{
+		return GCurrentLevelEditingViewportClient && GCurrentLevelEditingViewportClient->IsAnyActorLocked();
 	}
 
 	// ---- assign-mode overlay data (projected on the tick, like zone dots) ----
@@ -5727,6 +6052,9 @@ namespace BF6Api
 				const bool bSel = C && C->IsSelected();
 				if (bSel) GLinkPick.CandState[i] = 2;
 				else if (GLinkPick.CandState[i] == 2) GLinkPick.CandState[i] = 0;
+				// keep the mesh glow in step with the marker colour
+				if (GLinkPick.NeonApplied.IsValidIndex(i) && GLinkPick.NeonApplied[i] != GLinkPick.CandState[i])
+					BF6_LinkApplyNeon(i);
 			}
 		}
 	}
@@ -7457,6 +7785,52 @@ namespace BF6Api
 		return OutActor ? 1 : 0;
 	}
 
+	// ---- fast delete ----
+	// A proc-mesh component is TRANSACTIONAL (the gizmo records moves on the
+	// root component, so it must ride the undo buffer), which made stock
+	// delete serialize every section's VERTEX DATA into the transaction -
+	// hundreds of scattered meshes meant multi-second deletes. This empties
+	// the sections FIRST, outside the transaction, then deletes: the buffer
+	// records featherweight components, and BF6_RepairAfterUndo refills
+	// undeleted meshes from the bf6mesh files on disk.
+	bool DeleteSelectionFast()
+	{
+		if (!GEditor) return false;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return false;
+		TArray<AActor*> Doomed;
+		USelection* Sel = GEditor->GetSelectedActors();
+		for (int32 i = 0; Sel && i < Sel->Num(); i++)
+			if (AActor* A = Cast<AActor>(Sel->GetSelectedObject(i)))
+				if (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag) || Cast<AGroupActor>(A))
+					Doomed.Add(A);
+		if (Doomed.Num() == 0) return false;   // nothing of ours: stock delete
+		// group members ride along, like the editor's own delete
+		TSet<AActor*> All;
+		for (AActor* A : Doomed)
+		{
+			if (AGroupActor* G = Cast<AGroupActor>(A))
+			{
+				TArray<AActor*> Members;
+				G->GetGroupActors(Members, true);
+				for (AActor* M : Members) if (M) All.Add(M);
+			}
+			All.Add(A);
+		}
+		const double T0 = FPlatformTime::Seconds();
+		for (AActor* A : All)
+			if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent()))
+				M->ClearAllMeshSections();
+		FScopedTransaction Tx(FText::FromString(TEXT("Delete")));
+		GEditor->SelectNone(false, true, false);
+		int32 n = 0;
+		for (AActor* A : All)
+			if (W->EditorDestroyActor(A, true)) n++;
+		GEditor->NoteSelectionChange();
+		BF6_RecomputeBudget();
+		UE_LOG(LogBF6, Log, TEXT("fast delete: %d actor(s) in %.0f ms"), n, (FPlatformTime::Seconds() - T0) * 1000.0);
+		return true;
+	}
+
 	// native-like click selection: a grouped member selects its whole group
 	void SelectClicked(AActor* A)
 	{
@@ -8208,8 +8582,14 @@ namespace BF6Api
 				if (T.Num() == 0 && !bLegacy)
 					Add(0, A, TEXT("Capture point has no capture area - the flag can never be taken."));
 				for (AActor* Vol : T)
-					if (VolHeight(Vol) <= 0.01)
-						Add(0, Vol, TEXT("Capture area height is 0 - a flat volume never registers players. Set a height (10 works)."));
+				{
+					// Season 4: height 0 = INFINITE, which is valid (and
+					// common). Only a tiny NONZERO height is suspicious - it
+					// registers almost nobody.
+					const double H = VolHeight(Vol);
+					if (H > 0.01 && H < 0.5)
+						Add(2, Vol, TEXT("Capture area height is nearly zero - players will barely register. Set a real height, or 0 for infinite (Season 4)."));
+				}
 				for (const TCHAR* Team : { TEXT("InfantrySpawnPoints_Team1"), TEXT("InfantrySpawnPoints_Team2") })
 				{
 					TArray<AActor*> Sp; bool bSpLegacy = false;
@@ -8222,8 +8602,11 @@ namespace BF6Api
 			{
 				LinkTargets(A, TEXT("Area"), T, bLegacy);
 				for (AActor* Vol : T)
-					if (VolHeight(Vol) <= 0.01)
-						Add(0, Vol, TEXT("Area trigger volume height is 0 - it will never fire. Set a height (10 works)."));
+				{
+					const double H = VolHeight(Vol);
+					if (H > 0.01 && H < 0.5)
+						Add(2, Vol, TEXT("Area trigger height is nearly zero - it will barely fire. Set a real height, or 0 for infinite (Season 4)."));
+				}
 			}
 			else if (Ty == TEXT("Sector"))
 			{
@@ -8666,9 +9049,40 @@ static void BF6_RepairAfterUndo()
 	BF6_RecomputeBudget();
 }
 
+// The viewport Del key goes through DeleteSelectionFast, but the outliner's
+// right-click Delete and the Edit menu run the STOCK delete, which snapshots
+// every transactional proc-mesh component into the undo buffer - vertex data
+// and all, the same multi-second stall. This delegate fires as the stock
+// delete begins, before any component's Modify() snapshot, so emptying the
+// sections here keeps those snapshots featherweight too. BF6_RepairAfterUndo
+// refills the meshes if the delete is undone.
+static FDelegateHandle g_preDeleteHandle;
+static void BF6_StripMeshesBeforeStockDelete()
+{
+	if (!GEditor) return;
+	USelection* Sel = GEditor->GetSelectedActors();
+	TSet<AActor*> All;
+	for (int32 i = 0; Sel && i < Sel->Num(); i++)
+		if (AActor* A = Cast<AActor>(Sel->GetSelectedObject(i)))
+		{
+			if (AGroupActor* G = Cast<AGroupActor>(A))
+			{
+				TArray<AActor*> Members;
+				G->GetGroupActors(Members, true);
+				for (AActor* M : Members) if (M) All.Add(M);
+			}
+			All.Add(A);
+		}
+	for (AActor* A : All)
+		if (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag) || A->Tags.Contains(kHandleTag))
+			if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent()))
+				M->ClearAllMeshSections();
+}
+
 void FBF6UnrealSDKModule::StartupModule()
 {
 	g_postUndoHandle = FEditorDelegates::PostUndoRedo.AddStatic(&BF6_RepairAfterUndo);
+	g_preDeleteHandle = FEditorDelegates::OnDeleteActorsBegin.AddStatic(&BF6_StripMeshesBeforeStockDelete);
 	g_pluginDir = IPluginManager::Get().FindPlugin(TEXT("BF6UnrealSDK"))->GetBaseDir();
 	BF6_LoadCatOverrides();   // the user's "move to category" choices
 
@@ -8688,6 +9102,15 @@ void FBF6UnrealSDKModule::StartupModule()
 		};
 		Seed(g_pluginDir / TEXT("Resources/mapthumbs"),      BF6_DataDir() / TEXT("maps"),     TEXT("*.jpg"));
 		Seed(g_pluginDir / TEXT("Resources/gameplaymeshes"), BF6_DataDir() / TEXT("gameplay"), TEXT("*.bf6mesh"));
+	}
+
+	// version-history baseline: installs that imported an SDK before the
+	// history feature existed get their snapshot now, so the NEXT SDK update
+	// has something to diff against
+	{
+		const FString Root = BF6Api::StoredSdkRoot();
+		if (!Root.IsEmpty() && FPaths::FileExists(Root / TEXT("sdk.version.json")))
+			BF6Api::BF6_SnapshotSdkHistory(Root);
 	}
 
 	// One-time migration: saves/exports from before the plugin was renamed.
@@ -8843,6 +9266,10 @@ void FBF6UnrealSDKModule::StartupModule()
 void FBF6UnrealSDKModule::ShutdownModule()
 {
 	if (g_postUndoHandle.IsValid()) { FEditorDelegates::PostUndoRedo.Remove(g_postUndoHandle); g_postUndoHandle.Reset(); }
+	if (g_preDeleteHandle.IsValid()) { FEditorDelegates::OnDeleteActorsBegin.Remove(g_preDeleteHandle); g_preDeleteHandle.Reset(); }
+	// release the assign-mode MIDs before static destruction (GLinkPick is a
+	// file-scope global; its strong pointers must not outlive the UObject system)
+	for (int32 s = 0; s < 3; s++) GLinkPick.Mid[s].Reset();
 	// Park the download toast (never destruct widgets during exit).
 	if (GUpdateToast.IsValid()) { new TSharedPtr<SNotificationItem>(GUpdateToast); GUpdateToast.Reset(); }
 	BF6Api::DetachUI();

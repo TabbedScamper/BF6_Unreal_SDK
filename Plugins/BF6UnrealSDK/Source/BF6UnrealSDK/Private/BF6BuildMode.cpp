@@ -596,7 +596,7 @@ private:
 		{
 		case 1:
 			B = { { TEXT("Drag dot"), TEXT("move the point") },
-				  { TEXT("Drag TOP dot"), TEXT("set the zone's height") },
+				  { TEXT("Drag TOP dot"), TEXT("set the height (to the floor = infinite)") },
 				  { TEXT("Ctrl+LMB"), TEXT("add a point on the edge") },
 				  { TEXT("Del / Ctrl+RMB"), TEXT("delete the point") },
 				  { TEXT("Enter / Esc"), TEXT("finish editing") } };
@@ -612,8 +612,8 @@ private:
 				  { TEXT("Esc"), TEXT("revert everything from this edit") } };
 			break;
 		case 4:
-			B = { { TEXT("Click marker"), TEXT("green = assigned, orange = picked") },
-				  { TEXT("Space / Enter"), TEXT("confirm, back to attributes") },
+			B = { { TEXT("Click a glowing target"), TEXT("cyan = free, green = assigned, orange = picked") },
+				  { TEXT("Space / Enter"), TEXT("confirm the picked targets, back to attributes") },
 				  { TEXT("Esc"), TEXT("cancel, back to attributes") } };
 			break;
 		case 5:
@@ -1119,6 +1119,102 @@ public:
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
 	{
+		// ---- special-mode chrome, Revit style: the whole viewport gets a
+		// coloured frame plus a top banner naming the mode and its exits, so
+		// nobody is ever silently inside assign / group / block / zone editing
+		{
+			FString Title, Hint;
+			FLinearColor Col = BF6Theme::Accent;
+			bool bMode = true;
+			if (BF6Api::IsLinkPicking())
+			{
+				Col = FLinearColor(0.13f, 1.f, 0.27f);
+				Title = BF6Api::LinkPickLabel();
+				Hint = TEXT("Click the glowing targets  -  Space or Enter confirms  -  Esc backs out");
+			}
+			else if (BF6Api::IsGroupEditing() && BF6Api::GroupEditIsBlock())
+			{
+				Col = FLinearColor(0.25f, 0.55f, 1.f);
+				Title = TEXT("EDITING BLOCK");
+				Hint = TEXT("Enter keeps and updates every copy  -  Esc reverts");
+			}
+			else if (BF6Api::IsGroupEditing())
+			{
+				Title = TEXT("EDITING GROUP");
+				Hint = TEXT("Enter keeps  -  Esc reverts");
+			}
+			else if (BF6Api::IsPickPlacing())
+			{
+				Title = TEXT("CARRYING OBJECT");
+				Hint = TEXT("Click to set it down  -  Esc puts it back");
+			}
+			else if (BF6Api::IsScatterLive())
+			{
+				Col = FLinearColor(0.25f, 0.55f, 1.f);
+				Title = TEXT("SCATTER");
+				Hint = TEXT("Enter keeps the scatter  -  Esc removes it");
+			}
+			else if (BF6Api::IsVolumeEditing() || BF6Api::IsObbEditing())
+			{
+				Title = TEXT("EDITING ZONE SHAPE");
+				Hint = TEXT("Enter or Esc finishes");
+			}
+			else if (BF6Api::IsModeWizardActive())
+			{
+				Title = TEXT("MODE SETUP");
+				Hint = TEXT("Click to place each step  -  Esc stops the setup");
+			}
+			// no custom level open: the whole build screen is a read-only view
+			// of the stock map - say so permanently, or users place and move
+			// things that silently never save
+			else if (!BF6Api::IsEditing())
+			{
+				Col = FLinearColor(1.f, 0.72f, 0.f);
+				Title = TEXT("BASE MAP  -  READ ONLY");
+				Hint = TEXT("Nothing you place or move here is kept. Name your map and hit Create in the bottom right, or go back to < Maps and resume a custom level.");
+			}
+			else bMode = false;
+			if (bMode)
+			{
+				// paint FAR above the sibling widgets (library panel, budget bar,
+				// pie hints all draw later with higher layers) - the frame must
+				// outline the whole screen ON TOP of every panel, Revit style
+				const int32 CL = LayerId + 5000;
+				const FVector2D L = AllottedGeometry.GetLocalSize();
+				const FSlateBrush* WB = FCoreStyle::Get().GetBrush("GenericWhiteBox");
+				const FLinearColor Frame = Col.CopyWithNewOpacity(0.85f);
+				const float T = 3.f;
+				auto Box = [&](const FVector2D& Pos, const FVector2D& Size, const FLinearColor& C, const FSlateBrush* B, int32 Layer)
+				{
+					FSlateDrawElement::MakeBox(OutDrawElements, Layer,
+						AllottedGeometry.ToPaintGeometry(FVector2f(Size), FSlateLayoutTransform(FVector2f(Pos))), B,
+						ESlateDrawEffect::None, C);
+				};
+				Box(FVector2D(0, 0), FVector2D(L.X, T), Frame, WB, CL);
+				Box(FVector2D(0, L.Y - T), FVector2D(L.X, T), Frame, WB, CL);
+				Box(FVector2D(0, T), FVector2D(T, L.Y - 2 * T), Frame, WB, CL);
+				Box(FVector2D(L.X - T, T), FVector2D(T, L.Y - 2 * T), Frame, WB, CL);
+
+				// the banner: dark pill, mode-coloured title, dim exit hints
+				const FSlateFontInfo TF = FontBold(12), HF = FontReg(9);
+				const TSharedRef<FSlateFontMeasure> FM = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+				const FVector2D TS = FM->Measure(Title, TF), HS = FM->Measure(Hint, HF);
+				const float PW = FMath::Max(TS.X, HS.X) + 36.f, PH = TS.Y + HS.Y + 18.f;
+				const FVector2D PP((L.X - PW) * 0.5f, 10.f);
+				static const FSlateRoundedBoxBrush Pill(FLinearColor::White, 9.f);
+				Box(PP, FVector2D(PW, PH), FLinearColor(0.05f, 0.06f, 0.07f, 0.92f), &Pill, CL + 1);
+				Box(FVector2D(PP.X, PP.Y + PH - 2.f), FVector2D(PW, 2.f), Frame, WB, CL + 2);
+				FSlateDrawElement::MakeText(OutDrawElements, CL + 2,
+					AllottedGeometry.ToPaintGeometry(FVector2f(PW, TS.Y),
+						FSlateLayoutTransform(FVector2f(PP.X + (PW - TS.X) * 0.5f, PP.Y + 7.f))),
+					Title, TF, ESlateDrawEffect::None, Col);
+				FSlateDrawElement::MakeText(OutDrawElements, CL + 2,
+					AllottedGeometry.ToPaintGeometry(FVector2f(PW, HS.Y),
+						FSlateLayoutTransform(FVector2f(PP.X + (PW - HS.X) * 0.5f, PP.Y + 9.f + TS.Y))),
+					Hint, HF, ESlateDrawEffect::None, BF6Theme::TextDim);
+			}
+		}
+
 		// Godot-style marquee: translucent accent box while LMB-dragging on
 		// empty ground
 		{
@@ -1146,12 +1242,14 @@ public:
 			TArray<FVector2D> LPx; TArray<uint8> LState; FVector2D OwnerPx; bool bOwner = false;
 			if (BF6Api::GetLinkOverlay(LPx, LState, OwnerPx, bOwner))
 			{
+				// the same neon trio the meshes glow in (see kLinkNeon engine-side):
+				// free cyan / assigned green / pending orange - the line to the
+				// owner carries the target's colour so links read at a glance
 				const float LS = AllottedGeometry.Scale;
-				static const FSlateRoundedBoxBrush FreeDot(FLinearColor(FColor(0xAE, 0xC0, 0xCC)), 7.f, FLinearColor::White, 1.5f);
-				static const FSlateRoundedBoxBrush AssignedDot(FLinearColor(FColor(0x3F, 0xBF, 0x6A)), 8.f, FLinearColor::White, 2.f);
-				static const FSlateRoundedBoxBrush PendingDot(FLinearColor(FColor(0xFF, 0x8A, 0x00)), 8.f, FLinearColor::White, 2.f);
-				const FLinearColor GreenLine(0.25f, 0.75f, 0.42f, 0.85f);
-				const FLinearColor OrangeLine(1.f, 0.54f, 0.f, 0.9f);
+				static const FSlateRoundedBoxBrush FreeDot(FLinearColor(0.f, 0.9f, 1.f), 8.f, FLinearColor::White, 1.5f);
+				static const FSlateRoundedBoxBrush AssignedDot(FLinearColor(0.22f, 1.f, 0.08f), 9.f, FLinearColor::White, 2.f);
+				static const FSlateRoundedBoxBrush PendingDot(FLinearColor(1.f, 0.63f, 0.f), 9.f, FLinearColor::White, 2.f);
+				const FLinearColor NeonCyan(0.f, 0.9f, 1.f), NeonGreen(0.22f, 1.f, 0.08f), NeonOrange(1.f, 0.63f, 0.f);
 				for (int32 i = 0; i < LPx.Num(); i++)
 				{
 					if (LPx[i].X < -999.f) continue;
@@ -1160,15 +1258,16 @@ public:
 					{
 						TArray<FVector2f> Line = { FVector2f(OwnerPx / LS), FVector2f(LPx[i] / LS) };
 						FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(),
-							Line, ESlateDrawEffect::None, St == 2 ? OrangeLine : GreenLine, true, 1.6f);
+							Line, ESlateDrawEffect::None,
+							(St == 2 ? NeonOrange : NeonGreen).CopyWithNewOpacity(0.95f), true, 2.4f);
 					}
 					const FSlateRoundedBoxBrush* B = St == 2 ? &PendingDot : St == 1 ? &AssignedDot : &FreeDot;
-					const float Sz = St == 0 ? 14.f : 16.f;
+					const float Sz = St == 0 ? 16.f : 18.f;
 					const FVector2D Local = LPx[i] / LS - FVector2D(Sz, Sz) * 0.5f;
 					FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2,
 						AllottedGeometry.ToPaintGeometry(FVector2f(Sz, Sz), FSlateLayoutTransform(FVector2f(Local))),
 						B, ESlateDrawEffect::None,
-						St == 2 ? FLinearColor(FColor(0xFF, 0x8A, 0x00)) : St == 1 ? FLinearColor(FColor(0x3F, 0xBF, 0x6A)) : FLinearColor(FColor(0xAE, 0xC0, 0xCC)));
+						St == 2 ? NeonOrange : St == 1 ? NeonGreen : NeonCyan);
 				}
 			}
 		}
@@ -1225,20 +1324,6 @@ public:
 
 		TArray<FVector2D> Px; int32 PointCount = 0, Active = -1, Drag = -1; FVector2D EdgePx; bool bEdge = false;
 		const bool bHave = BF6Api::GetZoneDots(Px, PointCount, Active, Drag, EdgePx, bEdge);
-		// paint-side diagnostics (throttled): proves whether this widget paints,
-		// its geometry, and what it drew - readable from the log
-		{
-			static double LastLog = 0.0;
-			static int32 PaintCalls = 0;
-			PaintCalls++;
-			const double Now = FPlatformTime::Seconds();
-			if (Now - LastLog > 2.0)
-			{
-				LastLog = Now;
-				UE_LOG(LogTemp, Log, TEXT("ZoneDotsPaint: calls=%d, localsize=(%.0f x %.0f), scale=%.2f, have=%d, pts=%d"),
-					PaintCalls, AllottedGeometry.GetLocalSize().X, AllottedGeometry.GetLocalSize().Y, AllottedGeometry.Scale, bHave ? 1 : 0, Px.Num());
-			}
-		}
 		if (!bHave) return LayerId;
 
 		// Godot-handle orange circles with white rings. The corner radius MUST be
@@ -2668,6 +2753,61 @@ private:
 // Map selector - the tool's first screen. Embedded in the dockable panel, so it
 // fills the editor and resizes with it. Reports the chosen map via OnOpen.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// VERSION HISTORY: the tool's changelog and every Portal SDK release in one
+// scrollable viewer. SDK entries come from the baked archive history in the
+// plugin plus locally generated diffs for updates installed on this machine.
+// ---------------------------------------------------------------------------
+class SBF6HistoryPopup : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6HistoryPopup) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+		TArray<FString> Lines;
+		BF6Api::VersionHistoryText().ParseIntoArrayLines(Lines, false);
+		for (const FString& L : Lines)
+		{
+			if (L.StartsWith(TEXT("# ")))
+				Body->AddSlot().AutoHeight().Padding(0, 14, 0, 4)
+				[ SNew(STextBlock).Font(FontBold(14)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(L.Mid(2).ToUpper())) ];
+			else if (L.StartsWith(TEXT("## ")))
+				Body->AddSlot().AutoHeight().Padding(0, 10, 0, 2)
+				[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(L.Mid(3))) ];
+			else if (L.StartsWith(TEXT("- ")))
+				Body->AddSlot().AutoHeight().Padding(10, 1, 0, 1)
+				[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(L)) ];
+			else if (!L.TrimStartAndEnd().IsEmpty())
+				Body->AddSlot().AutoHeight().Padding(0, 1)
+				[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(L)) ];
+		}
+
+		ChildSlot
+		[
+			SNew(SBox).WidthOverride(760.f).HeightOverride(560.f)
+			[
+				SNew(SBorder).BorderImage(PanelBrush()).Padding(14.f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
+						[ SNew(STextBlock).Font(FontBold(14)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("VERSION HISTORY"))) ]
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+						[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("the tool, and every Portal SDK release - click away to close"))) ]
+					]
+					+ SVerticalBox::Slot().FillHeight(1)
+					[ SNew(SScrollBox) + SScrollBox::Slot()[ Body ] ]
+				]
+			]
+		];
+	}
+};
+
 class SBF6MapSelector : public SCompoundWidget
 {
 public:
@@ -2734,6 +2874,11 @@ public:
 					[
 						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Open saves"), TEXT("Opens the session-save folder: one folder per custom map with its level file inside. That folder is what you back up or share. Uploadable exports live in the EXPORT folder instead.")))
 						[ MakeToolButton(TEXT("Open saves"), []{ BF6Api::OpenSavesFolder(); }) ]
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Version history"), TEXT("What changed in every version of this tool, and in every Portal SDK release EA has shipped - including what each SDK update added or removed on this machine.")))
+						[ MakeToolButton(TEXT("History"), []{ BF6_PushTransient(SNew(SBF6HistoryPopup), FSlateApplication::Get().GetCursorPos()); }) ]
 					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
 					[ MakeToolButton(FString::Printf(TEXT("v%s - Check for updates"), *BF6Api::PluginVersion()), []{ BF6Api::CheckForUpdates(true); }) ]
@@ -4053,6 +4198,15 @@ public:
 			if (bBoxDragging) { bBoxDown = false; bBoxDragging = false; BF6Api::CancelBoxSelect(); return true; }
 			if (GControls.IsValid()) { BF6_ControlsClose(); return true; }
 			if (BF6Pie_Active()) { BF6Pie_Cancel(); return true; }
+			// a popup menu (attributes, grouping, ...) is up: Esc closes it. The
+			// menu can't rely on its own key handling - after a viewport click
+			// the keyboard focus is anywhere but the menu. Typing in one of its
+			// boxes keeps Esc for the box itself.
+			if (GTransientMenu.IsValid() && !BF6_TextFieldFocused())
+			{
+				BF6Api::HideTransientMenus();
+				return true;
+			}
 			if (TSharedPtr<SBF6LibraryPanel> L = GLibraryPanel.Pin())
 				if (L->IsOpen() && !GTransientMenu.IsValid()) { L->ForceClose(); return true; }
 			// Esc backs out of assign mode INTO the attributes menu it came from
@@ -4083,6 +4237,17 @@ public:
 				const bool bBlk = BF6Api::GroupEditIsBlock();
 				BF6Api::FinishGroupEdit(false);
 				BF6_MiniToast(bBlk ? TEXT("Block edits reverted.") : TEXT("Group edits reverted."));
+				return true;
+			}
+			// nothing modal left: Esc simply deselects, like Godot. This is the
+			// missing last step of backing out of an assign - the first Esc
+			// returns to the attributes menu, the second closes it, and this
+			// one clears the selection the pick (or confirm) left behind.
+			if (BF6Api::IsBuildOverlayActive() && BF6Api::IsEditing()
+				&& !BF6_TextFieldFocused() && !BF6Api::IsViewportPiloting()
+				&& BF6Api::HasSelection())
+			{
+				BF6Api::ClearSelection();
 				return true;
 			}
 			// on the map screen with a session running: ESC returns to the build
@@ -4126,6 +4291,14 @@ public:
 			if (Dot != INDEX_NONE) BF6Api::VolumeDeletePointByIndex(Dot);
 			else BF6Api::VolumeDeletePoint();
 			return true;
+		}
+		// DEL on our objects: the fast path empties proc-mesh payloads before
+		// the transaction, so deleting a scattered forest is instant instead
+		// of serializing megabytes of vertex data into the undo buffer
+		if (K == EKeys::Delete && !BF6Pie_Active() && !GTransientMenu.IsValid() && !BF6_TextFieldFocused()
+			&& BF6Api::IsBuildOverlayActive() && BF6Api::IsEditing() && !BF6Api::IsVolumeEditing())
+		{
+			if (BF6Api::DeleteSelectionFast()) return true;
 		}
 		// ENTER also bakes and ends a zone-point edit (when no popup is up);
 		// deselecting stops the auto-edit from restarting it next tick
@@ -4265,6 +4438,22 @@ public:
 			BF6Api::FinishPickPlace();
 			BF6_MiniToast(TEXT("Placed - one Ctrl+Z puts it back."));
 			return true;
+		}
+
+		// read-only base: any click on the map earns a reminder (throttled, and
+		// NOT consumed - browsing and orbiting the base stays free)
+		if (E.GetEffectingButton() == EKeys::LeftMouseButton
+			&& BF6Api::IsBuildOverlayActive() && !BF6Api::IsEditing()
+			&& !GTransientMenu.IsValid() && !GControls.IsValid() && !BF6Pie_Active()
+			&& !BF6_CursorOverSlateUI(App, E.GetScreenSpacePosition()))
+		{
+			static double LastWarn = 0.0;
+			const double Now = FPlatformTime::Seconds();
+			if (Now - LastWarn > 5.0)
+			{
+				LastWarn = Now;
+				BF6_MiniToast(TEXT("Read-only base - hit Create in the bottom right, or resume a custom level from < Maps."));
+			}
 		}
 
 		// assign mode: clicking a candidate marker (de)selects that target

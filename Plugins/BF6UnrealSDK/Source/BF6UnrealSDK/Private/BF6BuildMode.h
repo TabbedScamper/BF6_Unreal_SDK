@@ -307,6 +307,10 @@ namespace BF6Api
 	// zone (always Unreal's). OutActor fills even in the gizmo zone.
 	int32 ClassifyCursorForGodotClick(AActor*& OutActor);
 	void SelectClicked(AActor* A);         // native-like: a grouped member selects its group
+	// fast delete for our objects: strips proc-mesh payloads before the
+	// transaction so the undo buffer never carries vertex data (the repair
+	// refills on undo). False = nothing of ours selected, use stock delete.
+	bool DeleteSelectionFast();
 	bool BeginDragMoveOn(AActor* A);       // selects it if needed, preps the move set
 	void UpdateDragMove(bool bSnap);
 	void EndDragMove();
@@ -343,7 +347,10 @@ namespace BF6Api
 	bool IsLinkPicking();
 	void BeginLinkPick(AActor* Owner, const FString& PropName, bool bArray);
 	void ConfirmLinkPick();                 // write the current selection as the link
-	void CancelLinkPick();
+	void CancelLinkPick();                  // also hands the selection back to the owner
+	FString LinkPickLabel();                // "ASSIGNING <prop> FOR <owner>" (banner)
+	bool HasSelection();                    // any actor selected (Esc deselect fallback)
+	bool IsViewportPiloting();              // Esc belongs to the pilot exit then
 	void TickLinkPick();                    // project the overlay markers
 	bool GetLinkOverlay(TArray<FVector2D>& OutPx, TArray<uint8>& OutState, FVector2D& OutOwnerPx, bool& bOutOwner);
 	int32 LinkDotUnderMouse();              // marker grab test, -1 = none
@@ -378,6 +385,9 @@ namespace BF6Api
 	void  OpenManagedSdkDir();                  // Explorer on the install location
 	bool  CheckManualSdkDrop(FString& OutMsg);  // failed download fallback: verify a hand-unzipped SDK, then import
 	void  CheckForNewSdk();                     // launch check; offers an update once per version
+	// version history: the tool's changelog + every Portal SDK release
+	// (baked from the community archive, extended locally on each update)
+	FString VersionHistoryText();
 	void  FetchUploadLimits();                  // refresh the per-map/experience upload byte limits
 
 	// ---- versioning + updates (GitHub releases, staged like the Godot plugin) ----

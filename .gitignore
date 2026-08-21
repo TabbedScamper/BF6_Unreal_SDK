@@ -29,3 +29,13 @@ Plugins/**/Intermediate/
 #   mapmesh/    - per-map low-poly terrain + assets meshes (~4.4 GB)
 Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/objmodels/
 Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/mapmesh/
+
+# per-user SDK history snapshots (generated at import; the baked seed ships in
+# Plugins/BF6UnrealSDK/Resources/sdkhistory instead)
+Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/sdkhistory/
+
+# local fresh-install test backups
+*_FRESHTEST_BACKUP/
+
+# SDK history harvester downloads (the script itself is tracked)
+tools/sdk_history/work/
