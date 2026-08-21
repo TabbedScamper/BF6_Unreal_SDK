@@ -56,6 +56,7 @@ namespace BF6Api
 	FString         DisplayName(const FString& Level);   // "MP_Dumbo" -> "Manhattan Bridge"
 	int32           PlaceableTotal(const FString& Level);
 	TArray<FString> SavesFor(const FString& Level);
+	bool DeleteSave(const FString& Level, const FString& Name);   // both layouts; refuses the open session
 	// Thumbnail brush for a level card (may be null if the PNG is missing).
 	const struct FSlateBrush* MapThumbnail(const FString& Level);
 
@@ -150,6 +151,7 @@ namespace BF6Api
 	void  EndZoneDotDrag();               // closes the transaction
 	void  VolumeAddPointAtPreview();      // Ctrl+LMB: insert at the edge preview
 	void  VolumeDeletePointByIndex(int32 RawIndex);   // Ctrl+RMB on a dot
+	bool  ResetVolumeCenter();            // Godot's "Reset Center": origin to the centroid, shape stays put
 	void  ClearSelection();               // deselect everything (Esc from an edit)
 	void FinishVolumeEdit();                // bake the handles back into the walls
 	void TickVolumeEdit();                  // live wall rebuild while handles move
@@ -164,11 +166,117 @@ namespace BF6Api
 	// blocks arrive grouped. Groups are TEMPORARY (not saved in the session).
 	void GroupSelection();
 	void UngroupSelection();
+	// Auto-organized level list: re-file every object into its role/category
+	// folder (HQs, Spawns, Zones, props by category, blocks each own folder).
+	// New placements sort themselves; this fixes a level built earlier.
+	int32 OrganizeOutliner();
+	void OpenExportsFolder();              // Explorer on the .spatial.json folder
+	void OpenSavesFolder();                // Explorer on saves/<custom map>/<level>.json
+	// ObjId registry: every gameplay object's script-facing id in one list.
+	// Duplicate/unset ids silently break modes, so the registry flags them.
+	struct FObjIdRow { TWeakObjectPtr<AActor> Actor; FString Name; FString Type; int32 Id = -1; };
+	TArray<FObjIdRow> GatherObjIds();
+	int32 AutoAssignObjIds(int32 StartId);   // selection, spatial sweep order
+	int32 SelectDuplicateObjIds();           // selects every duplicate-id actor
+	void SelectOnly(AActor* A);              // exclusive select (registry rows)
+	// Offline lint: each rule is a mistake that otherwise costs a full
+	// export-upload-host-test round trip. Severity 0 = problem, 1 = warning,
+	// 2 = advice. bWindingFix rows offer the one-click reverse.
+	struct FLintItem { uint8 Severity = 1; FString Message; TWeakObjectPtr<AActor> Actor; bool bWindingFix = false; };
+	TArray<FLintItem> RunLint();
+	bool ReverseVolumeWinding(AActor* Vol);
+	// Simple multiplication from the selected placed object: flush rows/grids
+	// (spacing defaults to the object's own footprint) and circles facing the
+	// centre. Copies never carry ObjId, so ids can't duplicate.
+	int32 MultiplyGrid(int32 Count, int32 Rows, double GapMetres);
+	int32 MultiplyCircle(int32 Count, double RadiusMetres);
+	// Proton-Scatter style: random natural placement inside a circle, each
+	// copy ground-traced onto the terrain with its own rotation.
+	int32 MultiplyScatter(int32 Count, double RadiusMetres, bool bVarySize);
+	// Fixed-camera tools: selecting a camera object (DeployCam and friends)
+	// docks a live picture-in-picture of what it sees; moving it updates the
+	// view in real time. Set-from-view gives the camera the editor's current
+	// view; look-through jumps the editor camera to the camera's view.
+	class AActor* CameraPreviewTarget();
+	class UTexture* CameraPreviewTexture();
+	void TickCameraPreview();
+	void SetCameraFromView();
+	void LookThroughCamera();
+	// Live scatter editor (the SCATTER pill): the scatter appears immediately
+	// and re-forms in real time as the sliders move. Every copy draws its own
+	// random rotation, elevation offset, and size inside the limits set on the
+	// sliders. Apply rebuilds the preview as ONE undoable action; cancel
+	// removes it all.
+	bool BeginScatterLive();
+	void UpdateScatterLive(int32 Count, float RadiusM, float RotDeg, float WobX, float WobY, float ElevM, float Vary, int32 Seed);
+	void ApplyScatterLive();
+	void CancelScatterLive();
+	bool IsScatterLive();
+	int32 ScatterSession();   // bumps per session so the panel resets its sliders
+	// region shape: 0 circle, 1 square, 2 ring, 3 drawn outline. Follow
+	// terrain off keeps every copy at the original's height. The drawn
+	// outline is clicked out corner by corner on the map; the fill
+	// regenerates live from the third corner on.
+	void SetScatterShape(int32 Shape);
+	int32 GetScatterShape();
+	void SetScatterFollowTerrain(bool b);
+	bool GetScatterFollowTerrain();
+	void BeginScatterDraw();
+	bool IsScatterDrawing();
+	int32 ScatterDrawPointCount();
+	void ScatterDrawAddPoint(const FVector& W);
+	void FinishScatterDraw();
+	void CancelScatterDraw();
+	// the drawn outline's corner dots: projected on tick, painted by the dot
+	// layer, draggable like zone points. The translucent region mesh itself
+	// is engine-managed (rebuilt with every regenerate).
+	void TickScatter();
+	bool GetScatterDots(TArray<FVector2D>& OutPx, int32& OutDrag);
+	int32 ScatterDotUnderMouse();
+	bool IsScatterDotDragging();
+	void BeginScatterDotDrag(int32 Index);
+	void DragScatterDotToCursor();
+	void EndScatterDotDrag();
+	// volume-style corner editing on the outline: Ctrl shows an insert dot on
+	// the nearest edge, Ctrl+LMB inserts there, Del / Ctrl+RMB removes the
+	// corner under the cursor (an outline keeps at least 3)
+	bool GetScatterEdgePreview(FVector2D& OutPx);
+	void ScatterAddPointAtPreview();
+	void ScatterDeletePointByIndex(int32 Index);
+	// the outline's own undo (its corners live outside the editor transaction
+	// system): Ctrl+Z / Ctrl+Y are claimed while a scatter session is live
+	bool ScatterOutlineUndo();
+	bool ScatterOutlineRedo();
+	// Snap-build (Alt+Arrows): duplicate the selection flush against itself in
+	// a camera-relative direction. 0 right, 1 left, 2 forward, 3 back, 4 up, 5 down.
+	bool SnapBuildDuplicate(int32 Dir);
+	// Mode setup wizard: guided point-and-place scaffolding for Conquest and
+	// Breakthrough. The controls panel shows "Step N of M" with an explanation;
+	// every click builds a fully linked bundle with convention ObjIds, and the
+	// finish wires the Sector and runs the checks.
+	void StartModeWizard(const FString& Mode, int32 Count);
+	bool IsModeWizardActive();
+	int32 ModeWizardStep();
+	int32 ModeWizardTotal();
+	FString ModeWizardTitle();
+	FString ModeWizardBody();
+	void ModeWizardPlaceAt(const FVector& World);
+	void CancelModeWizard();
 	// Revit-style focus editing: double-click (or GROUPING > Edit) tabs into a
 	// group or placed block - only members stay solid/selectable, the rest of
 	// the world ghosts. Enter keeps the edits (a block also re-saves and
 	// refreshes every placed copy); Esc reverts everything from this edit.
 	bool SelectionGrouped();               // selected object in a group or block?
+	// Selection shape for the context-sensitive controls panel.
+	struct FSelInfo
+	{
+		int32 Count = 0;        // our actors in the selection
+		bool bOneGroup = false; // everything shares one group root (one unit)
+		bool bBlock = false;    // that unit (or the object) is a block instance
+		bool bMesh = false;     // single object: has a model (snap-build works)
+		int32 Fields = 0;       // single object: editable attribute count
+	};
+	FSelInfo SelectionInfo();
 	bool IsGroupEditing();
 	bool GroupEditIsBlock();               // the active focus edit is a block
 	void BeginGroupEditFromSelection();
@@ -176,6 +284,40 @@ namespace BF6Api
 	void FinishGroupEdit(bool bKeepEdits);
 	void TickGroupEdit();                  // enforce members-only selection
 	AActor* ActorUnderCursor();            // hit-proxy pick under the mouse
+	// Godot-style box select: LMB drag on EMPTY ground rubber-bands a
+	// selection (no modifiers). Actors/gizmos are hit proxies and stay native.
+	bool ViewportHitProxyEmpty();          // true empty space under the cursor
+	// deproject an explicit viewport pixel (drag-drop uses the event position,
+	// never the cached mouse pos - that freezes during Slate drags)
+	bool WorldFromViewportPoint(const FVector2D& ViewportPx, FVector& OutWorld);
+	// live drag ghost: the real model follows the cursor during a library
+	// drag; untagged + unselectable, destroyed when the drag ends
+	void UpdateDragGhost(const FString& Type, const FVector& W);
+	void DestroyDragGhost();
+	void BeginBoxSelect();
+	void UpdateBoxSelect();
+	void CancelBoxSelect();
+	int32 EndBoxSelect(bool bAdd);         // select inside the rect; Shift adds
+	bool GetBoxSelectRect(FVector2D& OutA, FVector2D& OutB);   // viewport px
+	// Godot-style drag-move: LMB drag on an already selected placed/base
+	// actor slides the whole selection on the grab point's horizontal plane.
+	// Ctrl snaps to the metre grid; one transaction per drag; Esc reverts.
+	// Hit-proxy-free cursor classification for the Godot LMB gestures:
+	// 0 = empty (box select), 1 = one of our actors (OutActor), 2 = the gizmo
+	// zone (always Unreal's). OutActor fills even in the gizmo zone.
+	int32 ClassifyCursorForGodotClick(AActor*& OutActor);
+	void SelectClicked(AActor* A);         // native-like: a grouped member selects its group
+	bool BeginDragMoveOn(AActor* A);       // selects it if needed, preps the move set
+	void UpdateDragMove(bool bSnap);
+	void EndDragMove();
+	void CancelDragMove();
+	// PICK PLACE: the selection rides the cursor along the terrain, click
+	// sets it down (one undo reverts), Esc puts everything back
+	bool BeginPickPlace();
+	bool IsPickPlacing();
+	void TickPickPlace(bool bSnap);
+	void FinishPickPlace();
+	void CancelPickPlace();
 	// One shareable JSON per block under Saved/BF6UnrealSDK/blocks. A block
 	// remembers the map it was built for and its objects (relative transforms
 	// + attribute tags). Returns how many objects were captured (0 = failed).
@@ -223,6 +365,20 @@ namespace BF6Api
 	bool    ImportDone();                       // finished (success) since Start
 	bool    ImportFailed();                     // failed since Start (message in ImportStatus)
 	FString StoredSdkRoot();                    // remembered SDK path ("" if none)
+	// Managed SDK lifecycle: the tool downloads and updates the Portal SDK
+	// itself from the community archive (hoard.bfportal.gg) - nobody hand
+	// -manages a 3 GB zip. Download resumes if interrupted; after unpacking,
+	// the data import runs automatically and user content carries over.
+	void  StartSdkDownload();                   // fetch newest, unpack, import
+	bool  IsSdkFetching();
+	bool  SdkFetchFailed();
+	float SdkFetchFrac();
+	FText SdkFetchStatus();
+	FString ManagedSdkDir();                    // absolute install location (shown in the UI)
+	void  OpenManagedSdkDir();                  // Explorer on the install location
+	bool  CheckManualSdkDrop(FString& OutMsg);  // failed download fallback: verify a hand-unzipped SDK, then import
+	void  CheckForNewSdk();                     // launch check; offers an update once per version
+	void  FetchUploadLimits();                  // refresh the per-map/experience upload byte limits
 
 	// ---- versioning + updates (GitHub releases, staged like the Godot plugin) ----
 	// The plugin's VersionName from the .uplugin (e.g. "0.1.0").

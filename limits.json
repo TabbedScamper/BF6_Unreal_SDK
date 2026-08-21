@@ -1,0 +1,7 @@
+{
+  "_comment": "Portal upload limits, refreshed by the BF6 Unreal SDK's budget bar so the numbers stay right when EA changes them on an SDK update. perMapBytes = the site's client-side per-file spatial cap on the RAW json (measured live: 'Uploaded file is larger than 3.00 MB' = 3*1048576). experienceBytes = the gRPC message cap on the BASE64-encoded experience bundle across all maps+script+strings; a map's raw minified bytes contribute ~4/3 of themselves to it. Verified 2026-08-20: one 2.8MB map publishes, three 2.8MB maps fail Mindstorm compile (bundle over the gRPC cap).",
+  "measuredOn": "2026-08-20",
+  "sdkVersion": "1.4.2.0",
+  "perMapBytes": 3145728,
+  "experienceBytes": 4194304
+}

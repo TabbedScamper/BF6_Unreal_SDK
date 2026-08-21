@@ -62,6 +62,11 @@
 			],
 			"props":
 			{
+				"AltTeam": "0",
+				"ObjId": "1",
+				"HQArea": "NodePath(\"HQ_Team1\")",
+				"InfantrySpawns": "[NodePath(\"SpawnPoint_1_1\"), NodePath(\"SpawnPoint_1_2\"), NodePath(\"SpawnPoint_1_3\"), NodePath(\"SpawnPoint_1_4\")]",
+				"id": "\"TEAM_1_HQ\""
 			}
 		},
 		{
@@ -120,6 +125,7 @@
 			],
 			"props":
 			{
+				"id": "\"TEAM_1_HQ/SpawnPoint_1_1\""
 			}
 		},
 		{
@@ -144,6 +150,7 @@
 			],
 			"props":
 			{
+				"id": "\"TEAM_1_HQ/SpawnPoint_1_2\""
 			}
 		},
 		{
@@ -168,6 +175,7 @@
 			],
 			"props":
 			{
+				"id": "\"TEAM_1_HQ/SpawnPoint_1_3\""
 			}
 		},
 		{
@@ -192,6 +200,7 @@
 			],
 			"props":
 			{
+				"id": "\"TEAM_1_HQ/SpawnPoint_1_4\""
 			}
 		},
 		{
@@ -216,6 +225,12 @@
 			],
 			"props":
 			{
+				"Team": "2",
+				"AltTeam": "0",
+				"ObjId": "2",
+				"HQArea": "NodePath(\"HQ_Team2\")",
+				"InfantrySpawns": "[NodePath(\"SpawnPoint_2_1\"), NodePath(\"SpawnPoint_2_2\"), NodePath(\"SpawnPoint_2_3\"), NodePath(\"SpawnPoint_2_4\")]",
+				"id": "\"TEAM_2_HQ\""
 			}
 		},
 		{
@@ -274,6 +289,7 @@
 			],
 			"props":
 			{
+				"id": "\"TEAM_2_HQ/SpawnPoint_2_1\""
 			}
 		},
 		{
@@ -298,6 +314,7 @@
 			],
 			"props":
 			{
+				"id": "\"TEAM_2_HQ/SpawnPoint_2_2\""
 			}
 		},
 		{
@@ -322,6 +339,7 @@
 			],
 			"props":
 			{
+				"id": "\"TEAM_2_HQ/SpawnPoint_2_3\""
 			}
 		},
 		{
@@ -346,6 +364,7 @@
 			],
 			"props":
 			{
+				"id": "\"TEAM_2_HQ/SpawnPoint_2_4\""
 			}
 		},
 		{
@@ -378,6 +397,12 @@
 			],
 			"props":
 			{
+				"ObjId": "100",
+				"TacticalAdviceLandVehicleFriendly": "false",
+				"CaptureArea": "NodePath(\"CapturePointArea\")",
+				"InfantrySpawnPoints_Team1": "[NodePath(\"PlayerSpawner/SpawnPoint A1\")]",
+				"InfantrySpawnPoints_Team2": "[NodePath(\"PlayerSpawner/SpawnPoint A2\")]",
+				"id": "\"CapturePoint A\""
 			}
 		},
 		{
@@ -412,6 +437,7 @@
 			],
 			"props":
 			{
+				"height": "5.0"
 			}
 		},
 		{
@@ -436,6 +462,10 @@
 			],
 			"props":
 			{
+				"ObjId": "101",
+				"Area": "NodePath(\"../CapturePointArea\")",
+				"SpawnPoints": "[NodePath(\"SpawnPoint A1\"), NodePath(\"SpawnPoint A2\")]",
+				"id": "\"CapturePoint A/PlayerSpawner\""
 			}
 		},
 		{
@@ -460,6 +490,7 @@
 			],
 			"props":
 			{
+				"id": "\"CapturePoint A/PlayerSpawner/SpawnPoint A1\""
 			}
 		},
 		{
@@ -484,6 +515,7 @@
 			],
 			"props":
 			{
+				"id": "\"CapturePoint A/PlayerSpawner/SpawnPoint A2\""
 			}
 		},
 		{
@@ -508,6 +540,12 @@
 			],
 			"props":
 			{
+				"ObjId": "200",
+				"TacticalAdviceLandVehicleFriendly": "false",
+				"CaptureArea": "NodePath(\"CapturePointArea\")",
+				"InfantrySpawnPoints_Team1": "[NodePath(\"PlayerSpawner/SpawnPoint B1\")]",
+				"InfantrySpawnPoints_Team2": "[NodePath(\"PlayerSpawner/SpawnPoint B2\")]",
+				"id": "\"CapturePoint B\""
 			}
 		},
 		{
@@ -542,6 +580,7 @@
 			],
 			"props":
 			{
+				"height": "5.0"
 			}
 		},
 		{
@@ -550,6 +589,9 @@
 			"parent": "Objectives/CapturePoint B",
 			"props":
 			{
+				"ObjId": "201",
+				"SpawnPoints": "[NodePath(\"SpawnPoint B1\"), NodePath(\"SpawnPoint B2\")]",
+				"id": "\"CapturePoint B/PlayerSpawner\""
 			}
 		},
 		{
@@ -574,6 +616,7 @@
 			],
 			"props":
 			{
+				"id": "\"CapturePoint B/PlayerSpawner/SpawnPoint B1\""
 			}
 		},
 		{
@@ -598,6 +641,7 @@
 			],
 			"props":
 			{
+				"id": "\"CapturePoint B/PlayerSpawner/SpawnPoint B2\""
 			}
 		},
 		{
@@ -622,6 +666,14 @@
 			],
 			"props":
 			{
+				"ObjId": "300",
+				"TacticalAdviceLandVehicleFriendly": "false",
+				"TacticalAdvicePriorityLevel_Team1": "2",
+				"TacticalAdvicePriorityLevel_Team2": "2",
+				"CaptureArea": "NodePath(\"CapturePointArea\")",
+				"InfantrySpawnPoints_Team1": "[NodePath(\"PlayerSpawner/SpawnPoint C1\")]",
+				"InfantrySpawnPoints_Team2": "[NodePath(\"PlayerSpawner/SpawnPoint C2\")]",
+				"id": "\"CapturePoint C\""
 			}
 		},
 		{
@@ -656,6 +708,7 @@
 			],
 			"props":
 			{
+				"height": "5.0"
 			}
 		},
 		{
@@ -680,6 +733,9 @@
 			],
 			"props":
 			{
+				"ObjId": "301",
+				"SpawnPoints": "[NodePath(\"SpawnPoint C1\"), NodePath(\"SpawnPoint C2\")]",
+				"id": "\"CapturePoint C/PlayerSpawner\""
 			}
 		},
 		{
@@ -704,6 +760,7 @@
 			],
 			"props":
 			{
+				"id": "\"CapturePoint C/PlayerSpawner/SpawnPoint C1\""
 			}
 		},
 		{
@@ -728,6 +785,7 @@
 			],
 			"props":
 			{
+				"id": "\"CapturePoint C/PlayerSpawner/SpawnPoint C2\""
 			}
 		},
 		{
@@ -760,6 +818,8 @@
 			],
 			"props":
 			{
+				"CombatVolume": "NodePath(\"CombatVolume\")",
+				"id": "\"CombatArea\""
 			}
 		},
 		{
@@ -838,6 +898,11 @@
 			],
 			"props":
 			{
+				"ObjId": "200",
+				"AutoEnableVehicles": "false",
+				"SectorArea": "NodePath(\"../CombatArea/CombatVolume\")",
+				"CapturePoints": "[NodePath(\"../../Objectives/CapturePoint A\"), NodePath(\"../../Objectives/CapturePoint B\"), NodePath(\"../../Objectives/CapturePoint C\")]",
+				"id": "\"Sector\""
 			}
 		}
 	]

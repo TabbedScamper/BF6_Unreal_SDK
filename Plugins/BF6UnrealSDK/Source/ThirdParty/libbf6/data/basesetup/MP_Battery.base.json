@@ -30,6 +30,10 @@
 			],
 			"props":
 			{
+				"AltTeam": "0",
+				"ObjId": "1",
+				"HQArea": "NodePath(\"HQ_Team1\")",
+				"InfantrySpawns": "[NodePath(\"SpawnPoint_1_1\"), NodePath(\"SpawnPoint_1_2\"), NodePath(\"SpawnPoint_1_3\"), NodePath(\"SpawnPoint_1_4\")]"
 			}
 		},
 		{
@@ -64,6 +68,7 @@
 			],
 			"props":
 			{
+				"height": "10.0"
 			}
 		},
 		{
@@ -184,6 +189,11 @@
 			],
 			"props":
 			{
+				"Team": "2",
+				"AltTeam": "0",
+				"ObjId": "2",
+				"HQArea": "NodePath(\"HQ_Team2\")",
+				"InfantrySpawns": "[NodePath(\"SpawnPoint_2_1\"), NodePath(\"SpawnPoint_2_2\"), NodePath(\"SpawnPoint_2_3\"), NodePath(\"SpawnPoint_2_4\")]"
 			}
 		},
 		{
@@ -218,6 +228,7 @@
 			],
 			"props":
 			{
+				"height": "5.0"
 			}
 		},
 		{
@@ -338,6 +349,7 @@
 			],
 			"props":
 			{
+				"CombatVolume": "NodePath(\"CombatVolume\")"
 			}
 		},
 		{
