@@ -1,12 +1,18 @@
 @echo off
 setlocal
 set "PS1=%TEMP%\bf6_fix_autoupdate.ps1"
-more +8 "%~f0" > "%PS1%"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%"
+more +9 "%~f0" > "%PS1%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" "%~dp0."
 del "%PS1%" >nul 2>&1
 exit /b
-REM ---- everything below this line is the PowerShell script ----
+REM ---------------------------------------------------------------------
+REM  Everything below this line is the PowerShell script that gets written
+param([string]$BatDir = "")
+
 # BF6 Unreal SDK - Fix Auto Update
+#
+# Put this file in your project folder - the one holding the .uproject - and
+# double-click it with the editor closed.
 #
 # Versions 0.5.2 and earlier could not start their own updater, so pressing Yes
 # closed the editor without changing anything. This installs the newest plugin
@@ -18,8 +24,26 @@ Write-Host '  BF6 Unreal SDK - Fix Auto Update' -ForegroundColor Cyan
 Write-Host '  --------------------------------'
 Write-Host ''
 
+function Test-PluginDir([string]$d) {
+    if ([string]::IsNullOrWhiteSpace($d)) { return $false }
+    return (Test-Path (Join-Path $d 'BF6UnrealSDK.uplugin'))
+}
+
+# accepts the project folder, the plugin folder itself, or the Plugins folder
+function Resolve-PluginDir([string]$d) {
+    if ([string]::IsNullOrWhiteSpace($d)) { return $null }
+    try { $d = (Resolve-Path -LiteralPath $d -ErrorAction Stop).Path } catch { return $null }
+    foreach ($try in @(
+        (Join-Path $d 'Plugins\BF6UnrealSDK'),
+        $d,
+        (Join-Path $d 'BF6UnrealSDK'),
+        (Join-Path $d 'BF6_Unreal_SDK\Plugins\BF6UnrealSDK'))) {
+        if (Test-PluginDir $try) { return (Resolve-Path -LiteralPath $try).Path }
+    }
+    return $null
+}
+
 try {
-    # The editor holds the plugin DLL open, so it has to be closed first.
     if (Get-Process UnrealEditor -ErrorAction SilentlyContinue) {
         Write-Host '  The Unreal editor is still running.' -ForegroundColor Yellow
         Write-Host '  Close it completely, then run this again.'
@@ -28,41 +52,21 @@ try {
         exit 1
     }
 
-    # Find the plugin: beside this file first, then the usual project locations.
-    $here = Split-Path -Parent $PSCommandPath
-    $candidates = New-Object System.Collections.ArrayList
-    foreach ($base in @($here, (Split-Path -Parent $here), (Get-Location).Path)) {
-        if ($base) {
-            [void]$candidates.Add((Join-Path $base 'Plugins\BF6UnrealSDK'))
-            [void]$candidates.Add((Join-Path $base 'BF6_Unreal_SDK\Plugins\BF6UnrealSDK'))
-            [void]$candidates.Add($base)
-        }
-    }
-    $plugin = $null
-    foreach ($c in $candidates) {
-        if ($c -and (Test-Path (Join-Path $c 'BF6UnrealSDK.uplugin'))) { $plugin = $c; break }
-    }
+    # where this file is sitting - that is the whole rule
+    $plugin = Resolve-PluginDir $BatDir
+    if (-not $plugin) { $plugin = Resolve-PluginDir (Get-Location).Path }
 
     if (-not $plugin) {
-        Write-Host '  Looking for your project...'
-        $roots = @((Join-Path $env:USERPROFILE 'Documents'), 'C:\', 'D:\')
-        foreach ($r in $roots) {
-            if ($plugin) { break }
-            if (-not (Test-Path $r)) { continue }
-            $hit = Get-ChildItem -Path $r -Filter 'BF6UnrealSDK.uplugin' -Recurse -Depth 6 -Force -ErrorAction SilentlyContinue |
-                   Select-Object -First 1
-            if ($hit) { $plugin = $hit.DirectoryName }
-        }
-    }
-
-    if (-not $plugin) {
-        Write-Host '  Could not find your BF6UnrealSDK plugin folder automatically.'
-        Write-Host '  Paste the full path to it below, for example:'
-        Write-Host '    C:\Users\you\Documents\Unreal Projects\BF6_Unreal_SDK\Plugins\BF6UnrealSDK'
+        Write-Host '  This file needs to be in your project folder.' -ForegroundColor Yellow
         Write-Host ''
-        $plugin = (Read-Host '  Plugin folder').Trim('"').Trim()
-        if (-not (Test-Path (Join-Path $plugin 'BF6UnrealSDK.uplugin'))) {
-            Write-Host '  That folder has no BF6UnrealSDK.uplugin in it. Nothing was changed.' -ForegroundColor Red
+        Write-Host '  Move it next to your .uproject file - the folder that also has'
+        Write-Host '  Config, Content and Plugins in it - then double-click it again.'
+        Write-Host ''
+        Write-Host '  Or paste that folder path here and press Enter:'
+        $answer = (Read-Host '  Project folder').Trim('"').Trim()
+        $plugin = Resolve-PluginDir $answer
+        if (-not $plugin) {
+            Write-Host '  No Plugins\BF6UnrealSDK in there. Nothing was changed.' -ForegroundColor Red
             Read-Host '  Press Enter to close'
             exit 1
         }
