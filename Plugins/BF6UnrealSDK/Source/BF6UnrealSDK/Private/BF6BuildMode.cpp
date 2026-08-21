@@ -113,6 +113,16 @@ namespace
 			.OnClicked_Lambda([OnClick]{ if (OnClick) OnClick(); return FReply::Handled(); })
 			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Label.ToUpper())) ];
 	}
+	// Same ghost button, but the label follows a value - used where one control
+	// flips between two jobs (the outliner tree/folders toggle).
+	TSharedRef<SWidget> MakeToolButton_Dynamic(TAttribute<FText> Label, TFunction<void()> OnClick)
+	{
+		return SNew(SButton).ButtonStyle(&GhostButtonStyle()).ContentPadding(FMargin(16, 8))
+			.OnClicked_Lambda([OnClick]{ if (OnClick) OnClick(); return FReply::Handled(); })
+			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text))
+				.Text_Lambda([Label]{ return FText::FromString(Label.Get(FText::GetEmpty()).ToString().ToUpper()); }) ];
+	}
+
 	// Primary (white) button with dark uppercase label - the main action.
 	TSharedRef<SWidget> MakePrimaryButton(const FString& Label, TFunction<void()> OnClick)
 	{
@@ -2677,12 +2687,38 @@ public:
 						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
 						[
 							SNew(SBox).Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
-							.ToolTip(BF6_MakeHint(TEXT("Tidy up the list"), TEXT("Sorts every object in the level list into folders by what it is - HQs, spawns, zones, props by category, and each block in its own folder. New objects sort themselves; use this on a level built earlier.")))
-							[ MakeToolButton(TEXT("Tidy up"), []
+							// One button, two directions: with an imported Godot tree present it
+							// flips between that tree and automatic folders, and the choice sticks.
+							.ToolTip_Lambda([]
 							{
-								const int32 n = BF6Api::OrganizeOutliner();
-								BF6_MiniToast(FString::Printf(TEXT("Sorted %d objects into folders."), n));
-							}) ]
+								return BF6Api::AnyGodotTree() && BF6Api::KeepingGodotTree()
+									? BF6_MakeHint(TEXT("Sort into folders"), TEXT("Files every object by what it is - HQs, spawns, zones, props by category, each block in its own folder. Your Godot tree is remembered, so you can put it back at any time."))
+									: BF6Api::AnyGodotTree()
+									? BF6_MakeHint(TEXT("Back to your Godot tree"), TEXT("Rebuilds the level list exactly as you had it in Godot, folder for folder."))
+									: BF6_MakeHint(TEXT("Tidy up the list"), TEXT("Sorts every object in the level list into folders by what it is - HQs, spawns, zones, props by category, and each block in its own folder. New objects sort themselves; use this on a level built earlier."));
+							})
+							[ MakeToolButton_Dynamic(
+								TAttribute<FText>::CreateLambda([]
+								{
+									return FText::FromString(!BF6Api::AnyGodotTree() ? TEXT("Tidy up")
+										: BF6Api::KeepingGodotTree() ? TEXT("Sort into folders") : TEXT("Godot tree"));
+								}),
+								[]
+								{
+									if (BF6Api::AnyGodotTree())
+									{
+										const bool bKeep = !BF6Api::KeepingGodotTree();
+										const int32 n = BF6Api::SetOutlinerMode(bKeep);
+										BF6_MiniToast(bKeep
+											? FString::Printf(TEXT("Your Godot tree is back - %d objects."), n)
+											: FString::Printf(TEXT("Sorted %d objects into folders."), n));
+									}
+									else
+									{
+										const int32 n = BF6Api::OrganizeOutliner();
+										BF6_MiniToast(FString::Printf(TEXT("Sorted %d objects into folders."), n));
+									}
+								}) ]
 						]
 						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
 						[ MakeToolButton(TEXT("Export"), []{ BF6Api::ExportSpatial(); }) ]

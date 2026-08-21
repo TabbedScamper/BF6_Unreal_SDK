@@ -1115,7 +1115,8 @@ static void SaveSession(const FString& Level, const FString& Name)
 			for (const FName& T : It->Tags)
 			{
 				const FString TS = T.ToString();
-				if (TS.StartsWith(TEXT("blk:")) || TS.StartsWith(TEXT("blkid:")) || TS.StartsWith(TEXT("blkat:")))
+				if (TS.StartsWith(TEXT("blk:")) || TS.StartsWith(TEXT("blkid:")) || TS.StartsWith(TEXT("blkat:"))
+					|| TS.StartsWith(TEXT("gtree:")))   // the authored Godot folder path
 					RawTags.Add(MakeShared<FJsonValueString>(TS));
 			}
 			if (RawTags.Num()) O->SetArrayField(TEXT("tags"), RawTags);
@@ -2374,11 +2375,35 @@ static FString BF6_CategoryForType(const FString& Type)
 	return FString();
 }
 
+// Creators coming from Godot build deep, deliberate trees (Sidewalk, Lights,
+// Low Detail Buildings, props parented under other props) and want them back
+// exactly as authored, so an import records the whole path on each actor and
+// this preference decides which view wins. It is asked once at import and
+// then sticks; the outliner button flips it at any time.
+bool BF6_KeepGodotTree()
+{
+	bool bKeep = true;   // an authored tree wins by default when one exists
+	GConfig->GetBool(TEXT("BF6UnrealSDK"), TEXT("KeepGodotTree"), bKeep, GEditorPerProjectIni);
+	return bKeep;
+}
+
+void BF6_SetKeepGodotTree(bool bKeep)
+{
+	GConfig->SetBool(TEXT("BF6UnrealSDK"), TEXT("KeepGodotTree"), bKeep, GEditorPerProjectIni);
+	GConfig->Flush(false, GEditorPerProjectIni);
+}
+
 // The outliner folder an object belongs in. Gameplay gets role folders;
 // everything else groups under BF6 Build by its library category.
 static FString BF6_FolderForActor(AActor* A)
 {
 	if (!A) return TEXT("BF6 Build");
+	// the authored Godot path, verbatim, when the creator asked to keep it
+	if (BF6_KeepGodotTree())
+	{
+		const FString G = TagValue(A, TEXT("gtree:"));
+		if (!G.IsEmpty()) return G;
+	}
 	// a block instance lives with its siblings, one folder per block
 	const FString Blk = TagValue(A, TEXT("blk:"));
 	if (!Blk.IsEmpty()) return TEXT("BF6 Blocks/") + Blk;
@@ -3267,6 +3292,11 @@ static bool BF6_ImportTscnFile(const FString& File)
 			}
 		}
 		if (!A) continue;
+		// Remember the tree the creator actually built. ParentPath is the Godot
+		// folder path ("FinalAssault/FinalArea1/.../Sidewalk"); "." means the
+		// scene root, which has no folder of its own.
+		if (!N->ParentPath.IsEmpty() && N->ParentPath != TEXT("."))
+			A->Tags.Add(FName(*(FString(TEXT("gtree:")) + N->ParentPath)));
 		BF6_SetPrettyLabel(A, Nm);
 		A->SetFlags(RF_Transient);
 		ActorByPath.Add(N->Path, A);
@@ -3331,6 +3361,28 @@ static bool BF6_ImportTscnFile(const FString& File)
 		}
 	}
 
+	// The tree question, asked once and then remembered. Creators arriving from
+	// Godot almost always want the hierarchy they authored; new Unreal users are
+	// better served by role folders. Whichever they pick sticks for every map
+	// from here on, and the outliner button flips it later.
+	int32 WithTree = 0;
+	for (const TSharedPtr<FTNode>& N : Nodes)
+		if (!N->bSkip && !N->ParentPath.IsEmpty() && N->ParentPath != TEXT(".")) WithTree++;
+	bool bAsked = false;
+	GConfig->GetBool(TEXT("BF6UnrealSDK"), TEXT("TreeChoiceMade"), bAsked, GEditorPerProjectIni);
+	if (!bAsked && WithTree > 0)
+	{
+		const EAppReturnType::Type Pick = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(TEXT(
+			"This scene has folders you built in Godot, and %d objects sit inside them.\n\n"
+			"Keep your Godot tree exactly as you made it?\n\n"
+			"Yes  -  the outliner mirrors your Godot folders.\n"
+			"No   -  objects are filed automatically by what they are.\n\n"
+			"Either way you can switch at any time with the outliner button."), WithTree)));
+		BF6_SetKeepGodotTree(Pick == EAppReturnType::Yes);
+		GConfig->SetBool(TEXT("BF6UnrealSDK"), TEXT("TreeChoiceMade"), true, GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+		for (TActorIterator<AActor> It(World); It; ++It) BF6_FileActor(*It);   // apply the pick now
+	}
 	BF6_RecomputeBudget();
 	Notify(FString::Printf(TEXT("Imported Godot scene '%s' onto %s: %d objects%s. Editable now."),
 		*g_ss.CurrentSave, *Level, spawned,
@@ -4024,12 +4076,24 @@ static bool BF6_IsNewer(const FString& Remote, const FString& Local)
 // script waits for us to exit, unzips over the plugin, and relaunches.
 static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FString& Tag)
 {
-	const FString UpdateDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("update"));
-	const FString ZipPath   = FPaths::Combine(UpdateDir, TEXT("plugin_update.zip"));
-	const FString Staging   = FPaths::Combine(UpdateDir, TEXT("staging"));
-	const FString Script    = FPaths::Combine(UpdateDir, TEXT("apply_update.ps1"));
-	const FString PluginDir = FPaths::ConvertRelativePathToFull(g_pluginDir);
-	const FString Project   = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / FApp::GetProjectName()) + TEXT(".uproject");
+	// EVERY path handed to the applier must be absolute and Windows-native.
+	// FPaths::ProjectSavedDir() is RELATIVE (resolved against the engine base
+	// dir, not the child process's working directory); it only ever worked by
+	// the accident of excess ".." clamping at the drive root, and breaks flat
+	// out when the project and the engine live on different drives.
+	auto Win = [](const FString& P)
+	{
+		FString S = FPaths::ConvertRelativePathToFull(P);
+		S.ReplaceInline(TEXT("/"), TEXT("\\"));
+		return S;
+	};
+	const FString UpdateDir = Win(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("update")));
+	const FString ZipPath   = Win(FPaths::Combine(UpdateDir, TEXT("plugin_update.zip")));
+	const FString Staging   = Win(FPaths::Combine(UpdateDir, TEXT("staging")));
+	const FString Script    = Win(FPaths::Combine(UpdateDir, TEXT("apply_update.ps1")));
+	const FString PluginDir = Win(g_pluginDir);
+	const FString Project   = Win(FPaths::ProjectDir() / FApp::GetProjectName()) + TEXT(".uproject");
+	IFileManager::Get().MakeDirectory(*UpdateDir, true);
 	if (!FFileHelper::SaveArrayToFile(ZipBytes, *ZipPath)) { Notify(TEXT("Could not write the update file.")); return; }
 
 	const uint32 Pid = FPlatformProcess::GetCurrentProcessId();
@@ -4042,7 +4106,10 @@ static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FStri
 	FString Ps;
 	Ps += FString::Printf(TEXT("$log = \"%s\"\r\n"), *ApplyLog);
 	Ps += TEXT("function Log($m) { Add-Content -Path $log -Value ((Get-Date -Format s) + '  ' + $m) }\r\n");
-	Ps += FString::Printf(TEXT("Set-Content -Path $log -Value ((Get-Date -Format s) + '  applying update %s')\r\n"), *Tag);
+	// If the breadcrumb cannot be written, STOP. The editor reads a missing
+	// breadcrumb as "the applier never started" and stays open, so the applier
+	// must agree rather than lurk and apply an update later behind its back.
+	Ps += FString::Printf(TEXT("try { Set-Content -Path $log -Value ((Get-Date -Format s) + '  applying update %s') -ErrorAction Stop } catch { exit 1 }\r\n"), *Tag);
 	Ps += TEXT("try {\r\n");
 	Ps += FString::Printf(TEXT("  try { Wait-Process -Id %u -ErrorAction SilentlyContinue } catch {}\r\n"), Pid);
 	Ps += TEXT("  Start-Sleep -Seconds 2\r\n");
@@ -4074,16 +4141,52 @@ static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FStri
 	// on a file association that is missing on some machines
 	Ps += FString::Printf(TEXT("Start-Process \"%s\" -ArgumentList '\"%s\"'\r\n"), *EditorExe, *Project);
 	Ps += TEXT("Log 'done'\r\n");
-	FFileHelper::SaveStringToFile(Ps, *Script);
+	IFileManager::Get().Delete(*ApplyLog, false, true, true);   // the breadcrumb waited on below
+	if (!FFileHelper::SaveStringToFile(Ps, *Script))
+	{
+		Notify(TEXT("Could not write the update script - nothing was changed."));
+		return;
+	}
+
+	// This MUST NOT be launched detached with no handles: powershell is a console
+	// program, and DETACHED_PROCESS with no console and no pipes leaves its host
+	// without standard handles, so it died before running a single line. The
+	// editor then closed for an update that never happened and never came back -
+	// the "press yes, nothing changes" loop. (The SDK's tar/curl calls get away
+	// with detached only because they are handed a pipe.)
+	uint32 ChildPid = 0;
+	FProcHandle Proc = FPlatformProcess::CreateProc(TEXT("powershell.exe"),
+		*FString::Printf(TEXT("-NoProfile -ExecutionPolicy Bypass -File \"%s\""), *Script),
+		false, true, true, &ChildPid, 0, *UpdateDir, nullptr);
+
+	// Never take the editor down on faith. The applier's first act is writing its
+	// log, so wait for real bytes to land: no breadcrumb means it never ran, and
+	// closing then stranded the user in the loop this guard exists to prevent.
+	// (FPaths::FileExists is TRUE for a directory, so size is what gets checked.)
+	bool bStarted = false;
+	if (Proc.IsValid())
+		for (int32 i = 0; i < 60 && !bStarted; i++)   // up to ~6 seconds
+		{
+			FPlatformProcess::Sleep(0.1f);
+			bStarted = IFileManager::Get().FileSize(*ApplyLog) > 0;
+		}
+	if (!bStarted)
+	{
+		if (Proc.IsValid()) { FPlatformProcess::TerminateProc(Proc); FPlatformProcess::CloseProc(Proc); }
+		UE_LOG(LogBF6, Error, TEXT("Update %s: the applier never started (script %s)."), *Tag, *Script);
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT(
+			"The updater could not start, so nothing was changed and the editor is staying open.\n\n"
+			"%s is already downloaded. To finish by hand: close the editor, then unzip\n%s\nover\n%s\n\n"
+			"(The BF6UnrealSDK folder inside the zip replaces the one in Plugins.)"),
+			*Tag, *ZipPath, *FPaths::GetPath(PluginDir))));
+		return;   // editor stays up: no silent close, no loop
+	}
+	FPlatformProcess::CloseProc(Proc);
 
 	// Marker for the next launch: if the plugin version then matches this tag
 	// the update applied; if not, the apply failed and the user is told so.
 	FFileHelper::SaveStringToFile(Tag, *FPaths::Combine(UpdateDir, TEXT("pending.txt")));
-
-	FPlatformProcess::CreateProc(TEXT("powershell.exe"),
-		*FString::Printf(TEXT("-ExecutionPolicy Bypass -WindowStyle Hidden -File \"%s\""), *Script),
-		true, false, false, nullptr, 0, nullptr, nullptr);
-	UE_LOG(LogBF6, Warning, TEXT("Update %s staged - closing the editor to apply."), *Tag);
+	UE_LOG(LogBF6, Warning, TEXT("Update %s staged (applier pid %u) - closing the editor to apply."), *Tag, ChildPid);
 	FPlatformMisc::RequestExit(false);
 }
 
@@ -6599,6 +6702,28 @@ namespace BF6Api
 
 	// Re-file every object into its role/category folder. Fixes a level built
 	// before auto-organizing, or one whose objects were hand-moved around.
+	// Which view the outliner is in, and the flip. Switching re-files every
+	// object, so it is instant and reversible - the authored path rides along
+	// on each actor, so going back to the Godot tree never loses anything.
+	bool KeepingGodotTree() { return BF6_KeepGodotTree(); }
+
+	bool AnyGodotTree()
+	{
+		if (!GEditor) return false;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return false;
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (!TagValue(*It, TEXT("gtree:")).IsEmpty()) return true;
+		return false;
+	}
+
+	int32 SetOutlinerMode(bool bKeepTree)
+	{
+		BF6_SetKeepGodotTree(bKeepTree);
+		GConfig->SetBool(TEXT("BF6UnrealSDK"), TEXT("TreeChoiceMade"), true, GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+		return OrganizeOutliner();
+	}
+
 	int32 OrganizeOutliner()
 	{
 		if (!GEditor) return 0;

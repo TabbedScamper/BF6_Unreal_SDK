@@ -170,6 +170,11 @@ namespace BF6Api
 	// folder (HQs, Spawns, Zones, props by category, blocks each own folder).
 	// New placements sort themselves; this fixes a level built earlier.
 	int32 OrganizeOutliner();
+	// Outliner view: an imported Godot tree kept verbatim, or automatic role
+	// folders. Chosen once at import, flipped any time, remembered after that.
+	bool  KeepingGodotTree();
+	bool  AnyGodotTree();          // did anything here come in with an authored path?
+	int32 SetOutlinerMode(bool bKeepTree);   // returns how many objects were re-filed
 	void OpenExportsFolder();              // Explorer on the .spatial.json folder
 	void OpenSavesFolder();                // Explorer on saves/<custom map>/<level>.json
 	// ObjId registry: every gameplay object's script-facing id in one list.
