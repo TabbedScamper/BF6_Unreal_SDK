@@ -2083,6 +2083,176 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// "COLLISION": the overlay ported from the Godot high-poly tool. It draws each
+// object's own shape in translucent red at the scale the GAME collides at,
+// which is uniform from the X axis - so a stretched object shows a smaller red
+// shell than the model you see, and that gap is exactly where players will
+// walk through it. An approximation, never the real physics data, never saved.
+// ---------------------------------------------------------------------------
+class SBF6CollisionPanel : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6CollisionPanel) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		const int32 Stretched = BF6Api::CountStretched();
+		ChildSlot
+		[
+			SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(18, 16))
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+				[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("COLLISION"))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 12)
+				[ SNew(SBox).WidthOverride(430.f)
+					[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
+						.Text(FText::FromString(TEXT("The game scales collision evenly from the X axis, so a stretched object still bumps as though it were square. Red shows what you actually hit. It is a guide, not the game's real collision data."))) ] ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 12)
+				[ SNew(STextBlock).Font(FontReg(9))
+					.ColorAndOpacity(FSlateColor(Stretched > 0 ? BF6Theme::Accent : BF6Theme::TextDim))
+					.Text(FText::FromString(Stretched > 0
+						? FString::Printf(TEXT("%d object%s on this map %s stretched, so collision differs there."), Stretched, Stretched == 1 ? TEXT("") : TEXT("s"), Stretched == 1 ? TEXT("is") : TEXT("are"))
+						: FString(TEXT("Nothing on this map is stretched, so collision matches what you see.")))) ]
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Stretched objects"), TEXT("Shows the overlay only where it differs from the model - every object you scaled unevenly. This is the one you want most of the time, and it stays cheap on a big map.")))
+						[ MakePrimaryButton(TEXT("Show stretched"), []
+							{
+								const int32 n = BF6Api::ShowCollisionOverlay(1);
+								BF6_MiniToast(n > 0
+									? FString::Printf(TEXT("Collision shown on %d stretched object%s."), n, n == 1 ? TEXT("") : TEXT("s"))
+									: FString(TEXT("Nothing is stretched - collision matches what you see.")));
+							}) ]
+					]
+					+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Every object"), TEXT("Shows the overlay on everything. On a full map that is a second copy of every model, so it costs memory and frame rate - use it for a look, not to work in.")))
+						[ MakeToolButton(TEXT("Everything"), []
+							{
+								const int32 n = BF6Api::ShowCollisionOverlay(2);
+								BF6_MiniToast(FString::Printf(TEXT("Collision shown on %d object%s."), n, n == 1 ? TEXT("") : TEXT("s")));
+							}) ]
+					]
+					+ SHorizontalBox::Slot().AutoWidth()
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Turn it off"), TEXT("Removes every overlay and frees the memory they used.")))
+						[ MakeToolButton(TEXT("Hide"), []
+							{
+								const int32 n = BF6Api::HideCollisionOverlay();
+								BF6_MiniToast(n > 0
+									? FString::Printf(TEXT("Collision hidden on %d object%s."), n, n == 1 ? TEXT("") : TEXT("s"))
+									: FString(TEXT("Collision is not showing.")));
+							}) ]
+					]
+				]
+			]
+		];
+	}
+};
+
+// ---------------------------------------------------------------------------
+// "COLORIZE": the recolorizer, ported from the Godot plugin of the same idea.
+// A pure VIEW aid - it paints meshes in the editor so a blockout reads at a
+// glance and duplicates stand out, and nothing it does reaches the export.
+// ---------------------------------------------------------------------------
+class SBF6ColorizePanel : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6ColorizePanel) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		// the Godot plugin's quick palette, which reads well on grey blockouts
+		const TArray<FLinearColor> Swatches = {
+			FLinearColor(FColor(231, 76, 60)),  FLinearColor(FColor(230, 126, 34)),
+			FLinearColor(FColor(241, 196, 15)), FLinearColor(FColor(46, 204, 113)),
+			FLinearColor(FColor(26, 188, 156)), FLinearColor(FColor(52, 152, 219)),
+			FLinearColor(FColor(142, 68, 173)), FLinearColor(FColor(236, 112, 99)),
+			FLinearColor(FColor(165, 105, 189)), FLinearColor(FColor(127, 140, 141)) };
+
+		TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+		for (const FLinearColor& C : Swatches)
+		{
+			Row->AddSlot().AutoWidth().Padding(0, 0, 6, 0)
+			[
+				SNew(SBox).WidthOverride(30.f).HeightOverride(30.f)
+				[
+					SNew(SButton).ButtonStyle(&GhostButtonStyle()).ContentPadding(FMargin(2))
+					.OnClicked_Lambda([C]
+					{
+						const int32 n = BF6Api::RecolorSelection(C);
+						BF6_MiniToast(n > 0
+							? FString::Printf(TEXT("Painted %d object%s."), n, n == 1 ? TEXT("") : TEXT("s"))
+							: FString(TEXT("Select objects first, then pick a colour.")));
+						return FReply::Handled();
+					})
+					[ SNew(SImage).Image(FCoreStyle::Get().GetBrush("GenericWhiteBox")).ColorAndOpacity(FSlateColor(C)) ]
+				]
+			];
+		}
+
+		ChildSlot
+		[
+			SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(18, 16))
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+				[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("COLORIZE"))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 14)
+				[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
+					.Text(FText::FromString(TEXT("A view aid only - colours save with your map and never reach your export."))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+				[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("PAINT THE SELECTION"))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 16)[ Row ]
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Colour by type"), TEXT("Gives every distinct object type its own colour across the whole map, so repeated props, one-offs and mistakes stand out instantly. The same map always paints the same way.")))
+						[ MakePrimaryButton(TEXT("Colour by type"), []
+							{
+								const int32 n = BF6Api::RecolorByType();
+								BF6_MiniToast(n > 0
+									? FString::Printf(TEXT("Painted %d objects by type."), n)
+									: FString(TEXT("Nothing to paint yet.")));
+							}) ]
+					]
+					+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Clear the selection"), TEXT("Puts just the selected objects back to the material they really had.")))
+						[ MakeToolButton(TEXT("Clear selection"), []
+							{
+								const int32 n = BF6Api::ClearRecolorSelection();
+								BF6_MiniToast(n > 0
+									? FString::Printf(TEXT("Restored %d object%s."), n, n == 1 ? TEXT("") : TEXT("s"))
+									: FString(TEXT("Nothing painted in the selection.")));
+							}) ]
+					]
+					+ SHorizontalBox::Slot().AutoWidth()
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Clear every colour"), TEXT("Puts the whole map back to its real materials. Colours save with your map, so this is how you remove them for good.")))
+						[ MakeToolButton(TEXT("Clear all"), []
+							{
+								const int32 n = BF6Api::ClearRecolor();
+								BF6_MiniToast(n > 0
+									? FString::Printf(TEXT("Restored %d object%s."), n, n == 1 ? TEXT("") : TEXT("s"))
+									: FString(TEXT("Nothing is painted.")));
+							}) ]
+					]
+				]
+			]
+		];
+	}
+};
+
 // "OBJECT IDS": the ObjId registry. Scripts address gameplay objects by these
 // ids; duplicates or unset ids quietly break modes, so the registry lists
 // every id, flags the problems, and auto-numbers a selection in a
@@ -2132,10 +2302,26 @@ public:
 						[ MakePrimaryButton(TEXT("Assign to selection"), [this]
 							{
 								const int32 Start = FMath::Max(0, FCString::Atoi(*StartBox->GetText().ToString()));
-								const int32 n = BF6Api::AutoAssignObjIds(Start);
-								BF6_MiniToast(n > 0
-									? FString::Printf(TEXT("Assigned %d ids starting at %d."), n, Start)
-									: FString(TEXT("Select gameplay objects first.")));
+								// fills blanks only - ids already set are what scripts address
+								BF6Api::FObjIdAssign R = BF6Api::AutoAssignObjIds(Start, false);
+								if (R.Considered == 0) { BF6_MiniToast(TEXT("Select gameplay objects first.")); Refresh(); return; }
+								if (R.Assigned == 0 && R.Kept > 0)
+								{
+									// nothing blank left: renumbering is destructive, so ask plainly
+									const EAppReturnType::Type Pick = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(TEXT(
+										"All %d selected objects already have an ObjId.\n\n"
+										"Scripts address objects by these ids, so renumbering can break a mod that is already written.\n\n"
+										"Renumber them anyway, starting at %d?"), R.Kept, Start)));
+									if (Pick != EAppReturnType::Yes) { BF6_MiniToast(TEXT("Left every id as it was.")); return; }
+									R = BF6Api::AutoAssignObjIds(Start, true);
+									BF6_MiniToast(FString::Printf(TEXT("Renumbered %d ids starting at %d."), R.Assigned, Start));
+								}
+								else
+								{
+									BF6_MiniToast(R.Kept > 0
+										? FString::Printf(TEXT("Assigned %d id%s. Left %d that already had one."), R.Assigned, R.Assigned == 1 ? TEXT("") : TEXT("s"), R.Kept)
+										: FString::Printf(TEXT("Assigned %d id%s."), R.Assigned, R.Assigned == 1 ? TEXT("") : TEXT("s")));
+								}
 								Refresh();
 							}) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
@@ -2252,11 +2438,21 @@ public:
 							[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("< BACK"))) ]
 						]
 						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
-						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("CHECKS"))) ]
+						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("VALIDATE"))) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
 						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("click a row to select it"))) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ MakeToolButton(TEXT("Re-check"), [this]{ Refresh(); }) ]
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+							[
+								// ids are a correctness question, so they live in Validate now
+								SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Object IDs"), TEXT("The registry of the numbers scripts use to address objects. Shows every id, flags duplicates, and fills in blanks without touching ids you already set.")))
+								[ MakeToolButton(TEXT("Object IDs"), []{ BF6_PushTransient(SNew(SBF6ObjIdPanel), FSlateApplication::Get().GetCursorPos()); }) ]
+							]
+							+ SHorizontalBox::Slot().AutoWidth()
+							[ MakeToolButton(TEXT("Re-check"), [this]{ Refresh(); }) ]
+						]
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
 					[ SAssignNew(Summary, STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)) ]
@@ -2326,6 +2522,7 @@ public:
 	SLATE_BEGIN_ARGS(SBF6PieMenu) {}
 		SLATE_ARGUMENT(TArray<FString>, Items)   // custom labels; empty = place categories
 		SLATE_ARGUMENT(TArray<FString>, Subs)    // small sublabels, aligned with Items
+		SLATE_ARGUMENT(bool, ObjectRing)         // true = the object catalogue step
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
@@ -2333,26 +2530,40 @@ public:
 		SetVisibility(EVisibility::HitTestInvisible);   // the input handler drives it
 		Cats = InArgs._Items;
 		Subs = InArgs._Subs;
+		const bool bObjectRing = InArgs._ObjectRing;
 		if (Cats.Num() == 0)
 		{
-			Cats = BF6Api::Categories();
-			Subs.Reset();
-			for (const FString& C : Cats) Subs.Add(FString::Printf(TEXT("%d"), BF6Api::CategoryCount(C)));
-			// pins the Object Library open on everything the SDK has, any map
-			Cats.Add(TEXT("FULL LIBRARY"));
-			Subs.Add(TEXT("search everything"));
-			// the user's own prefabs
-			Cats.Add(TEXT("BLOCKS"));
-			Subs.Add(FString::Printf(TEXT("%d saved"), BF6Api::ListBlocks().Num()));
-			// script-facing ids: registry, duplicate check, auto-numbering
-			Cats.Add(TEXT("OBJECT IDS"));
-			Subs.Add(TEXT("registry"));
-			// offline validation: catch broken setups before an upload cycle
-			Cats.Add(TEXT("CHECKS"));
-			Subs.Add(TEXT("find problems"));
-			// guided scaffolding for the standard modes
-			Cats.Add(TEXT("MODE SETUP"));
-			Subs.Add(TEXT("conquest, breakthrough"));
+			// The top ring stays SHORT. Twelve SDK categories plus every tool made
+			// seventeen pills nobody could scan, so objects live one step in and
+			// the top level is just the four things you actually choose between.
+			if (bObjectRing)
+			{
+				// stepping in must always be reversible: BACK leads the ring so it
+				// keeps one predictable wedge no matter how many categories load
+				Cats = BF6Api::Categories();
+				Subs.Reset();
+				for (const FString& C : Cats) Subs.Add(FString::Printf(TEXT("%d"), BF6Api::CategoryCount(C)));
+				Cats.Insert(TEXT("< BACK"), 0);
+				Subs.Insert(TEXT("the main menu"), 0);
+				Cats.Add(TEXT("FULL LIBRARY"));
+				Subs.Add(TEXT("search everything"));
+				Cats.Add(TEXT("BLOCKS"));
+				Subs.Add(FString::Printf(TEXT("%d saved"), BF6Api::ListBlocks().Num()));
+			}
+			else
+			{
+				Cats.Reset(); Subs.Reset();
+				Cats.Add(TEXT("OBJECTS"));
+				Subs.Add(TEXT("place, library, blocks"));
+				Cats.Add(TEXT("MODE SETUP"));
+				Subs.Add(TEXT("conquest, breakthrough"));
+				Cats.Add(TEXT("VALIDATE"));
+				Subs.Add(TEXT("checks and object ids"));
+				Cats.Add(TEXT("COLORIZE"));
+				Subs.Add(BF6Api::AnyRecolored() ? TEXT("painted - clear inside") : TEXT("see your blockout"));
+				Cats.Add(TEXT("COLLISION"));
+				Subs.Add(BF6Api::AnyCollisionOverlay() ? TEXT("showing - hide inside") : TEXT("what you really hit"));
+			}
 		}
 		Subs.SetNum(Cats.Num());
 		const int32 N = FMath::Max(1, Cats.Num());
@@ -2765,6 +2976,7 @@ public:
 		BF6Api::TickLinkPick();       // assign mode: project the candidate markers
 		BF6Api::TickScatter();        // scatter outline: project the corner dots
 		BF6Api::TickCameraPreview();  // camera selected: live picture-in-picture
+		BF6Api::TickCollisionOverlay();   // overlays follow objects as they move
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
 		// the tool's own autosave: closing the editor can never cost more than
 		// a minute of work (session files are tiny)
@@ -3324,7 +3536,7 @@ namespace
 
 	// context the pie opened with: placing objects, editing an object's
 	// attributes, or editing a zone's points
-	enum class EBF6PieMode { Place, Props, VolEdit };
+	enum class EBF6PieMode { Place, Objects, Props, VolEdit };
 	EBF6PieMode                   GPieMode = EBF6PieMode::Place;
 	TWeakObjectPtr<AActor>        GPieTarget;
 	FString                       GPieTargetType;
@@ -3381,6 +3593,12 @@ static void BF6Pie_Attach()
 		{ Items.Add(TEXT("SET CAMERA")); Subs.Add(TEXT("take the editor view")); }
 		if (GPieProps.Num() > 0)
 		{ Items.Add(TEXT("ATTRIBUTES")); Subs.Add(FString::Printf(TEXT("%d fields"), GPieProps.Num())); }
+		// collision is a per-object question, and the top ring is unreachable
+		// while anything is selected - so the selection scope lives here
+		if (BF6Api::AnyCollisionOverlay())
+		{ Items.Add(TEXT("HIDE COLLISION")); Subs.Add(TEXT("clear the red")); }
+		else
+		{ Items.Add(TEXT("COLLISION")); Subs.Add(TEXT("what you really hit")); }
 		Items.Add(TEXT("PICK PLACE"));     Subs.Add(TEXT("carry with the cursor"));
 		Items.Add(TEXT("SELECT SIMILAR")); Subs.Add(TEXT("every copy"));
 		Items.Add(TEXT("MULTIPLY"));       Subs.Add(TEXT("rows, grids, circles"));
@@ -3392,7 +3610,7 @@ static void BF6Pie_Attach()
 		// Place: empty items = the object categories. If the catalogue never
 		// loaded (bf6_core failed, or the data import never ran), say so
 		// instead of presenting an empty ring with nothing but Cancel.
-		if (BF6Api::Categories().Num() == 0)
+		if (GPieMode == EBF6PieMode::Objects && BF6Api::Categories().Num() == 0)
 		{
 			FNotificationInfo Info(FText::FromString(TEXT(
 				"No object catalogue is loaded. Check Saved/Logs/BF6_High_Poly.log for bf6_core errors, or run SDK Setup from the map screen.")));
@@ -3403,7 +3621,7 @@ static void BF6Pie_Attach()
 		break;
 	}
 
-	GPie = SNew(SBF6PieMenu).Items(Items).Subs(Subs);
+	GPie = SNew(SBF6PieMenu).Items(Items).Subs(Subs).ObjectRing(GPieMode == EBF6PieMode::Objects);
 	VP->AddOverlayWidget(GPie.ToSharedRef(), 100);
 	GPieViewport = VP;
 	GPie->SetHighlighted(-1);
@@ -3898,6 +4116,20 @@ static void BF6Pie_Confirm()
 				BF6_MiniToast(TEXT("Riding the cursor - click to place, Esc puts it back."));
 			return;
 		}
+		if (Pick == TEXT("COLLISION"))
+		{
+			const int32 n = BF6Api::ShowCollisionOverlay(0);
+			BF6_MiniToast(n > 0
+				? FString::Printf(TEXT("Collision shown on %d object%s - red is what you hit."), n, n == 1 ? TEXT("") : TEXT("s"))
+				: FString(TEXT("No collision shape for this one.")));
+			return;
+		}
+		if (Pick == TEXT("HIDE COLLISION"))
+		{
+			const int32 n = BF6Api::HideCollisionOverlay();
+			BF6_MiniToast(FString::Printf(TEXT("Collision hidden on %d object%s."), n, n == 1 ? TEXT("") : TEXT("s")));
+			return;
+		}
 		if (Pick == TEXT("SELECT SIMILAR")) { BF6Api::SelectSimilar(); return; }
 		if (Pick == TEXT("ATTRIBUTES"))
 		{
@@ -3924,7 +4156,37 @@ static void BF6Pie_Confirm()
 		return;
 	}
 
-	// Place mode: FULL LIBRARY pins the object library up; BLOCKS browses the
+	// Top ring: OBJECTS steps into the catalogue, the rest open their panel.
+	if (Pick == TEXT("< BACK"))
+	{
+		GPieMode = EBF6PieMode::Place;
+		GPieCenter = Center;
+		BF6Pie_Attach();
+		return;
+	}
+	if (Pick == TEXT("OBJECTS"))
+	{
+		GPieMode = EBF6PieMode::Objects;
+		GPieCenter = Center;
+		BF6Pie_Attach();   // same wheel, one step in
+		return;
+	}
+	if (Pick == TEXT("COLLISION"))
+	{
+		BF6_PushTransient(SNew(SBF6CollisionPanel), Center);
+		return;
+	}
+	if (Pick == TEXT("COLORIZE"))
+	{
+		BF6_PushTransient(SNew(SBF6ColorizePanel), Center);
+		return;
+	}
+	if (Pick == TEXT("VALIDATE"))
+	{
+		BF6_PushTransient(SNew(SBF6LintPanel), Center);
+		return;
+	}
+	// Objects step: FULL LIBRARY pins the object library up; BLOCKS browses the
 	// user's prefabs; a category opens its object list
 	if (Pick == TEXT("FULL LIBRARY"))
 	{
@@ -3939,11 +4201,6 @@ static void BF6Pie_Confirm()
 	if (Pick == TEXT("OBJECT IDS"))
 	{
 		BF6_PushTransient(SNew(SBF6ObjIdPanel), Center);
-		return;
-	}
-	if (Pick == TEXT("CHECKS"))
-	{
-		BF6_PushTransient(SNew(SBF6LintPanel), Center);
 		return;
 	}
 	if (Pick == TEXT("MODE SETUP"))

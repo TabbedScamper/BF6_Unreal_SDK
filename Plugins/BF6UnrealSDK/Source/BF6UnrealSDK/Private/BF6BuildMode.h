@@ -181,7 +181,11 @@ namespace BF6Api
 	// Duplicate/unset ids silently break modes, so the registry flags them.
 	struct FObjIdRow { TWeakObjectPtr<AActor> Actor; FString Name; FString Type; int32 Id = -1; };
 	TArray<FObjIdRow> GatherObjIds();
-	int32 AutoAssignObjIds(int32 StartId);   // selection, spatial sweep order
+	// Assigning ids FILLS BLANKS only: an id a creator already set is what their
+	// scripts address, so it is never renumbered unless bOverwriteExisting says
+	// so, and a new id never reuses a number already live in the level.
+	struct FObjIdAssign { int32 Assigned = 0; int32 Kept = 0; int32 Considered = 0; };
+	FObjIdAssign AutoAssignObjIds(int32 StartId, bool bOverwriteExisting = false);
 	int32 SelectDuplicateObjIds();           // selects every duplicate-id actor
 	void SelectOnly(AActor* A);              // exclusive select (registry rows)
 	// Offline lint: each rule is a mistake that otherwise costs a full
@@ -349,6 +353,30 @@ namespace BF6Api
 	// Assign mode ghosts everything non-assignable (translucent, unselectable)
 	// and marks candidates with colour-coded screen dots: free / assigned
 	// (green, with a line to the owner) / pending-selected (orange line).
+	// ---- recolorizer: a VIEW aid, never exported ----
+	// Paints object meshes in the editor so a blockout reads at a glance. By
+	// type gives every distinct object its own hue; Clear restores the real
+	// materials. None of it touches the export.
+	// ---- collision overlay: a VIEW aid, never exported ----
+	// An APPROXIMATION, not the game's real collision. What it gets right is
+	// the rule that catches creators out: BF6 collision scales uniformly from
+	// the X axis, so a stretched object still collides as though it were square.
+	bool  AnyCollisionOverlay();
+	int32 CountStretched();                   // objects where it actually differs
+	int32 ShowCollisionOverlay(int32 Scope);  // 0 selection, 1 stretched, 2 all
+	int32 HideCollisionOverlay();
+	void  TickCollisionOverlay();             // keeps overlays on moved objects
+
+	bool  AnyRecolored();
+	int32 RecolorSelection(FLinearColor C);   // returns objects painted
+	int32 RecolorByType();                    // one hue per distinct type
+	int32 ClearRecolor();                     // puts every original back
+	int32 ClearRecolorSelection();            // ...or just the selected objects
+	// Colours persist: each painted object carries a tint tag that rides the
+	// session save, so reopening a map comes back painted.
+	void  ReapplyTint(class AActor* A);
+	int32 ReapplyAllTints();
+
 	bool IsLinkPicking();
 	void BeginLinkPick(AActor* Owner, const FString& PropName, bool bArray);
 	void ConfirmLinkPick();                 // write the current selection as the link

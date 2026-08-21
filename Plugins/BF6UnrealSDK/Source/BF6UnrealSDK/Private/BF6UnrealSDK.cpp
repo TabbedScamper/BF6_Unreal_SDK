@@ -786,6 +786,14 @@ static FBF6VolEdit GVolEdit;
 // working set turns translucent (M_Ghost) and unselectable, restored on exit.
 struct FBF6Ghosted { TWeakObjectPtr<UProceduralMeshComponent> Comp; TArray<UMaterialInterface*> Mats; bool bWasSelectable = true; };
 
+// A level viewport only repaints when something invalidates it, so anything we
+// change off a button press (materials, colours, ghosting) stays invisible
+// until the user happens to fly the camera. Every such action ends with this.
+static void BF6_Redraw()
+{
+	if (GEditor) GEditor->RedrawLevelEditingViewports(true);
+}
+
 static void BF6_GhostRestoreSet(TArray<FBF6Ghosted>& Set)
 {
 	for (FBF6Ghosted& G : Set)
@@ -795,6 +803,7 @@ static void BF6_GhostRestoreSet(TArray<FBF6Ghosted>& Set)
 			M->bSelectable = G.bWasSelectable;
 		}
 	Set.Reset();
+	BF6_Redraw();
 }
 
 struct FBF6LinkPick
@@ -1116,7 +1125,7 @@ static void SaveSession(const FString& Level, const FString& Name)
 			{
 				const FString TS = T.ToString();
 				if (TS.StartsWith(TEXT("blk:")) || TS.StartsWith(TEXT("blkid:")) || TS.StartsWith(TEXT("blkat:"))
-					|| TS.StartsWith(TEXT("gtree:")))   // the authored Godot folder path
+					|| TS.StartsWith(TEXT("gtree:")) || TS.StartsWith(TEXT("tint:")))   // authored tree + colour
 					RawTags.Add(MakeShared<FJsonValueString>(TS));
 			}
 			if (RawTags.Num()) O->SetArrayField(TEXT("tags"), RawTags);
@@ -1293,6 +1302,7 @@ static void LoadSession(const FString& Level, const FString& Name)
 			double G = -1.0;
 			if (O->TryGetNumberField(TEXT("grp"), G)) PendingGroups.FindOrAdd((int32)G).Add(A);
 			BF6_FileActor(A);   // block tags may change its outliner folder
+			BF6Api::ReapplyTint(A);   // a saved colour comes back with the object
 			// visuals that depend on the restored values
 			if (const TArray<FVector>* Lp = GVolumeLoops.Find(A)) RebuildVolumeWalls(A, *Lp);
 			if (BF6Api::IsObbActor(A)) RebuildObbBox(A);
@@ -2779,6 +2789,7 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 	if (FFileHelper::LoadFileToString(In, *BF6_BaseJsonPath(Level))) { TSharedRef<TJsonReader<>> R=TJsonReaderFactory<>::Create(In); FJsonSerializer::Deserialize(R,BaseRoot); }
 	// duplicate-id defenses (the Portal site rejects any repeated id)
 	TSet<FString> LivePlacedNames;   // placed actors' link names, collected up front
+	TMap<FString, AActor*> LivePlacedByName;   // the twin that supersedes a base entry
 	TSet<FString> BaseEmitted;       // base entries actually emitted
 	const TArray<TSharedPtr<FJsonValue>>* BObjs = nullptr;
 	if (BaseRoot.IsValid() && BaseRoot->TryGetArrayField(TEXT("objects"), BObjs))
@@ -2796,7 +2807,7 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 			FString T2 = TagValue(*It, TEXT("label:")); if (T2.IsEmpty()) T2 = TagValue(*It, TEXT("mesh:"));
 			if (T2.IsEmpty() || BF6_IsEngineNodeType(T2)) continue;
 			FString PLn = It->GetActorLabel(); PLn.RemoveFromStart(TEXT("BF6_"));
-			if (!PLn.IsEmpty()) LivePlacedNames.Add(PLn);
+			if (!PLn.IsEmpty()) { LivePlacedNames.Add(PLn); LivePlacedByName.Add(PLn, *It); }
 		}
 		for (const auto& v:*BObjs)
 		{
@@ -2807,7 +2818,19 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 			if (ty.StartsWith(TEXT("MP_")) || BF6_IsEngineNodeType(ty)) continue;
 			if (LivePlacedNames.Contains(nm))
 			{
-				UE_LOG(LogBF6, Warning, TEXT("export: base '%s' superseded by a placed object with the same name"), *nm);
+				// The twin replaces this entry, so it must carry the id scripts use.
+				// Losing one here is silent in the file and fatal in the game, so it
+				// is called out by name rather than merely logged as superseded.
+				double BaseObjId = -1.0;
+				o->TryGetNumberField(TEXT("ObjId"), BaseObjId);
+				AActor** Twin = LivePlacedByName.Find(nm);
+				const FString TwinId = (Twin && *Twin) ? BF6Api::GetActorProp(*Twin, TEXT("ObjId")) : FString();
+				if (BaseObjId >= 0.0 && (TwinId.IsEmpty() || FCString::Atoi(*TwinId) < 0))
+				{
+					UE_LOG(LogBF6, Error, TEXT("export: '%s' had ObjId %d in the base setup, but the placed copy that replaces it has none - scripts addressing that id will not find it."), *nm, (int32)BaseObjId);
+					Notify(FString::Printf(TEXT("'%s' lost its ObjId %d - set it on the placed copy before uploading."), *nm, (int32)BaseObjId));
+				}
+				else UE_LOG(LogBF6, Warning, TEXT("export: base '%s' superseded by a placed object with the same name"), *nm);
 				continue;
 			}
 			BaseEmitted.Add(nm);
@@ -5959,6 +5982,325 @@ namespace BF6Api
 				Out.Add(MoveTemp(G));
 			}
 		}
+		BF6_Redraw();
+	}
+
+	// ---- collision overlay (a VIEW aid, never exported) ----
+	// Ported from the Godot high-poly tool. This is NOT the game's real
+	// collision and must never be described as such - the true shapes live in
+	// each object's PhysicsResource as convex-decomposed polytopes, and over
+	// half of them are detail/raycast-only volumes that do not block a player
+	// at all. What it DOES model correctly is the rule that catches people out:
+	// BF6 collision follows the object's geometry but scales UNIFORMLY FROM X,
+	// so an object stretched to (10, 20, 20) still collides as if it were
+	// (10, 10, 10). Stretch a wall and players walk through the part you added.
+	// The overlay rebuilds the object's own mesh in translucent red at that
+	// uniform-X scale, so the gap between what you see and what you hit becomes
+	// visible. Transient, unselectable, never saved and never exported.
+	static const TCHAR* kColVisName = TEXT("BF6CollisionVis");
+	static const float  kColVisEps  = 1.002f;   // hairline inflate, kills z-fighting
+	static TArray<TWeakObjectPtr<AActor>> GColVis;   // actors carrying an overlay
+	static FLinearColor GColVisColor = FLinearColor(1.0f, 0.08f, 0.08f);
+	static float GColVisAlpha = 0.45f;
+
+	static bool BF6_ColVisTarget(AActor* A)
+	{
+		return A && (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag))
+			&& !A->Tags.Contains(kHandleTag) && !A->Tags.Contains(kContextTag)
+			&& !IsVolumeActor(A) && !IsObbActor(A);   // zones are not collision
+	}
+
+	// the child's LOCAL transform that lands it at uniform-X scale in WORLD
+	// space, whatever the parent's rotation, mirroring or stretch
+	static void BF6_ColVisFit(AActor* A, USceneComponent* Vis)
+	{
+		if (!A || !Vis) return;
+		const FTransform PW = A->GetActorTransform();
+		const float Sx = (float)PW.GetScale3D().X;
+		if (FMath::Abs(Sx) < 1e-6f) return;
+		const FTransform Want(PW.GetRotation(), PW.GetLocation(), FVector(Sx * kColVisEps));
+		Vis->SetRelativeTransform(Want.GetRelativeTransform(PW));
+	}
+
+	static UProceduralMeshComponent* BF6_ColVisOf(AActor* A)
+	{
+		if (!A || !A->GetRootComponent()) return nullptr;
+		TArray<USceneComponent*> Kids;
+		A->GetRootComponent()->GetChildrenComponents(false, Kids);
+		for (USceneComponent* C : Kids)
+			if (C && C->GetFName() == kColVisName) return Cast<UProceduralMeshComponent>(C);
+		return nullptr;
+	}
+
+	static bool BF6_ColVisAdd(AActor* A)
+	{
+		if (!BF6_ColVisTarget(A)) return false;
+		if (UProceduralMeshComponent* Have = BF6_ColVisOf(A)) { BF6_ColVisFit(A, Have); return true; }
+		FString Mesh = TagValue(A, TEXT("mesh:"));
+		if (Mesh.IsEmpty()) Mesh = TagValue(A, TEXT("type:"));
+		if (Mesh.IsEmpty()) return false;
+		UProceduralMeshComponent* Vis = NewObject<UProceduralMeshComponent>(A, kColVisName);
+		if (!Vis) return false;
+		Vis->SetFlags(RF_Transient);
+		Vis->SetupAttachment(A->GetRootComponent());
+		Vis->RegisterComponent();
+		if (!FillProcFromBf6Mesh(Vis, ObjModelPath(Mesh)))
+		{
+			Vis->DestroyComponent();
+			return false;
+		}
+		Vis->bSelectable = false;
+		Vis->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Vis->SetCastShadow(false);
+		if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_CollisionVis.M_CollisionVis")))
+			if (UMaterialInstanceDynamic* M = UMaterialInstanceDynamic::Create(Base, GetTransientPackage()))
+			{
+				M->SetVectorParameterValue(TEXT("Color"), GColVisColor);
+				M->SetScalarParameterValue(TEXT("Alpha"), GColVisAlpha);
+				for (int32 s = 0; s < Vis->GetNumSections(); s++) Vis->SetMaterial(s, M);
+			}
+		BF6_ColVisFit(A, Vis);
+		GColVis.Add(A);
+		return true;
+	}
+
+	static void BF6_ColVisRemove(AActor* A)
+	{
+		if (UProceduralMeshComponent* V = BF6_ColVisOf(A))
+		{
+			V->ClearAllMeshSections();   // drop the vertex payload, not just the view
+			V->DestroyComponent();
+		}
+	}
+
+	int32 HideCollisionOverlay();   // defined below; ShowCollisionOverlay clears first
+
+	bool AnyCollisionOverlay() { return GColVis.Num() > 0; }
+
+	// how many objects are stretched, i.e. where the overlay actually differs
+	// from what is drawn - the only places collision can surprise you
+	int32 CountStretched()
+	{
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		int32 n = 0;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!BF6_ColVisTarget(*It)) continue;
+			const FVector S = It->GetActorScale3D();
+			if (!FMath::IsNearlyEqual(S.X, S.Y, 0.01) || !FMath::IsNearlyEqual(S.X, S.Z, 0.01)) n++;
+		}
+		return n;
+	}
+
+	// Scope: 0 = selection, 1 = every stretched object, 2 = everything.
+	int32 ShowCollisionOverlay(int32 Scope)
+	{
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		HideCollisionOverlay();
+		int32 n = 0;
+		if (Scope == 0)
+		{
+			USelection* S = GEditor->GetSelectedActors();
+			for (int32 i = 0; S && i < S->Num(); i++)
+				if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
+					if (BF6_ColVisAdd(A)) n++;
+		}
+		else
+		{
+			for (TActorIterator<AActor> It(W); It; ++It)
+			{
+				if (!BF6_ColVisTarget(*It)) continue;
+				if (Scope == 1)
+				{
+					const FVector S3 = It->GetActorScale3D();
+					if (FMath::IsNearlyEqual(S3.X, S3.Y, 0.01) && FMath::IsNearlyEqual(S3.X, S3.Z, 0.01)) continue;
+				}
+				if (BF6_ColVisAdd(*It)) n++;
+			}
+		}
+		BF6_Redraw();
+		return n;
+	}
+
+	int32 HideCollisionOverlay()
+	{
+		int32 n = 0;
+		for (const TWeakObjectPtr<AActor>& P : GColVis)
+			if (AActor* A = P.Get()) { BF6_ColVisRemove(A); n++; }
+		GColVis.Reset();
+		BF6_Redraw();
+		return n;
+	}
+
+	// objects the user moved or rescaled keep their overlay aligned
+	void TickCollisionOverlay()
+	{
+		if (GColVis.Num() == 0) return;
+		for (int32 i = GColVis.Num() - 1; i >= 0; i--)
+		{
+			AActor* A = GColVis[i].Get();
+			if (!A) { GColVis.RemoveAt(i); continue; }
+			BF6_ColVisFit(A, BF6_ColVisOf(A));
+		}
+	}
+
+	// ---- recolorizer (a VIEW aid, never exported) ----
+	// Ported from the Godot Recolorizer: paint objects so a blockout reads at a
+	// glance. Nothing here reaches the .spatial.json - it only swaps the mesh
+	// material in the editor, and every original is kept so Clear puts the map
+	// back exactly as it was. Recolouring by TYPE is the useful default: each
+	// distinct object type gets its own hue, so duplicates and stray props are
+	// obvious immediately.
+	static TArray<FBF6Ghosted> GRecolored;
+	static TSet<TWeakObjectPtr<UProceduralMeshComponent>> GRecolorSeen;
+
+	static UMaterialInstanceDynamic* BF6_RecolorMID(const FLinearColor& C)
+	{
+		// lit, so shapes still read; the unlit highlight material is the fallback
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Recolor.M_Recolor"));
+		if (!Base) Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_NeonHighlight.M_NeonHighlight"));
+		if (!Base) return nullptr;
+		UMaterialInstanceDynamic* M = UMaterialInstanceDynamic::Create(Base, GetTransientPackage());
+		if (!M) return nullptr;
+		M->SetVectorParameterValue(TEXT("Color"), C);
+		return M;
+	}
+
+	static void BF6_RecolorOne(AActor* A, const FLinearColor& C)
+	{
+		if (!A) return;
+		UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
+		if (!M || M->GetNumSections() == 0) return;
+		if (!GRecolorSeen.Contains(M))   // remember the true original exactly once
+		{
+			FBF6Ghosted G;
+			G.Comp = M;
+			G.bWasSelectable = M->bSelectable;
+			for (int32 s = 0; s < M->GetNumSections(); s++) G.Mats.Add(M->GetMaterial(s));
+			GRecolored.Add(MoveTemp(G));
+			GRecolorSeen.Add(M);
+		}
+		// the colour rides the actor as a tag, so it survives a save/reload and
+		// a mesh rebuild - the material itself is transient
+		A->Tags.RemoveAll([](const FName& T){ return T.ToString().StartsWith(TEXT("tint:")); });
+		A->Tags.Add(FName(*FString::Printf(TEXT("tint:%s"), *C.ToFColor(true).ToHex())));
+		if (UMaterialInstanceDynamic* Mid = BF6_RecolorMID(C))
+			for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mid);
+	}
+
+	static bool BF6_RecolorTarget(AActor* A)
+	{
+		return A && (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag))
+			&& !A->Tags.Contains(kHandleTag) && !A->Tags.Contains(kContextTag)
+			&& !IsVolumeActor(A) && !IsObbActor(A);   // zones keep their own look
+	}
+
+	// Re-paint an actor that carries a saved tint. Used when a session loads and
+	// after undo rebuilds a mesh from disk, both of which reset the material.
+	void ReapplyTint(AActor* A)
+	{
+		if (!A) return;
+		const FString Hex = TagValue(A, TEXT("tint:"));
+		if (Hex.IsEmpty()) return;
+		BF6_RecolorOne(A, FLinearColor(FColor::FromHex(Hex)));
+	}
+
+	int32 ReapplyAllTints()
+	{
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		int32 n = 0;
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (!TagValue(*It, TEXT("tint:")).IsEmpty()) { ReapplyTint(*It); n++; }
+		BF6_Redraw();
+		return n;
+	}
+
+	bool AnyRecolored() { return GRecolored.Num() > 0; }
+
+	int32 RecolorSelection(FLinearColor C)
+	{
+		if (!GEditor) return 0;
+		USelection* S = GEditor->GetSelectedActors(); if (!S) return 0;
+		int32 n = 0;
+		for (int32 i = 0; i < S->Num(); i++)
+			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
+				if (BF6_RecolorTarget(A)) { BF6_RecolorOne(A, C); n++; }
+		BF6_Redraw();
+		return n;
+	}
+
+	// one hue per distinct type, spaced by the golden angle so neighbouring
+	// types never land on near-identical colours
+	int32 RecolorByType()
+	{
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		TMap<FString, TArray<AActor*>> ByType;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!BF6_RecolorTarget(*It)) continue;
+			FString Ty = TagValue(*It, TEXT("mesh:"));
+			if (Ty.IsEmpty()) Ty = TagValue(*It, TEXT("label:"));
+			if (Ty.IsEmpty()) Ty = TagValue(*It, TEXT("type:"));
+			if (Ty.IsEmpty()) continue;
+			ByType.FindOrAdd(Ty).Add(*It);
+		}
+		TArray<FString> Types; ByType.GetKeys(Types);
+		Types.Sort();   // stable: the same map always paints the same way
+		int32 n = 0;
+		for (int32 i = 0; i < Types.Num(); i++)
+		{
+			const float Hue = FMath::Fmod(i * 0.61803398875f, 1.0f);
+			const FLinearColor C = FLinearColor::MakeFromHSV8((uint8)(Hue * 255.0f), 190, 235);
+			for (AActor* A : ByType[Types[i]]) { BF6_RecolorOne(A, C); n++; }
+		}
+		BF6_Redraw();
+		return n;
+	}
+
+	// Unpaint just what is selected: its real material goes back, its saved
+	// entry is dropped, and the tag goes with it so a reload stays clean.
+	int32 ClearRecolorSelection()
+	{
+		if (!GEditor) return 0;
+		USelection* S = GEditor->GetSelectedActors(); if (!S) return 0;
+		TSet<UProceduralMeshComponent*> Want;
+		for (int32 i = 0; i < S->Num(); i++)
+			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
+			{
+				A->Tags.RemoveAll([](const FName& T){ return T.ToString().StartsWith(TEXT("tint:")); });
+				if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent())) Want.Add(M);
+			}
+		if (Want.Num() == 0) return 0;
+		int32 n = 0;
+		for (int32 i = GRecolored.Num() - 1; i >= 0; i--)
+		{
+			UProceduralMeshComponent* M = GRecolored[i].Comp.Get();
+			if (!M || !Want.Contains(M)) continue;
+			for (int32 s = 0; s < GRecolored[i].Mats.Num(); s++) M->SetMaterial(s, GRecolored[i].Mats[s]);
+			M->bSelectable = GRecolored[i].bWasSelectable;
+			GRecolorSeen.Remove(M);
+			GRecolored.RemoveAt(i);
+			n++;
+		}
+		BF6_Redraw();
+		return n;
+	}
+
+	int32 ClearRecolor()
+	{
+		const int32 n = GRecolored.Num();
+		if (GEditor)
+			if (UWorld* W = GEditor->GetEditorWorldContext().World())
+				for (TActorIterator<AActor> It(W); It; ++It)
+					It->Tags.RemoveAll([](const FName& T){ return T.ToString().StartsWith(TEXT("tint:")); });
+		BF6_GhostRestoreSet(GRecolored);   // puts every saved material back
+		GRecolorSeen.Reset();
+		BF6_Redraw();
+		return n;
 	}
 
 	// ---- link picking (assign spawn points / volumes) ----
@@ -6337,10 +6679,16 @@ namespace BF6Api
 		return Out;
 	}
 
-	int32 AutoAssignObjIds(int32 StartId)
+	// Scripts address objects by ObjId, so an id a creator already set is data,
+	// not scratch space. Assigning only FILLS BLANKS by default, never renumbers
+	// what is already set, and never hands out a number in use elsewhere in the
+	// level (a duplicate id breaks scripts just as badly as a changed one).
+	// bOverwriteExisting is the deliberate "renumber these anyway" path.
+	FObjIdAssign AutoAssignObjIds(int32 StartId, bool bOverwriteExisting)
 	{
-		if (!GEditor) return 0;
-		USelection* S = GEditor->GetSelectedActors(); if (!S) return 0;
+		FObjIdAssign R;
+		if (!GEditor) return R;
+		USelection* S = GEditor->GetSelectedActors(); if (!S) return R;
 		TArray<AActor*> Targets;
 		for (int32 i = 0; i < S->Num(); i++)
 			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
@@ -6349,7 +6697,21 @@ namespace BF6Api
 				const FString Ty = BF6_ObjIdType(A);
 				if (!Ty.IsEmpty() && BF6_TypeHasObjId(Ty)) Targets.Add(A);
 			}
-		if (Targets.Num() == 0) return 0;
+		R.Considered = Targets.Num();
+		if (Targets.Num() == 0) return R;
+
+		// every id already spoken for, so a fresh number never collides. Ids on
+		// the objects we are about to renumber are released back to the pool.
+		TSet<AActor*> TargetSet(Targets);
+		TSet<int32> Taken;
+		for (const FObjIdRow& Row : GatherObjIds())
+		{
+			if (Row.Id < 0) continue;
+			AActor* RA = Row.Actor.Get();
+			if (bOverwriteExisting && RA && TargetSet.Contains(RA)) continue;
+			Taken.Add(Row.Id);
+		}
+
 		// left-to-right, then front-to-back sweep: predictable numbering for
 		// rows of flags/spawns, like the community's auto-id tools
 		Targets.Sort([](const AActor& A, const AActor& B)
@@ -6358,10 +6720,20 @@ namespace BF6Api
 			if (PA.X != PB.X) return PA.X < PB.X;
 			return PA.Y < PB.Y;
 		});
-		FScopedTransaction Tx(FText::FromString(TEXT("Auto-assign ObjIds")));
-		int32 Id = StartId;
-		for (AActor* A : Targets) SetActorProp(A, TEXT("ObjId"), FString::FromInt(Id++));
-		return Targets.Num();
+
+		FScopedTransaction Tx(FText::FromString(TEXT("Assign ObjIds")));
+		int32 Id = FMath::Max(0, StartId);
+		for (AActor* A : Targets)
+		{
+			const FString Cur = GetActorProp(A, TEXT("ObjId"));
+			const bool bHas = !Cur.IsEmpty() && FCString::Atoi(*Cur) >= 0;
+			if (bHas && !bOverwriteExisting) { R.Kept++; continue; }   // hands off
+			while (Taken.Contains(Id)) Id++;
+			SetActorProp(A, TEXT("ObjId"), FString::FromInt(Id));
+			Taken.Add(Id);
+			R.Assigned++;
+		}
+		return R;
 	}
 
 	int32 SelectDuplicateObjIds()
@@ -9168,7 +9540,7 @@ static void BF6_RepairAfterUndo()
 		if (const TArray<FVector>* Loop = GVolumeLoops.Find(A)) { RebuildVolumeWalls(A, *Loop); continue; }
 		FString Mesh = TagValue(A, TEXT("mesh:"));
 		if (Mesh.IsEmpty()) Mesh = TagValue(A, TEXT("type:"));
-		if (!Mesh.IsEmpty() && FillProcFromBf6Mesh(M, ObjModelPath(Mesh))) { ApplyObjectWhite(M); continue; }
+		if (!Mesh.IsEmpty() && FillProcFromBf6Mesh(M, ObjModelPath(Mesh))) { ApplyObjectWhite(M); BF6Api::ReapplyTint(A); continue; }
 		BuildMarker(M); ApplyObjectWhite(M);
 	}
 	BF6_RecomputeBudget();
