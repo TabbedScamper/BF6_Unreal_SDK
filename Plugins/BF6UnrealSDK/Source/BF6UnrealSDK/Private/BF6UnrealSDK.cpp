@@ -418,6 +418,7 @@ static void SpawnResourceAtCursor(const FString& ResName, const FString& Label)
 // forward decls (definitions live in the base-setup helpers below)
 static UProceduralMeshComponent* MakeProcMesh(AActor* A, const FName Name);
 static bool FillProcFromBf6Mesh(UProceduralMeshComponent* Mesh, const FString& FilePath, bool bCollision = false);
+static class UMaterialInterface* BF6_Material(const TCHAR* Name);   // plugin first, project fallback
 extern double GMeshDecodeSec, GMeshBuildSec;   // defined with the mesh cache below
 static void ApplyObjectWhite(UProceduralMeshComponent* Mesh);
 
@@ -519,9 +520,7 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	Mesh->bSelectable = false;
 	// SDK proxy look: flat unlit green terrain / orange assets.
 	const bool bAssets = Label.Contains(TEXT("_Assets"));
-	const TCHAR* MatPath = bAssets ? TEXT("/Game/Materials/M_LevelAssets.M_LevelAssets")
-	                               : TEXT("/Game/Materials/M_LevelTerrain.M_LevelTerrain");
-	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, MatPath))
+	if (UMaterialInterface* Mat = BF6_Material(bAssets ? TEXT("M_LevelAssets") : TEXT("M_LevelTerrain")))
 		for (int32 s = 0; s < Mesh->GetNumSections(); s++) Mesh->SetMaterial(s, Mat);
 	Mesh->SetVisibility(true, true);
 	UE_LOG(LogBF6, Warning, TEXT("Loaded context %s: %d section(s) - %.2fs reading, %.2fs building (collision cook included)."),
@@ -756,10 +755,26 @@ static UProceduralMeshComponent* MakeProcMesh(AActor* A, const FName Name)
 }
 
 // Objects render pure white like Godot's object library (not proc-mesh grey).
+// The tool's materials ship INSIDE the plugin now. They used to live in the
+// project's own Content, which meant the in-editor updater - which sends the
+// plugin and nothing else - never delivered them. Anyone who updated in place
+// was left without M_Recolor, M_CollisionVis and M_NeonHighlight, so Colorize,
+// the collision overlay and the assign-mode highlight all quietly did nothing
+// while working perfectly for anyone who had installed a full project zip.
+// The plugin copy is tried first; the old project path stays as a fallback so
+// existing installs keep working either way.
+static UMaterialInterface* BF6_Material(const TCHAR* Name)
+{
+	const FString Plug = FString::Printf(TEXT("/BF6UnrealSDK/Materials/%s.%s"), Name, Name);
+	if (UMaterialInterface* M = LoadObject<UMaterialInterface>(nullptr, *Plug)) return M;
+	const FString Game = FString::Printf(TEXT("/Game/Materials/%s.%s"), Name, Name);
+	return LoadObject<UMaterialInterface>(nullptr, *Game);
+}
+
 static void ApplyObjectWhite(UProceduralMeshComponent* Mesh)
 {
 	if (!Mesh) return;
-	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_ObjectWhite.M_ObjectWhite")))
+	if (UMaterialInterface* Mat = BF6_Material(TEXT("M_ObjectWhite")))
 		for (int32 s = 0; s < Mesh->GetNumSections(); s++) Mesh->SetMaterial(s, Mat);
 }
 
@@ -1023,7 +1038,7 @@ static void ApplyHandleStyle(UProceduralMeshComponent* M)
 {
 	if (!M) return;
 	M->SetDepthPriorityGroup(SDPG_Foreground);
-	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_LevelAssets.M_LevelAssets")))
+	if (UMaterialInterface* Mat = BF6_Material(TEXT("M_LevelAssets")))
 		for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mat);
 }
 
@@ -1085,7 +1100,7 @@ static void RebuildVolumeWalls(AActor* Vol, const TArray<FVector>& Loop)
 	if (H <= 0.01) H = 5.0;
 	M->ClearAllMeshSections();
 	BuildWalls(M, Loop, (float)H * 100.f);
-	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume")))
+	if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
 		M->SetMaterial(0, Mat);
 }
 
@@ -1133,7 +1148,7 @@ static void RebuildObbBox(AActor* A)
 	if (!M) return;
 	M->ClearAllMeshSections();
 	BuildBox(M, BF6_ObbSizeUE(BF6_ObbSizeGodot(A)));
-	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume")))
+	if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
 		M->SetMaterial(0, Mat);
 }
 
@@ -1890,7 +1905,7 @@ private:
 				{
 					UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
 					BuildWalls(VM, Loop, 500.f);   // 5m, matching the SDK gizmo
-					if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume")))
+					if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
 						VM->SetMaterial(0, Mat);   // translucent teal, like Godot's PolygonVolume
 				}
 			}
@@ -2167,7 +2182,7 @@ private:
 				if (!A) continue;
 				UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
 				BuildWalls(VM, Loop, 500.f);
-				if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume")))
+				if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
 					VM->SetMaterial(0, Mat);
 				BF6_SetPrettyLabel(A, Type);
 				A->Tags.Add(kPlacedTag);
@@ -2805,7 +2820,7 @@ static void BF6_LoadBaseSetup(const FString& Level)
 			}
 			A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
 			if (VolH <= 0.01) VolH = 5.0;   // SDK: 0 = infinite, drawn at 5 m like Godot
-			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,(float)VolH*100.f); if(UMaterialInterface* Mat=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0,Mat); GVolumeLoops.Add(A, Loop); BF6_WriteLoopTags(A); }
+			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,(float)VolH*100.f); if(UMaterialInterface* Mat=BF6_Material(TEXT("M_Volume"))) VM->SetMaterial(0,Mat); GVolumeLoops.Add(A, Loop); BF6_WriteLoopTags(A); }
 		}
 		else
 		{
@@ -3443,7 +3458,7 @@ static bool BF6_ImportTscnFile(const FString& File)
 			if (!A) continue;
 			UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
 			BuildWalls(VM, Loop, (float)H * 100.f);
-			if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0, Mat);
+			if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume"))) VM->SetMaterial(0, Mat);
 			A->Tags.Add(kPlacedTag);
 			A->Tags.Add(FName(*(FString(TEXT("label:")) + N->Type)));
 			if (N->Height > 0.01) A->Tags.Add(FName(*FString::Printf(TEXT("p:height=%g"), N->Height)));
@@ -3704,7 +3719,7 @@ static bool BF6_ImportSpatialDialog()
 				AActor* A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator); if (!A) continue;
 				UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
 				BuildWalls(VM, Loop, (float)FMath::Max(H, 0.5) * 100.f);
-				if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume"))) VM->SetMaterial(0, Mat);
+				if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume"))) VM->SetMaterial(0, Mat);
 				BF6_SetPrettyLabel(A, Type); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient);
 				RestoreProps(A, o);
 				GVolumeLoops.Add(A, Loop); BF6_WriteLoopTags(A);   // imported zones are point-editable too
@@ -6133,7 +6148,7 @@ namespace BF6Api
 	// The originals go into Out so BF6_GhostRestoreSet can undo it exactly.
 	static void BF6_GhostAllExcept(const TSet<AActor*>& Keep, TArray<FBF6Ghosted>& Out)
 	{
-		UMaterialInterface* Ghost = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Ghost.M_Ghost"));
+		UMaterialInterface* Ghost = BF6_Material(TEXT("M_Ghost"));
 		if (!Ghost || !GEditor) return;
 		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
 		for (TActorIterator<AActor> It(W); It; ++It)
@@ -6221,7 +6236,7 @@ namespace BF6Api
 		Vis->bSelectable = false;
 		Vis->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Vis->SetCastShadow(false);
-		if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_CollisionVis.M_CollisionVis")))
+		if (UMaterialInterface* Base = BF6_Material(TEXT("M_CollisionVis")))
 			if (UMaterialInstanceDynamic* M = UMaterialInstanceDynamic::Create(Base, GetTransientPackage()))
 			{
 				M->SetVectorParameterValue(TEXT("Color"), GColVisColor);
@@ -6358,8 +6373,8 @@ namespace BF6Api
 	static UMaterialInstanceDynamic* BF6_RecolorMID(const FLinearColor& C)
 	{
 		// lit, so shapes still read; the unlit highlight material is the fallback
-		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Recolor.M_Recolor"));
-		if (!Base) Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_NeonHighlight.M_NeonHighlight"));
+		UMaterialInterface* Base = BF6_Material(TEXT("M_Recolor"));
+		if (!Base) Base = BF6_Material(TEXT("M_NeonHighlight"));
 		if (!Base) return nullptr;
 		UMaterialInstanceDynamic* M = UMaterialInstanceDynamic::Create(Base, GetTransientPackage());
 		if (!M) return nullptr;
@@ -6569,7 +6584,7 @@ namespace BF6Api
 
 			// ...and the candidates themselves glow solid neon (unlit emissive),
 			// colour-matched to their marker and link line, restored on exit
-			if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_NeonHighlight.M_NeonHighlight")))
+			if (UMaterialInterface* Base = BF6_Material(TEXT("M_NeonHighlight")))
 			{
 				for (int32 s = 0; s < 3; s++)
 				{
@@ -7634,7 +7649,7 @@ namespace BF6Api
 		UProceduralMeshComponent* M = MakeProcMesh(A, TEXT("ScatterRegion"));
 		const TArray<FVector> NN; const TArray<FVector2D> UV; const TArray<FProcMeshTangent> NT;
 		M->CreateMeshSection_LinearColor(0, V, T, NN, UV, VC, NT, false);   // no collision: never blocks traces
-		if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Volume.M_Volume")))
+		if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
 			M->SetMaterial(0, Mat);
 		M->bSelectable = false;   // clicks pass straight through to the map
 		A->SetActorLabel(TEXT("ScatterRegion"));
