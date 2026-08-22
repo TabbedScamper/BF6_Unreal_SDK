@@ -36,7 +36,8 @@ public class BF6UnrealSDK : ModuleRules
 				"AdvancedPreviewScene",   // lit preview scene for the 3D model viewport
 				"MainFrame",              // auto-open the map picker once the editor is ready
 				"DesktopPlatform",        // native open-file dialog for importing .spatial.json
-				"LevelEditor"             // viewport overlay (Build Mode chrome) + active viewport
+				"LevelEditor",             // viewport overlay (Build Mode chrome) + active viewport
+				"SceneOutliner"        // the SDK-styled scene tree
 			});
 		}
 

@@ -161,6 +161,26 @@ namespace
 	const FSlateBrush* PieHub()     { static FSlateRoundedBoxBrush B(FLinearColor(BF6Theme::Ink.R, BF6Theme::Ink.G, BF6Theme::Ink.B, 0.94f), 60.f, FLinearColor::White, 1.f); return &B; }
 	const FSlateBrush* PieHubHot()  { static FSlateRoundedBoxBrush B(BF6Theme::Accent, 60.f, FLinearColor::White, 2.f); return &B; }
 
+	// Hub furniture - the page chips and the library button. Same capsule
+	// language as the pills so they read as part of the wheel; a flat button
+	// here was invisible against the dimmed viewport.
+	const FSlateBrush* PieChip()    { static FSlateRoundedBoxBrush B(FLinearColor(BF6Theme::Panel.R, BF6Theme::Panel.G, BF6Theme::Panel.B, 0.94f), 13.f, FLinearColor::White, 1.f); return &B; }
+	const FSlateBrush* PieChipHot() { static FSlateRoundedBoxBrush B(BF6Theme::Accent, 13.f, FLinearColor::White, 2.f); return &B; }
+	const FButtonStyle& PieChipStyle(bool bOn)
+	{
+		static const FButtonStyle Off = FButtonStyle().SetNormal(*PieChip()).SetHovered(*PieChipHot())
+			.SetPressed(*PieChipHot()).SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0));
+		static const FButtonStyle On  = FButtonStyle().SetNormal(*PieChipHot()).SetHovered(*PieChipHot())
+			.SetPressed(*PieChipHot()).SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0));
+		return bOn ? On : Off;
+	}
+	const FButtonStyle& PiePillStyle()
+	{
+		static const FButtonStyle S = FButtonStyle().SetNormal(*PiePill()).SetHovered(*PiePillHot())
+			.SetPressed(*PiePillHot()).SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0));
+		return S;
+	}
+
 	// Section header like the site's "AVAILABLE MAPS": uppercase label + hairline.
 	TSharedRef<SWidget> MakeSectionHeader(const FString& Label)
 	{
@@ -277,11 +297,15 @@ class SBF6CategoryPopup : public SCompoundWidget
 public:
 	SLATE_BEGIN_ARGS(SBF6CategoryPopup) {}
 		SLATE_ARGUMENT(FString, Category)
+		SLATE_ARGUMENT(FString, Search)     // opened from the wheel's search field
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
 		Category = InArgs._Category;
+		// An empty category means every shelf, which is exactly what a search wants:
+		// the same list panel a category opens, just filtered by the word instead.
+		Query = InArgs._Search;
 		Rebuild();
 
 		ChildSlot
@@ -301,14 +325,20 @@ public:
 							[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("< BACK"))) ]
 						]
 						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
-						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(Category.ToUpper())) ]
+						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+							.Text(FText::FromString(Category.IsEmpty() ? TEXT("SEARCH") : *Category.ToUpper())) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("hover=preview  dbl-click=place"))) ]
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0,0,0,6)
 					[
-						SNew(SSearchBox)
-						.HintText(FText::FromString(TEXT("Search this category...")))
+						SAssignNew(SearchField, SSearchBox)
+						.HintText(FText::FromString(Category.IsEmpty()
+							? TEXT("Search every object...") : TEXT("Search this category...")))
+						.InitialText(FText::FromString(Query))
+						// carry on typing where the wheel left off: selecting the text on
+						// focus meant the next keystroke wiped half the word
+						.SelectAllTextWhenFocused(false)
 						.OnTextChanged(this, &SBF6CategoryPopup::OnSearch)
 					]
 					+ SVerticalBox::Slot().FillHeight(1)
@@ -339,6 +369,7 @@ public:
 
 private:
 	FString Category, Query, PreviewName;
+	TSharedPtr<SSearchBox> SearchField;
 	TArray<TSharedPtr<BF6Api::FPlaceableInfo>> Items;
 	TSharedPtr<SListView<TSharedPtr<BF6Api::FPlaceableInfo>>> List;
 	TSharedPtr<SBF6PreviewViewport> Preview;
@@ -360,6 +391,13 @@ private:
 			Items.Add(MakeShared<BF6Api::FPlaceableInfo>(P));
 	}
 
+public:
+	void FocusSearch()
+	{
+		if (SearchField.IsValid()) FSlateApplication::Get().SetKeyboardFocus(SearchField, EFocusCause::SetDirectly);
+	}
+
+private:
 	void OnSearch(const FText& T)
 	{
 		Query = T.ToString();
@@ -433,8 +471,154 @@ bool FBF6LibDragOp::bWarnedReadOnly = false;
 
 static bool BF6_GodotCameraOn();   // defined with the input handler below
 static void BF6_TickFlyBoost(float DeltaSeconds);   // Shift-to-go-faster, defined with it
+static void BF6_TickWalking(float DeltaSeconds);    // WASD on foot, defined with it
+static void BF6_WalkCaptureMouse(bool bCapture);    // hide the pointer while on foot
+static void BF6_WalkLookTick();                     // FPS look, one sample per frame
+static void BF6Pie_Close();                         // the radial, dismissed
+static void BF6Pie_Attach();                        // ...and rebuilt in place
+static double GLastSpaceTap = 0.0;                  // the double tap that enters and leaves walking
 static bool BF6_ShiftFlying();                      // Shift held during a flight
 static void BF6_ShiftFlyLook(const FVector2D& Delta);
+
+// ---------------------------------------------------------------------------
+// The SYMBOLS panel (top-right): the key to the scene tree's icons, in the same
+// slide-out shape as the CONTROLS hints on the left. Godot's symbols are terse
+// by design - a circle for an empty parent, a mesh for a prop - and nothing on
+// screen says so. Pinned by default; unpinned it collapses to a strip on the
+// right edge and peeks on hover.
+// ---------------------------------------------------------------------------
+class SBF6SymbolsPanel : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6SymbolsPanel) {}
+	SLATE_END_ARGS()
+
+	static constexpr float kPanelW = 300.f;
+
+	void Construct(const FArguments&)
+	{
+		SetCanTick(true);
+		SetVisibility(EVisibility::SelfHitTestInvisible);
+		bool bPin = true;
+		GConfig->GetBool(TEXT("BF6UnrealSDK"), TEXT("SymbolsPinned"), bPin, GEditorPerProjectIni);
+		bPinned = bPin;
+		if (bPinned) SlideTarget = 1.f;
+
+		struct FRow { const TCHAR* Icon; const TCHAR* What; };
+		static const FRow Rows[] = {
+			{ TEXT("Node3D"),         TEXT("a parent you built - holds no object") },
+			{ TEXT("MeshInstance3D"), TEXT("a prop: scenery, cover, buildings") },
+			{ TEXT("Marker3D"),       TEXT("spawns, HQs, objectives, markers") },
+			{ TEXT("PolygonVolume"),  TEXT("combat area or polygon volume") },
+			{ TEXT("OBBVolume"),      TEXT("box volume") },
+			{ TEXT("Area3D"),         TEXT("trigger area, ring of fire") },
+			{ TEXT("Camera3D"),       TEXT("deploy and fixed cameras") },
+			{ TEXT("Path3D"),         TEXT("AI paths and waypoints") },
+			{ TEXT("PackedScene"),    TEXT("a block: one instance of a saved group") },
+			{ TEXT("NodeWarning"),    TEXT("worth a look - hover it for what Validate found") },
+			{ TEXT("StatusError"),    TEXT("the game cannot load this one") },
+		};
+
+		TSharedRef<SVerticalBox> List = SNew(SVerticalBox);
+		for (const FRow& R : Rows)
+		{
+			const FSlateBrush* Brush = BF6Api::NodeSymbolBrush(R.Icon);
+			List->AddSlot().AutoHeight().Padding(0.f, 3.f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 9, 0)
+				[ SNew(SBox).WidthOverride(16.f).HeightOverride(16.f)[ SNew(SImage).Image(Brush) ] ]
+				+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+				[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+					.AutoWrapText(true).Text(FText::FromString(R.What)) ]
+			];
+		}
+
+		ChildSlot
+		[
+			SNew(SHorizontalBox)
+			// the peek strip when hidden, on the outside edge
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top)
+			[
+				SNew(SBox).Visibility_Lambda([this]{ return Slide < 0.05f ? EVisibility::Visible : EVisibility::Collapsed; })
+				[
+					SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(4, 14))
+					.OnMouseButtonDown_Lambda([this](const FGeometry&, const FPointerEvent&){ SlideTarget = 1.f; return FReply::Handled(); })
+					[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("<"))) ]
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				SNew(SBox).Clipping(EWidgetClipping::ClipToBounds)
+				.WidthOverride_Lambda([this]{ return FMath::Max(1.f, kPanelW * Slide); })
+				.Visibility_Lambda([this]{ return Slide > 0.01f ? EVisibility::Visible : EVisibility::Collapsed; })
+				[
+					SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(10, 8))
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+							[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+								.Text(FText::FromString(TEXT("SYMBOLS"))) ]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+							[
+								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 1))
+								.OnClicked_Lambda([this]{ SetPinned(!bPinned); return FReply::Handled(); })
+								[ SNew(STextBlock).Font(FontBold(9))
+									.ColorAndOpacity_Lambda([this]{ return FSlateColor(bPinned ? BF6Theme::Accent : BF6Theme::TextDim); })
+									.Text_Lambda([this]{ return FText::FromString(bPinned ? TEXT("PINNED") : TEXT("PIN")); }) ]
+							]
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+							[
+								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 1))
+								.OnClicked_Lambda([this]{ SetPinned(false); SlideTarget = 0.f; return FReply::Handled(); })
+								[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT(">"))) ]
+							]
+						]
+						+ SVerticalBox::Slot().AutoHeight()[ List ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
+						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+							.AutoWrapText(true).Text(FText::FromString(TEXT("The Scene panel shows the tree you built. Drag a node onto another to parent it."))) ]
+					]
+				]
+			]
+		];
+	}
+
+	virtual void Tick(const FGeometry& G, const double T, const float D) override
+	{
+		SCompoundWidget::Tick(G, T, D);
+		const float Prev = Slide;
+		const float Step = D * 7.f;
+		Slide = SlideTarget > Slide ? FMath::Min(Slide + Step, SlideTarget) : FMath::Max(Slide - Step, SlideTarget);
+		if (!FMath::IsNearlyEqual(Prev, Slide)) Invalidate(EInvalidateWidgetReason::Layout);
+	}
+
+	virtual void OnMouseEnter(const FGeometry& G, const FPointerEvent& E) override
+	{
+		SCompoundWidget::OnMouseEnter(G, E);
+		if (SlideTarget < 0.5f) SlideTarget = 1.f;   // peek
+	}
+	virtual void OnMouseLeave(const FPointerEvent& E) override
+	{
+		SCompoundWidget::OnMouseLeave(E);
+		if (!bPinned) SlideTarget = 0.f;
+	}
+
+private:
+	void SetPinned(bool bIn)
+	{
+		bPinned = bIn;
+		GConfig->SetBool(TEXT("BF6UnrealSDK"), TEXT("SymbolsPinned"), bPinned, GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+		if (bPinned) SlideTarget = 1.f;
+	}
+
+	bool bPinned = true;
+	float Slide = 0.f, SlideTarget = 0.f;
+};
 
 // ---------------------------------------------------------------------------
 // The CONTROLS hint panel (top-left): persistent and Portal-styled, it slides
@@ -568,6 +752,7 @@ private:
 
 	static int32 CurrentMode()
 	{
+		if (BF6Api::IsWalking()) return 11;   // on foot: nothing else applies
 		if (BF6Api::IsPickPlacing()) return 10;
 		if (BF6Api::IsScatterLive()) return 9;
 		if (BF6Api::IsModeWizardActive()) return 5;
@@ -596,6 +781,7 @@ private:
 		case 8: return BF6Api::SelectionInfo().bBlock ? TEXT("BLOCK") : TEXT("GROUP");
 		case 9: return TEXT("SCATTER");
 		case 10: return TEXT("PICK PLACE");
+		case 11: return TEXT("ON FOOT");
 		default: return TEXT("CONTROLS");
 		}
 	}
@@ -609,6 +795,16 @@ private:
 		TArray<TPair<FString, FString>> B;
 		switch (M)
 		{
+		case 11:
+			B = { { TEXT("Mouse"), TEXT("look around - no button needed") },
+				  { TEXT("W A S D"), TEXT("walk") },
+				  { TEXT("Shift"), TEXT("run") },
+				  { TEXT("Ctrl"), TEXT("crouch") },
+				  { TEXT("Space"), TEXT("jump") },
+				  { TEXT("F"), TEXT("the build menu - place and edit from here") },
+				  { TEXT("LMB"), TEXT("place or pick what you are looking at") },
+				  { TEXT("Esc, or the FLY pill"), TEXT("stand up and fly again, from where you are") } };
+			break;
 		case 1:
 			B = { { TEXT("Drag dot"), TEXT("move the point") },
 				  { TEXT("Drag TOP dot"), TEXT("set the height (to the floor = infinite)") },
@@ -1210,14 +1406,19 @@ public:
 				Box(FVector2D(0, T), FVector2D(T, L.Y - 2 * T), Frame, WB, CL);
 				Box(FVector2D(L.X - T, T), FVector2D(T, L.Y - 2 * T), Frame, WB, CL);
 
-				// the banner: dark pill, mode-coloured title, dim exit hints
-				const FSlateFontInfo TF = FontBold(12), HF = FontReg(9);
+				// The banner: solid pill, mode-coloured title, readable hint.
+				// It used to sit at y=10, underneath the budget bar - a full width
+				// strip 40 px tall - so the two overlapped and the hint was dim grey
+				// showing through onto grey. It now clears the bar, is opaque, and
+				// uses body text rather than the dim shade meant for quiet labels.
+				const FSlateFontInfo TF = FontBold(12), HF = FontReg(10);
 				const TSharedRef<FSlateFontMeasure> FM = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 				const FVector2D TS = FM->Measure(Title, TF), HS = FM->Measure(Hint, HF);
-				const float PW = FMath::Max(TS.X, HS.X) + 36.f, PH = TS.Y + HS.Y + 18.f;
-				const FVector2D PP((L.X - PW) * 0.5f, 10.f);
+				const float PW = FMath::Max(TS.X, HS.X) + 40.f, PH = TS.Y + HS.Y + 20.f;
+				const float BarH = 40.f;   // the budget bar's own height
+				const FVector2D PP((L.X - PW) * 0.5f, BarH + 12.f);
 				static const FSlateRoundedBoxBrush Pill(FLinearColor::White, 9.f);
-				Box(PP, FVector2D(PW, PH), FLinearColor(0.05f, 0.06f, 0.07f, 0.92f), &Pill, CL + 1);
+				Box(PP, FVector2D(PW, PH), FLinearColor(0.03f, 0.04f, 0.05f, 1.f), &Pill, CL + 1);
 				Box(FVector2D(PP.X, PP.Y + PH - 2.f), FVector2D(PW, 2.f), Frame, WB, CL + 2);
 				FSlateDrawElement::MakeText(OutDrawElements, CL + 2,
 					AllottedGeometry.ToPaintGeometry(FVector2f(PW, TS.Y),
@@ -1226,7 +1427,7 @@ public:
 				FSlateDrawElement::MakeText(OutDrawElements, CL + 2,
 					AllottedGeometry.ToPaintGeometry(FVector2f(PW, HS.Y),
 						FSlateLayoutTransform(FVector2f(PP.X + (PW - HS.X) * 0.5f, PP.Y + 9.f + TS.Y))),
-					Hint, HF, ESlateDrawEffect::None, BF6Theme::TextDim);
+					Hint, HF, ESlateDrawEffect::None, FLinearColor(0.84f, 0.87f, 0.9f));
 			}
 		}
 
@@ -1574,6 +1775,21 @@ public:
 		bFull = true;
 		SetPinned(true);
 		RefreshIfStale(true);
+		SlideTarget = 1.f;
+		if (SearchBox.IsValid()) FSlateApplication::Get().SetKeyboardFocus(SearchBox);
+	}
+
+	// Opened from the search box in the middle of the object wheel: the same
+	// pinned library, already filtered, so typing a name never means browsing
+	// categories to find where DICE filed it.
+	void OpenSearch(const FString& Text)
+	{
+		bFull = true;
+		SetPinned(true);
+		Query = Text;
+		if (SearchBox.IsValid()) SearchBox->SetText(FText::FromString(Text));
+		RefreshIfStale(true);
+		RebuildItems();
 		SlideTarget = 1.f;
 		if (SearchBox.IsValid()) FSlateApplication::Get().SetKeyboardFocus(SearchBox);
 	}
@@ -2196,6 +2412,62 @@ public:
 // A pure VIEW aid - it paints meshes in the editor so a blockout reads at a
 // glance and duplicates stand out, and nothing it does reaches the export.
 // ---------------------------------------------------------------------------
+// "CREATE A LEVEL", from the radial on a base map. The same job as the box in
+// the bottom right corner, put where the creator is already looking - being told
+// to go and find another control is a poor answer to a button that offered.
+class SBF6CreateLevelPanel : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6CreateLevelPanel) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		ChildSlot
+		[
+			SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(18, 16))
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+				[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+					.Text(FText::FromString(TEXT("CREATE A LEVEL"))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 14)
+				[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
+					.Text(FText::FromString(TEXT("This map is read only until you make a level of your own on top of it. Everything you place then belongs to that level, and the map underneath is never changed."))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
+				[
+					SNew(SBox).WidthOverride(280.f)
+					[
+						SAssignNew(NameBox, SEditableTextBox)
+							.HintText(FText::FromString(TEXT("name your level...")))
+							.OnTextCommitted_Lambda([this](const FText& T, ETextCommit::Type How)
+								{ if (How == ETextCommit::OnEnter) Go(); })
+					]
+				]
+				+ SVerticalBox::Slot().AutoHeight()
+				[ MakePrimaryButton(TEXT("Create"), [this]{ Go(); }) ]
+			]
+		];
+	}
+
+	void FocusName()
+	{
+		if (NameBox.IsValid())
+			FSlateApplication::Get().SetKeyboardFocus(NameBox, EFocusCause::SetDirectly);
+	}
+
+private:
+	void Go()
+	{
+		const FString Name = NameBox.IsValid() ? NameBox->GetText().ToString().TrimStartAndEnd() : FString();
+		if (Name.IsEmpty()) { BF6_MiniToast(TEXT("Give the level a name first.")); return; }
+		BF6Api::HideTransientMenus();
+		BF6Api::CreateCustom(Name);
+	}
+
+	TSharedPtr<SEditableTextBox> NameBox;
+};
+
 class SBF6ColorizePanel : public SCompoundWidget
 {
 public:
@@ -2551,6 +2823,22 @@ private:
 // the input handler drives it). Wedges ring the centre; the highlighted wedge is
 // whichever the mouse points toward. Centre (deadzone) = no selection = cancel.
 // ---------------------------------------------------------------------------
+static int32 GPieCatPage = 0;      // which page of shelves the ring is showing
+static TSharedPtr<class SSearchBox> GPieSearchBox;   // the wheel's own search field
+static TArray<TSharedPtr<SWidget>> GPieClickables;   // real widgets living on the wheel
+
+// Is the pointer over one of them? The input handler swallows clicks while the
+// wheel is up, so without this the search box and the page buttons could never
+// be clicked at all - the wedge under the cursor would eat every press.
+static bool BF6Pie_CursorOverSearch()
+{
+	const FVector2D C = FSlateApplication::Get().GetCursorPos();
+	if (GPieSearchBox.IsValid() && GPieSearchBox->GetCachedGeometry().IsUnderLocation(C)) return true;
+	for (const TSharedPtr<SWidget>& W : GPieClickables)
+		if (W.IsValid() && W->GetCachedGeometry().IsUnderLocation(C)) return true;
+	return false;
+}
+
 class SBF6PieMenu : public SCompoundWidget
 {
 public:
@@ -2558,14 +2846,19 @@ public:
 		SLATE_ARGUMENT(TArray<FString>, Items)   // custom labels; empty = place categories
 		SLATE_ARGUMENT(TArray<FString>, Subs)    // small sublabels, aligned with Items
 		SLATE_ARGUMENT(bool, ObjectRing)         // true = the object catalogue step
+		SLATE_ARGUMENT(bool, CanGoBack)          // a step in: the hub reads BACK
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
-		SetVisibility(EVisibility::HitTestInvisible);   // the input handler drives it
+		// SelfHitTestInvisible, not HitTestInvisible: the wheel is still driven by
+		// the input handler, but a real widget inside it (the search field) has to
+		// be clickable, and HitTestInvisible kills children too.
+		SetVisibility(EVisibility::SelfHitTestInvisible);
 		Cats = InArgs._Items;
 		Subs = InArgs._Subs;
 		const bool bObjectRing = InArgs._ObjectRing;
+		bCanGoBack = InArgs._CanGoBack || bObjectRing;
 		if (Cats.Num() == 0)
 		{
 			// The top ring stays SHORT. Twelve SDK categories plus every tool made
@@ -2573,21 +2866,40 @@ public:
 			// the top level is just the four things you actually choose between.
 			if (bObjectRing)
 			{
-				// stepping in must always be reversible: BACK leads the ring so it
-				// keeps one predictable wedge no matter how many categories load
-				Cats = BF6Api::Categories();
+				// Ten shelves to a ring, the busiest first, and the rest on further
+				// pages. The ring grows until nothing overlaps, so twenty categories
+				// pushed it out to arm's length across the screen - unreadable and
+				// unclickable. Paging is a row of numbers under the hub, not a wedge:
+				// a wedge spent a slot on navigation and read like another shelf.
+				TArray<FString> All = BF6Api::Categories();
+				All.Sort([](const FString& A, const FString& B)
+					{ return BF6Api::CategoryCount(A) > BF6Api::CategoryCount(B); });
+				static const int32 kMaxOnRing = 10;
+				NumPages = FMath::Max(1, FMath::DivideAndRoundUp(All.Num(), kMaxOnRing));
+				GPieCatPage = FMath::Clamp(GPieCatPage, 0, NumPages - 1);
+				Cats.Reset();
+				for (int32 i = GPieCatPage * kMaxOnRing; i < All.Num() && i < (GPieCatPage + 1) * kMaxOnRing; i++)
+					Cats.Add(All[i]);
 				Subs.Reset();
 				for (const FString& C : Cats) Subs.Add(FString::Printf(TEXT("%d"), BF6Api::CategoryCount(C)));
-				Cats.Insert(TEXT("< BACK"), 0);
-				Subs.Insert(TEXT("the main menu"), 0);
-				Cats.Add(TEXT("FULL LIBRARY"));
-				Subs.Add(TEXT("search everything"));
 				Cats.Add(TEXT("BLOCKS"));
 				Subs.Add(FString::Printf(TEXT("%d saved"), BF6Api::ListBlocks().Num()));
 			}
 			else
 			{
 				Cats.Reset(); Subs.Reset();
+				// A base map is read only, but walking it is not editing - it is how
+				// you judge a map before deciding to build on it. So the radial opens
+				// and offers exactly that, and says what to do to get the rest.
+				if (!BF6Api::IsEditing())
+				{
+					Cats.Add(BF6Api::IsWalking() ? TEXT("FLY") : TEXT("WALK"));
+					Subs.Add(BF6Api::IsWalking() ? TEXT("back to the camera") : TEXT("walk the map for scale"));
+					Cats.Add(TEXT("CREATE A LEVEL"));
+					Subs.Add(TEXT("name it bottom right, or resume one"));
+				}
+				else
+				{
 				Cats.Add(TEXT("OBJECTS"));
 				Subs.Add(TEXT("place, library, blocks"));
 				Cats.Add(TEXT("MODE SETUP"));
@@ -2598,6 +2910,9 @@ public:
 				Subs.Add(BF6Api::AnyRecolored() ? TEXT("painted - clear inside") : TEXT("see your blockout"));
 				Cats.Add(TEXT("COLLISION"));
 				Subs.Add(BF6Api::AnyCollisionOverlay() ? TEXT("showing - hide inside") : TEXT("what you really hit"));
+				Cats.Add(BF6Api::IsWalking() ? TEXT("FLY") : TEXT("WALK"));
+				Subs.Add(BF6Api::IsWalking() ? TEXT("back to the camera") : TEXT("eye level, for scale"));
+				}
 			}
 		}
 		Subs.SetNum(Cats.Num());
@@ -2647,10 +2962,58 @@ public:
 		}
 
 		TSharedRef<SConstraintCanvas> Canvas = SNew(SConstraintCanvas);
+		GPieClickables.Reset();
 
 		// dim the viewport behind the pie
 		Canvas->AddSlot().Anchors(FAnchors(0.f, 0.f, 1.f, 1.f)).Offset(FMargin(0))
 			[ SNew(SBorder).BorderImage(DimBrush()) ];
+
+		// A search field above the hub, on the object wheel only. The categories
+		// around it are for browsing; this is for when the creator already knows
+		// the word - "acacia", "sedan" - and should not have to guess which shelf
+		// it was put on. Typing hands straight over to the library, filtered.
+		if (bObjectRing)
+		{
+			// everything, unfiltered - sat above the field because it is what you
+			// reach for when you do not have a word to type
+			TSharedRef<SButton> FullLib = SNew(SButton)
+				.ButtonStyle(&PiePillStyle())
+				.ContentPadding(FMargin(12.f, 6.f))
+				.OnClicked_Lambda([]
+				{
+					BF6Pie_Close();
+					if (TSharedPtr<SBF6LibraryPanel> L = GLibraryPanel.Pin()) L->OpenFull();
+					return FReply::Handled();
+				})
+				[ SNew(STextBlock).Font(FontBold(10)).Justification(ETextJustify::Center)
+					.ColorAndOpacity(FSlateColor(BF6Theme::Text))
+					.Text(FText::FromString(TEXT("FULL LIBRARY"))) ];
+			GPieClickables.Add(FullLib);
+			Canvas->AddSlot().Anchors(FAnchors(0.5f, 0.5f)).Alignment(FVector2D(0.5f, 1.f))
+				.Offset(FMargin(0.f, -92.f, 0.f, 0.f)).AutoSize(true)
+				[ SNew(SBox).WidthOverride(220.f)[ FullLib ] ];
+
+			Canvas->AddSlot().Anchors(FAnchors(0.5f, 0.5f)).Alignment(FVector2D(0.5f, 1.f))
+				.Offset(FMargin(0.f, -62.f, 0.f, 0.f)).AutoSize(true)
+				[
+					SNew(SBox).WidthOverride(220.f)
+					[
+						SAssignNew(GPieSearchBox, SSearchBox)
+							.HintText(FText::FromString(TEXT("search every object...")))
+							.OnTextChanged_Lambda([](const FText& T)
+							{
+								const FString S = T.ToString();
+								if (S.Len() < 2) return;   // one letter is a slip, not a search
+								const FVector2D At = FSlateApplication::Get().GetCursorPos();
+								BF6Pie_Close();
+								// the same list a category opens, with no category: every shelf
+								TSharedRef<SBF6CategoryPopup> Pop = SNew(SBF6CategoryPopup).Search(S);
+								BF6_PushTransient(Pop, At);
+								Pop->FocusSearch();   // carry on typing where you left off
+							})
+					]
+				];
+		}
 
 		// centre hub - the text NEVER mirrors the hovered pill (labels don't fit
 		// in a 96px circle); it stays CANCEL, only lighting up when the hovered
@@ -2663,9 +3026,41 @@ public:
 					.HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(10.f)
 					[ SNew(STextBlock).Font(FontBold(11)).Justification(ETextJustify::Center)
 						.ColorAndOpacity_Lambda([this]{ return FSlateColor(HubIsAction() ? BF6Theme::Ink : BF6Theme::TextDim); })
-						.Text_Lambda([this]{ return FText::FromString(HubIsAction() ? Cats[Highlighted].ToUpper() : FString(TEXT("CANCEL"))); }) ]
+						.Text_Lambda([this]
+							{
+								if (HubIsAction()) return FText::FromString(Cats[Highlighted].ToUpper());
+								return FText::FromString(bCanGoBack ? TEXT("BACK") : TEXT("CANCEL"));
+							}) ]
 				]
 			];
+
+		// Paging sits under the hub, reading as one control: BACK/CANCEL, then the
+		// page you are on. It is only worth drawing when there is a second page.
+		if (bObjectRing && NumPages > 1)
+		{
+			TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+			for (int32 Pg = 0; Pg < NumPages; Pg++)
+			{
+				const bool bHere = (Pg == GPieCatPage);
+				TSharedRef<SButton> B = SNew(SButton)
+					.ButtonStyle(&PieChipStyle(bHere))
+					.ContentPadding(FMargin(10.f, 4.f))
+					.HAlign(HAlign_Center).VAlign(VAlign_Center)
+					.OnClicked_Lambda([Pg]
+					{
+						GPieCatPage = Pg;
+						BF6Pie_Attach();   // same wheel, the shelves on that page
+						return FReply::Handled();
+					})
+					[ SNew(STextBlock).Font(FontBold(10))
+						.ColorAndOpacity(FSlateColor(bHere ? BF6Theme::Ink : BF6Theme::Text))
+						.Text(FText::AsNumber(Pg + 1)) ];
+				GPieClickables.Add(B);
+				Row->AddSlot().AutoWidth().Padding(2.f, 0.f)[ B ];
+			}
+			Canvas->AddSlot().Anchors(FAnchors(0.5f, 0.5f)).Alignment(FVector2D(0.5f, 0.f))
+				.Offset(FMargin(0.f, 56.f, 0.f, 0.f)).AutoSize(true)[ Row ];
+		}
 
 		for (int32 i = 0; i < Cats.Num(); i++)
 		{
@@ -2712,12 +3107,20 @@ private:
 
 	// only these labels are short enough (and semantically the hub's own job)
 	// to echo in the centre circle
+	bool bCanGoBack = false;
+	int32 NumPages = 1;   // shelves are paged; 1 means the row of numbers is pointless
+
 	bool HubIsAction() const
 	{
 		if (!Cats.IsValidIndex(Highlighted)) return false;
 		const FString U = Cats[Highlighted].ToUpper();
 		return U == TEXT("BACK") || U == TEXT("CANCEL");
 	}
+
+	// A ring that can go back has no business offering CANCEL in the middle:
+	// the way out of a step is the step you came from. So wherever a BACK pill
+	// exists, the hub IS that pill - same word, same result.
+	bool CanGoBack() const { return bCanGoBack; }
 };
 
 // ---------------------------------------------------------------------------
@@ -2892,6 +3295,11 @@ public:
 					]
 				]
 
+			// --- the scene tree's symbol key (top-right, slides in from the right) ---
+			+ SConstraintCanvas::Slot()
+				.Anchors(FAnchors(1.f, 0.f)).Offset(FMargin(0.f, 48.f, 0.f, 0.f)).Alignment(FVector2D(1.f, 0.f)).AutoSize(true)
+				[ SNew(SBF6SymbolsPanel) ]
+
 			// --- the context CONTROLS hints (top-left, slides in from the left) ---
 			+ SConstraintCanvas::Slot()
 				.Anchors(FAnchors(0.f, 0.f)).Offset(FMargin(0.f, 48.f, 0.f, 0.f)).Alignment(FVector2D(0.f, 0.f)).AutoSize(true)
@@ -3013,6 +3421,18 @@ public:
 		BF6Api::TickCameraPreview();  // camera selected: live picture-in-picture
 		BF6Api::TickCollisionOverlay();   // overlays follow objects as they move
 		BF6_TickFlyBoost(D);          // Shift while flying = faster, like Godot
+		BF6_WalkLookTick();           // FPS look, one sample per frame
+		BF6_TickWalking(D);           // and WASD on foot when walking the map
+		// While the button is down each object goes back as soon as the
+		// transaction has recorded it. After the release we wait for the
+		// transaction to actually close (GUndo cleared) so the finalising pass
+		// serialises an empty mesh too, then put everything back.
+		if (BF6Api::HasStrippedGeometry())
+		{
+			const bool bLMB = FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::LeftMouseButton);
+			if (bLMB) BF6Api::RestoreStrippedGeometry(false);
+			else if (GUndo == nullptr) BF6Api::RestoreStrippedGeometry(true);
+		}
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
 		// the tool's own autosave: closing the editor can never cost more than
 		// a minute of work (session files are tiny)
@@ -3603,11 +4023,21 @@ static void BF6Pie_Close()
 {
 	if (GPie.IsValid() && GPieViewport.IsValid()) GPieViewport->RemoveOverlayWidget(GPie.ToSharedRef());
 	GPie.Reset(); GPieViewport.Reset();
+	GPieSearchBox.Reset(); GPieClickables.Reset();
+	// back on foot: the pointer goes away again so looking works
+	if (BF6Api::IsWalking()) BF6_WalkCaptureMouse(true);
 }
 
 // Build the pie's items for the current mode and attach it at GPieCenter.
 static void BF6Pie_Attach()
 {
+	// A rebuild REPLACES the wheel. Without this the old overlay stayed on the
+	// viewport underneath the new one, so every page click, every BACK, left a
+	// copy stacked behind - and the dim layers piled up with them.
+	if (GPie.IsValid() && GPieViewport.IsValid()) GPieViewport->RemoveOverlayWidget(GPie.ToSharedRef());
+	GPie.Reset(); GPieViewport.Reset();
+	GPieSearchBox.Reset(); GPieClickables.Reset();
+
 	FLevelEditorModule& LE = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 	TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
 	if (!VP.IsValid()) return;
@@ -4119,7 +4549,19 @@ static void BF6Pie_Confirm()
 	const FVector2D Center = GPieCenter;
 	const EBF6PieMode Mode = GPieMode;
 	BF6Pie_Close();
-	if (Idx < 0 || !Items.IsValidIndex(Idx)) return;
+	if (Idx < 0 || !Items.IsValidIndex(Idx))
+	{
+		// Nothing highlighted: the hub. On a step-in ring that means BACK - to the
+		// ring it came from, not a rebuild of the same one, which is what made the
+		// hub look dead. Anywhere else it is still cancel.
+		if (Mode == EBF6PieMode::Objects || Mode == EBF6PieMode::Props)
+		{
+			GPieMode = EBF6PieMode::Place;
+			GPieCenter = Center;
+			BF6Pie_Attach();
+		}
+		return;
+	}
 	const FString Pick = Items[Idx];
 
 	if (Mode == EBF6PieMode::VolEdit)
@@ -4151,6 +4593,18 @@ static void BF6Pie_Confirm()
 		{
 			if (BF6Api::BeginPickPlace())
 				BF6_MiniToast(TEXT("Riding the cursor - click to place, Esc puts it back."));
+			return;
+		}
+		if (Pick == TEXT("CREATE A LEVEL"))
+		{
+			TSharedRef<SBF6CreateLevelPanel> Panel = SNew(SBF6CreateLevelPanel);
+			BF6_PushTransient(Panel, Center);
+			Panel->FocusName();   // straight into typing, no second click
+			return;
+		}
+		if (Pick == TEXT("WALK") || Pick == TEXT("FLY"))
+		{
+			BF6Api::ToggleWalk();
 			return;
 		}
 		if (Pick == TEXT("COLORIZE"))
@@ -4213,6 +4667,20 @@ static void BF6Pie_Confirm()
 		BF6Pie_Attach();   // same wheel, one step in
 		return;
 	}
+	// the top ring's own pills (the object ring has its own handler above)
+	if (Pick == TEXT("WALK") || Pick == TEXT("FLY"))
+	{
+		BF6Api::ToggleWalk();
+		BF6_WalkCaptureMouse(BF6Api::IsWalking());
+		return;
+	}
+	if (Pick == TEXT("CREATE A LEVEL"))
+	{
+		TSharedRef<SBF6CreateLevelPanel> Panel = SNew(SBF6CreateLevelPanel);
+		BF6_PushTransient(Panel, Center);
+		Panel->FocusName();   // straight into typing, no second click
+		return;
+	}
 	if (Pick == TEXT("COLLISION"))
 	{
 		BF6_PushTransient(SNew(SBF6CollisionPanel), Center);
@@ -4228,8 +4696,8 @@ static void BF6Pie_Confirm()
 		BF6_PushTransient(SNew(SBF6LintPanel), Center);
 		return;
 	}
-	// Objects step: FULL LIBRARY pins the object library up; BLOCKS browses the
-	// user's prefabs; a category opens its object list
+	// Objects step: BLOCKS browses the user's prefabs; a category opens its
+	// object list. FULL LIBRARY and paging are buttons at the hub, not wedges.
 	if (Pick == TEXT("FULL LIBRARY"))
 	{
 		if (TSharedPtr<SBF6LibraryPanel> L = GLibraryPanel.Pin()) L->OpenFull();
@@ -4325,6 +4793,114 @@ static void BF6_SetSystemCursorVisible(bool bVisible)
 	if (TSharedPtr<GenericApplication> Plat = FSlateApplication::Get().GetPlatformApplication())
 		if (Plat->Cursor.IsValid())
 			Plat->Cursor->Show(bVisible);
+}
+
+// FPS look: no button held. The viewport confines and hides the pointer, the
+// same way the editor does while you fly, and the raw movement becomes the
+// look. Leaving the left button free is the point - it is what lets a creator
+// place and pick things while standing in the map.
+// FPS look, sampled ONCE A FRAME.
+//
+// The first attempt looked on Slate move events and recentred inside the same
+// handler. That fought itself - the recentre raised its own move events, the
+// skip flag swallowed only one of them, and CaptureMouse routed everything to
+// the viewport so the pointer could not leave the window. Unreal's own flight
+// avoids this by capturing at the WIDGET level (FReply::LockMouseToWidget),
+// which an input preprocessor cannot ask for. So this does what a game loop
+// does instead: read the pointer once a frame, turn by how far it has strayed
+// from the middle, put it back. One sample per frame, no synthetic events to
+// filter, and the platform cursor is confined to the viewport rectangle so it
+// cannot wander onto another monitor mid-turn.
+static bool GWalkCursorHidden = false;
+
+static bool BF6_MenuHasMouse()
+{
+	return BF6Pie_Active() || GTransientMenu.IsValid();
+}
+
+static FViewport* BF6_WalkViewport()
+{
+	FLevelEditorModule& LE = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
+	return VP.IsValid() ? VP->GetActiveViewport() : nullptr;
+}
+
+static void BF6_WalkCaptureMouse(bool bCapture)
+{
+	if (FViewport* Vp = BF6_WalkViewport()) Vp->ShowCursor(!bCapture);
+	BF6_SetSystemCursorVisible(!bCapture);
+	GWalkCursorHidden = bCapture;
+}
+
+// Settles for a frame after the pointer is moved: SetMouse does not take
+// effect instantly, so reading the position again too soon returns the OLD
+// place and turns the view by that distance a second time. That feedback is
+// what threw the camera to look straight down.
+static int32 GWalkSettle = 0;
+// Where the pointer is parked between frames, in whatever coordinates the
+// cursor API itself uses. It is established by asking the system where the
+// pointer ACTUALLY landed after we placed it, rather than by converting Slate
+// geometry into screen pixels - those two disagree under DPI scaling, and a
+// constant disagreement reads as a constant turn. That was the view drifting
+// upward on its own.
+static FVector2D GWalkAnchor = FVector2D::ZeroVector;
+
+static void BF6_WalkLookTick()
+{
+	// the one place cursor state is reconciled, so it can never be left hidden
+	if (!BF6Api::IsWalking())
+	{
+		if (GWalkCursorHidden) BF6_WalkCaptureMouse(false);
+		return;
+	}
+	if (BF6_MenuHasMouse() || !FSlateApplication::Get().IsActive())
+	{
+		if (GWalkCursorHidden) BF6_WalkCaptureMouse(false);
+		return;
+	}
+
+	// The pointer is read from SLATE, in screen space, not from the viewport's
+	// cached position: this handler swallows the move events so the viewport's
+	// own cache never updates, and reading it returned the same pixel forever -
+	// which is why looking stopped working entirely.
+	FLevelEditorModule& LE = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
+	if (!VP.IsValid()) return;
+	const FGeometry& G = VP->GetCachedGeometry();
+	const FVector2D Size = G.GetAbsoluteSize();
+	if (Size.X < 16.0 || Size.Y < 16.0) return;
+	const FVector2D Mid = G.GetAbsolutePosition() + Size * 0.5;
+
+	FSlateApplication& App = FSlateApplication::Get();
+	// no anchor yet (window moved, or the layout changed): make one the same way
+	if (GWalkAnchor.IsNearlyZero())
+	{ App.SetCursorPos(Mid); GWalkAnchor = App.GetCursorPos(); GWalkSettle = 1; return; }
+	if (!GWalkCursorHidden)
+	{
+		BF6_WalkCaptureMouse(true);
+		App.SetCursorPos(Mid);              // aim for the middle, then believe the system
+		GWalkAnchor = App.GetCursorPos();   // wherever that actually put it
+		GWalkSettle = 1;
+		return;
+	}
+	if (GWalkSettle > 0) { GWalkSettle--; App.SetCursorPos(GWalkAnchor); return; }
+
+	const FVector2D Delta = App.GetCursorPos() - GWalkAnchor;
+	if (!Delta.IsNearlyZero())
+	{
+		if (FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient)
+		{
+			const float Sens = 0.35f;
+			FRotator R = VC->GetViewRotation();
+			// a single frame can only turn so far, so one odd sample cannot spin the view
+			R.Yaw  += FMath::Clamp((float)Delta.X * Sens, -25.f, 25.f);
+			R.Pitch = FMath::Clamp(R.Pitch - FMath::Clamp((float)Delta.Y * Sens, -25.f, 25.f), -89.f, 89.f);
+			R.Roll  = 0.f;
+			VC->SetViewRotation(R);
+			VC->Invalidate(false, false);
+		}
+	}
+	App.SetCursorPos(GWalkAnchor);   // park it again for the next frame's reading
 }
 
 static bool BF6_ShiftFlying()
@@ -4452,6 +5028,27 @@ static void BF6_ReannounceFlightKeys()
 }
 static bool GFlyCursorHidden = false;
 static bool GFlyDidFly = false;
+
+// Walking is driven from here rather than from key events: holding W has to
+// keep moving, and the editor only sends a key event once. The keys are read
+// straight off the viewport, the same way the flight boost reads them.
+static void BF6_TickWalking(float DeltaSeconds)
+{
+	if (!BF6Api::IsWalking()) return;
+	if (BF6_MenuHasMouse()) return;   // choosing from a menu, not walking
+	FLevelEditorModule& LE = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
+	if (!VP.IsValid()) return;
+	FViewport* Vp = VP->GetActiveViewport();
+	if (!Vp) return;
+	// not while typing in a rename box or a search field
+	if (BF6_TextFieldFocused()) return;
+
+	const float Fwd = (Vp->KeyState(EKeys::W) ? 1.f : 0.f) - (Vp->KeyState(EKeys::S) ? 1.f : 0.f);
+	const float Str = (Vp->KeyState(EKeys::D) ? 1.f : 0.f) - (Vp->KeyState(EKeys::A) ? 1.f : 0.f);
+	const bool  bRun = Vp->KeyState(EKeys::LeftShift) || Vp->KeyState(EKeys::RightShift);
+	BF6Api::TickWalk(DeltaSeconds, Fwd, Str, bRun);
+}
 
 static void BF6_TickFlyBoost(float /*SlateDelta*/)
 {
@@ -4703,7 +5300,10 @@ public:
 
 		// Godot-style hold-Ctrl snapping (never consumed - Ctrl still combines)
 		if ((K == EKeys::LeftControl || K == EKeys::RightControl) && !E.IsRepeat() && BF6Api::IsBuildOverlayActive())
+		{
 			BF6_SnapHold(true);
+			if (BF6Api::IsWalking()) BF6Api::WalkCrouch(true);
+		}
 
 		// Godot's redo chord alongside Unreal's Ctrl+Y
 		if (K == EKeys::Z && E.IsControlDown() && E.IsShiftDown() && BF6Api::IsBuildOverlayActive())
@@ -4721,6 +5321,17 @@ public:
 			BF6_MiniToast(bWorld ? TEXT("Local space") : TEXT("World space"));
 			return true;
 		}
+		// On foot the radial moves to F, because Space is the jump. The pointer
+		// comes back while the menu is up and is recaptured when it closes.
+		if (K == EKeys::F && !E.IsRepeat() && BF6Api::IsWalking()
+			&& !E.IsControlDown() && !E.IsShiftDown() && !E.IsAltDown())
+		{
+			if (BF6Pie_Active()) { BF6Pie_Confirm(); return true; }
+			// the same gate Space has: a base map is read only, on foot or not
+			BF6_WalkCaptureMouse(false);
+			BF6Pie_Open();
+			return true;
+		}
 		// the controls cheat sheet
 		if (K == EKeys::F1 && BF6Api::IsBuildOverlayActive() && !E.IsRepeat())
 		{
@@ -4729,18 +5340,32 @@ public:
 		}
 		if (K == EKeys::SpaceBar)
 		{
+			// on foot a single tap jumps; the radial belongs to the flying camera
+			if (BF6Api::IsWalking()) { if (!E.IsRepeat()) BF6Api::WalkJump(); return true; }
 			if (BF6Pie_Active()) { if (!E.IsRepeat()) BF6Pie_Confirm(); return true; }
 			if (E.IsRepeat()) return false;
 			// assigning a link: SPACE commits the current selection as the target,
 			// then returns to the attributes menu the pick started from
 			if (BF6Api::IsLinkPicking()) { BF6Api::ConfirmLinkPick(); BF6_ReopenAttributesAfterLink(); return true; }
-			if (!BF6Api::IsBuildOverlayActive() || !BF6Api::IsEditing() || GTransientMenu.IsValid()) return false;
-			FVector W; if (!BF6Api::WorldFromViewportCursor(W)) return false;   // only over a viewport
+			if (!BF6Api::IsBuildOverlayActive() || GTransientMenu.IsValid()) return false;
+			// SPACE belongs to the radial while the tool is up. Handing it back to
+			// the editor silently cycled move/rotate/scale instead, which is what
+			// Unreal binds it to - a confusing answer to a key press that was
+			// meant to open a menu. So it is consumed either way, and says why
+			// when it cannot open.
+			FVector W;
+			if (!BF6Api::WorldFromViewportCursor(W)) return true;   // off the viewport: nothing to aim at
 			BF6Pie_Open();
 			return true;
 		}
 		if (K == EKeys::Escape)
 		{
+			if (BF6Api::IsWalking() && !BF6Pie_Active() && !GTransientMenu.IsValid())
+			{
+				BF6Api::ToggleWalk();
+				BF6_WalkCaptureMouse(false);
+				return true;
+			}
 			if (BF6Api::IsPickPlacing())
 			{
 				BF6Api::CancelPickPlace();
@@ -4916,7 +5541,10 @@ public:
 	{
 		// always restore snapping on Ctrl release, even if focus moved mid-hold
 		if (E.GetKey() == EKeys::LeftControl || E.GetKey() == EKeys::RightControl)
+		{
 			BF6_SnapHold(false);
+			BF6Api::WalkCrouch(false);
+		}
 		return false;
 	}
 
@@ -4925,7 +5553,8 @@ public:
 		// steering while Shift-flying: the engine refuses to look around with a
 		// modifier held, so the movement we supply gets its own mouse-look. Never
 		// consumed - everything else still sees the move.
-		if (BF6_ShiftFlying()) BF6_ShiftFlyLook(E.GetCursorDelta());
+		if (BF6Api::IsWalking() && !BF6_MenuHasMouse()) return true;   // the tick does the looking
+		if (BF6_ShiftFlying() && !BF6_MenuHasMouse()) BF6_ShiftFlyLook(E.GetCursorDelta());
 
 		if (BF6Pie_Active()) BF6Pie_Update(E.GetScreenSpacePosition());
 		// pick place: the selection rides the cursor (never consumed, so the
@@ -4986,7 +5615,13 @@ public:
 	virtual bool HandleMouseButtonDownEvent(FSlateApplication& App, const FPointerEvent& E) override
 	{
 		if (GControls.IsValid()) { BF6_ControlsClose(); return true; }
-		if (BF6Pie_Active() && E.GetEffectingButton() == EKeys::LeftMouseButton) { BF6Pie_Confirm(); return true; }
+		// a click on the wheel's own search field is the field's, not a pill pick
+		if (BF6Pie_Active() && E.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			if (BF6Pie_CursorOverSearch()) return false;
+			BF6Pie_Confirm();
+			return true;
+		}
 
 		// pick place: the click sets the carried selection down right here
 		if (E.GetEffectingButton() == EKeys::LeftMouseButton && BF6Api::IsPickPlacing()
@@ -5139,7 +5774,12 @@ public:
 				BoxDownPos = E.GetScreenSpacePosition();
 				return true;
 			}
-			// Cls == 2 (gizmo zone) or Shift on an actor: Unreal's click
+			// Cls == 2 (gizmo zone) or Shift on an actor: Unreal's click. The gizmo
+			// is about to open a transaction and snapshot the selection's vertex
+			// data, which is what made dragging a big object stall for seconds. We
+			// see the press first, so the payload comes out here and goes back the
+			// moment the snapshot is taken (see the tick).
+			if (Cls == 2) { bGizmoStripped = BF6Api::StripSelectionForTransaction() > 0; }
 		}
 
 		if (E.GetEffectingButton() == EKeys::RightMouseButton)
@@ -5170,6 +5810,16 @@ public:
 
 	virtual bool HandleMouseButtonUpEvent(FSlateApplication& App, const FPointerEvent& E) override
 	{
+		// Closing a gizmo drag serialises the object one more time to finish the
+		// transaction, and by now the geometry is back - which is the two second
+		// pause on letting go. We see the release first, so it comes out again
+		// and goes back once the transaction is closed.
+		if (bGizmoStripped && E.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			bGizmoStripped = false;
+			BF6Api::StripSelectionForTransaction();
+		}
+
 		if (E.GetEffectingButton() == EKeys::LeftMouseButton && bMovePend)
 		{
 			bMovePend = false;
@@ -5233,6 +5883,7 @@ private:
 	FVector2D BoxDownPos = FVector2D::ZeroVector;
 	// Godot drag-move state: LMB went down on a selected movable actor
 	bool bMovePend = false, bMoveDragging = false;
+	bool bGizmoStripped = false;   // this press began an Unreal gizmo drag
 	FVector2D MoveDownPos = FVector2D::ZeroVector;
 };
 

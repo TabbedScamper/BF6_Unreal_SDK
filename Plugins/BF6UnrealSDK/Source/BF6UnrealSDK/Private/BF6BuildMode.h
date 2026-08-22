@@ -87,6 +87,8 @@ namespace BF6Api
 	bool    WorldFromViewportCenter(FVector& OutWorld);
 	// Godot-style camera navigation (the input processor's MMB handling).
 	bool    ComputeOrbitPivot(FVector& Out);
+	// Point a fresh map's camera at the middle of the play area.
+	void FrameCombatArea();
 	void    CameraOrbit(const FVector2D& DeltaPx, const FVector& Pivot);
 	void    CameraPan(const FVector2D& DeltaPx, const FVector& DepthRef);
 
@@ -174,6 +176,28 @@ namespace BF6Api
 	// folders. Chosen once at import, flipped any time, remembered after that.
 	bool  KeepingGodotTree();
 	bool  AnyGodotTree();          // did anything here come in with an authored path?
+	// The SDK-styled scene tree (BF6Outliner.cpp): the engine's outliner with
+	// our filter, Godot's node symbols and no folders.
+	void RegisterOutlinerTab();
+	void UnregisterOutlinerTab();
+	void OpenOutlinerTab();
+	void RefreshSceneTree();   // rebuild the tree after a batch spawn + re-parent
+	const struct FSlateBrush* NodeSymbolBrush(const FString& IconName);   // Godot node icon by name
+
+	// Making nodes from the tree, the way Godot does.
+	AActor* AddTreeNode();
+	int32   GroupSelectionUnderNode();
+	// Viewport-only quick hides for zone walls and node markers (both on).
+	bool  VolumesShown();
+	bool  NodesShown();
+	int32 SetVolumesShown(bool bShow);
+	int32 SetNodesShown(bool bShow);
+	// Walk the map at eye height, with gravity, without leaving the editor.
+	bool IsWalking();
+	void ToggleWalk();
+	void TickWalk(float Dt, float Fwd, float Strafe, bool bRun);
+	void WalkJump();
+	void WalkCrouch(bool bDown);
 	int32 SetOutlinerMode(bool bKeepTree);   // returns how many objects were re-filed
 	void OpenExportsFolder();              // Explorer on the .spatial.json folder
 	void OpenSavesFolder();                // Explorer on saves/<custom map>/<level>.json
@@ -193,6 +217,9 @@ namespace BF6Api
 	// 2 = advice. bWindingFix rows offer the one-click reverse.
 	struct FLintItem { uint8 Severity = 1; FString Message; TWeakObjectPtr<AActor> Actor; bool bWindingFix = false; };
 	TArray<FLintItem> RunLint();
+	// The scene tree's warning badges: the lint result, cached by actor.
+	bool LintMarkFor(AActor* A, uint8& OutSeverity, FString& OutMessage);
+	void RefreshLintIfStale(double MaxAgeSeconds);
 	bool ReverseVolumeWinding(AActor* Vol);
 	// Simple multiplication from the selected placed object: flush rows/grids
 	// (spacing defaults to the object's own footprint) and circles facing the
@@ -284,6 +311,7 @@ namespace BF6Api
 		bool bBlock = false;    // that unit (or the object) is a block instance
 		bool bMesh = false;     // single object: has a model (snap-build works)
 		int32 Fields = 0;       // single object: editable attribute count
+		bool bNode = false;     // a tree node is in the selection
 	};
 	FSelInfo SelectionInfo();
 	bool IsGroupEditing();
@@ -320,6 +348,12 @@ namespace BF6Api
 	// transaction so the undo buffer never carries vertex data (the repair
 	// refills on undo). False = nothing of ours selected, use stock delete.
 	bool DeleteSelectionFast();
+	// Moving with Unreal's own gizmo: empty the vertex payload before the
+	// engine's transaction snapshots it, and put it back once it has.
+	int32 StripSelectionForTransaction();
+	bool  EmptySectionsQuietly(class UProceduralMeshComponent* M);   // drop the payload, keep it drawn
+	bool  HasStrippedGeometry();
+	void  RestoreStrippedGeometry(bool bForce = false);   // bForce: give up waiting, put it back
 	bool BeginDragMoveOn(AActor* A);       // selects it if needed, preps the move set
 	void UpdateDragMove(bool bSnap);
 	void EndDragMove();
@@ -366,6 +400,8 @@ namespace BF6Api
 	// the rule that catches creators out: BF6 collision scales uniformly from
 	// the X axis, so a stretched object still collides as though it were square.
 	bool  AnyCollisionOverlay();
+	// What a selection MEANS: a node stands for everything under it.
+	void  SelectionTargets(TArray<AActor*>& Out);
 	bool  SelectionHasCollisionOverlay();     // the pill toggles on the selection
 	int32 HideCollisionForSelection();
 	int32 CountStretched();                   // objects where it actually differs

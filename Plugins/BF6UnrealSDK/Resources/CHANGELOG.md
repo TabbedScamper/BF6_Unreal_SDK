@@ -1,5 +1,60 @@
 # BF6 Unreal SDK version history
 
+## 0.6.0 (2026-08-22)
+
+**The scene tree**
+
+- The outliner is a Godot scene tree now, icons and all. Parenting works the way it does in Godot: parent to an empty node, or to another object. Folders are gone as the way you organise a map, so what you learned in the official SDK carries straight over.
+- Add a node anywhere in the tree, and it stands in for everything under it. Select the node and Colorize, the collision overlay, PICK PLACE, MULTIPLY, scatter, save-as-block, grouping, moving and deleting all act on its whole branch, not just the marker.
+- Imported `.tscn` scenes arrive with the tree exactly as you authored it: empty nodes included, in the order the file lists them, with the map's base setup parented under the map-name node in the SDK's own layout.
+- Warning badges in the tree, driven by Validate. Hover a triangle to read what is wrong with that object, and the sweep refreshes as you work.
+- Tree search understands what you type. It matches whole words first, then several words in any order, ranked by how well they fit, so searching "node" finds your nodes and "car sedan" finds the sedans.
+
+**Imports that arrive intact**
+
+- Combat volumes stopped going missing on import. The `.tscn` reader matched attribute names loosely, so any line carrying `uid="` swallowed the property after it: about twenty-five nodes were dropped per scene, silently. That is why a map saved in Godot with its combat area linked could import with the link gone.
+- Opening a level no longer duplicates nodes. Three of the six paths that clear the previous tree did not recognise node markers, so each open left another copy behind.
+- Node markers are ignored by camera previews, so a node parked in front of a deploy camera no longer blocks the shot.
+
+**Validate**
+
+- Two checks were wrong and have been corrected. HQs are not required to sit outside the combat volume - measured against the shipped maps, five of sixteen sit inside it - and a combat area with no volume linked is now advice rather than an error, because the SDK's own CombatArea script treats that link as optional.
+- New: an object that the current SDK release does not list for this map is flagged as advice, not an error. DICE moves objects between folders and map lists between releases and they usually still load, so the check tells you rather than failing you.
+- New: non-uniform scale is called out, with the reason. Two objects in three hundred and eighty across the shipped maps are scaled unevenly, and collision does not follow the stretch.
+
+**Walk the map**
+
+- WALK in the radial puts you on the ground at soldier eye height, measured from the SDK's own soldier mesh, so a wall you placed reads at the height it will really be. WASD to move, Shift to run, Ctrl to crouch, Space to jump.
+- Real ground contact: steps up to 45 cm are walked over, slopes up to 45 degrees are climbable, and nothing snaps you down - walk off a roof and you fall off it.
+- Mouse look needs no button held and never traps the pointer at the edge of the screen.
+- You can build from down there. F opens the build menu on foot, left click places or picks whatever you are looking at, and Esc or the FLY pill stands you back up with the camera exactly where you left it.
+- Base maps you cannot edit still open the radial, offering WALK on its own, because walking a map is how you decide whether to build on it.
+
+**Speed**
+
+- Moving an object with the gizmo is instant. Unreal snapshots a transacted object three times over a drag, and our meshes carry their vertices as a property, so each snapshot copied the whole model - a flash on grab, then seconds of stall on release and again on undo. The vertex payload is now set aside for the length of the transaction and put back after, without touching the render state.
+- Deleting a node was taking three seconds and is now immediate: the fast delete path did not recognise nodes, so they fell through to the stock one.
+- Placement rays run against an index we build ourselves rather than cooked collision. Building it costs a fraction of a second where cooking cost seconds per map, and it returns surface normals, so objects sit flat on what they land on.
+
+**Placing**
+
+- Scatter reads the topmost surface. On maps with a plane under the terrain - Contaminated among them - both the drawn area and the objects were landing on the bottom-most one.
+- Dropping objects onto your own placed objects survived the move to the new ray index: whatever you are carrying is excluded, so it cannot land on itself.
+
+**The objects menu**
+
+- Categories were rebuilt from the whole catalogue. Taking the top folder buried the library: 5,325 of the SDK's 11,142 types sat under Generic and another 1,339 under Uncategorized, so trees read as "Generic" and cars as "Props" or nothing at all. Shelves are now chosen from the most meaningful folder in the path and then from what DICE named the object. Generic is empty, Vehicles holds 615 types where it had none, and Nature holds 1,022 where it had 345.
+- A search field sits at the hub of the objects wheel. Type two letters and the same panel a category opens appears, filtered across every shelf, with the cursor still in the box so you can keep typing.
+- The shelves are paged, with the page numbers under the hub and FULL LIBRARY as a button above the search field, so the ring stays a readable size instead of growing across the screen.
+- The hub reads BACK on any step-in menu and actually goes back one level.
+- Opening the wheel no longer leaves the previous one stacked behind it, which had been quietly dimming the viewport a layer at a time.
+- The mode banner sits below the budget bar instead of across it, in colours you can read.
+
+**Cameras**
+
+- HQs and flags carry their deploy camera in their attributes, and that camera now previews like any other: select the object and see exactly what it sees. Set from view writes your current view back into those attributes.
+- A newly opened map looks at the middle of its combat area from above, at an angle, instead of starting at the origin. Saved maps still return to the view you left.
+
 ## 0.5.7 (2026-08-21)
 
 - Colorize, the collision overlay and the assign-mode highlighting now work for everyone. They needed materials that only ever shipped inside the full project download, so updating from inside the editor never delivered them and those three features quietly did nothing. The materials live in the plugin itself now, so an in-editor update brings everything with it.

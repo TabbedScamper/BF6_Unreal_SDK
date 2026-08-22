@@ -15,7 +15,7 @@ Open the project and the editor becomes a map builder:
 - **Godot-style hands**: click an object to select it and drag to move it in the same motion, rubber-band select on empty ground, Ctrl to snap, and **PICK PLACE** to carry any selection on your cursor and click it down. Alt+Arrows duplicates flush against itself for fast walls and rows, and **MULTIPLY** builds rows, grids, and circles from any object.
 - **Scatter**: a live editor like Godot's Proton Scatter. The scatter appears instantly and re-forms as you drag sliders for count, radius, rotation, wobble (with fine-tune X/Y lean), elevation, and size variation, each copy rolling its own values. Fill a circle, square, or ring, or draw any outline right on the terrain with editable corner points. One undo removes the whole scatter.
 - **Mode setup wizard**: guided Conquest and Breakthrough scaffolding. Point and click through numbered steps and every click places a fully linked bundle (HQ with spawns, flags with capture areas, sectors wired up) with convention object IDs, then the checks run automatically.
-- **Checks**: a lint pass that catches unlinked spawners, broken zone windings (with a one-click fix), oversized areas, duplicate object IDs, HQs inside the combat area, and upload-size problems before the Portal site does.
+- **Validate**: a lint pass that catches unlinked spawners, broken zone windings (with a one-click fix), oversized areas, duplicate object IDs, objects the current SDK release does not list for your map, and upload-size problems before the Portal site does. Anything it flags gets a warning badge in the scene tree, so you can read the problem next to the object.
 - **Cameras**: select any deploy or fixed camera for a live picture-in-picture of exactly what it sees, updating as you move it. **SET CAMERA** hands it your current editor view, Look through jumps you into its view, and right-click Pilot flies the camera directly with a real Unreal camera frustum showing its aim.
 - **Blocks**: save any selection as a reusable block. Place copies anywhere, and blocks are single files you can share with anyone. Double-click a placed copy to edit inside it; press Enter and every copy on the map updates to match, or Esc to revert the whole edit.
 - **Group editing**: double-click any group to tab into it. Everything outside the group turns transparent and unclickable, so you only ever touch what you meant to. Enter keeps the changes, Esc puts everything back.
@@ -23,9 +23,10 @@ Open the project and the editor becomes a map builder:
 - **Gameplay editing**: select any gameplay object and press **Space** for its context radial. Edit the full attribute suite (HQ teams, MCOM settings, combat area timers, vehicle spawner types, and more, with real dropdowns from the SDK data) right inside the menu, and edit zone polygons Godot-style: orange point handles appear on selection, drag to move, Ctrl+click an edge to add, Del to remove.
 - **Assign mode**: when a field links objects together (spawn points to an HQ, volumes to a combat area), everything that can't be assigned fades out, valid targets get color-coded markers with lines showing what's already assigned, and clicking the markers picks them. Enter confirms and drops you back in the attributes menu.
 - **SDK hints**: a toggle that explains SDK concepts on hover, so new builders learn teams, spawns, and volumes without leaving the editor.
+- **Walk the map**: drop out of the camera and onto the ground at soldier eye height to judge scale, cover and sightlines. Run, crouch, jump, step over kerbs, fall off roofs - and keep building while you are down there, with the build menu on F and placement on left click. Stand up and the camera is where you left it.
 - **Camera your way**: standard Unreal navigation, or switch on the Godot-style camera (middle mouse orbit, Shift+middle mouse pan) if that is what your hands know. A pinned panel in the corner always shows the controls for whatever you are doing.
 - **Save / resume**: name your custom map, save it, and pick it back up later from the map selector. Sessions autosave every 60 seconds, blocks and groups survive reloads, saves live in one folder per custom map (easy to back up or share), and the resume list can delete saves you are done with.
-- **Tidy outliner**: objects file themselves into folders by what they are (HQs, spawns, zones, props by category, each block in its own folder), and a one-click Tidy up sorts older levels the same way.
+- **Godot scene tree**: the outliner is Godot's, icons and all. Parent to an empty node or to another object exactly as you would in the official SDK, and a node stands in for its whole branch - colour it, check its collision, carry it, scatter from it, save it as a block. Imported `.tscn` scenes keep the tree you authored, and Validate's warnings show as badges beside the objects they belong to.
 - **Export**: writes your map to `<map>.spatial.json` in the SDK's Portal format, verified against shipped Portal experiences. Export with readable names, or minified ([PortalSpatialMinifier](https://github.com/dfanz0r/PortalSpatialMinifier)-style) so it fits Portal's upload size limits. Drop the file into an SDK mod folder and run the SDK's experience exporter to package it for Portal.
 - **Import**: one button takes both `.spatial.json` (your own exports or SDK samples) and Godot `.tscn` scenes, so projects built in the official SDK come straight across with transforms, links, zones, and spawns intact. The tool detects which map the file belongs to and opens it there.
 - **Managed SDK**: the tool downloads the newest Portal SDK for you, straight from EA's official service, unpacks it in parallel with live progress, and converts everything automatically. When EA releases a new SDK it offers the update, and your maps and blocks carry over untouched.
@@ -37,7 +38,7 @@ This tool covers the official Godot SDK's workflow, and then adds what it never 
 - **Blocks**: reusable, shareable prefabs where editing one copy updates every copy on the map. The Godot SDK has nothing like it; repeated layouts mean repeated hand-placement.
 - **A live scatter editor** with per-copy rotation, wobble, elevation, and size limits, preset and hand-drawn fill shapes, and single-undo apply.
 - **A mode setup wizard** that builds fully linked Conquest and Breakthrough scaffolding click by click, then checks its own work.
-- **Checks** that catch broken links, windings, duplicate IDs, and upload-size problems before an upload fails.
+- **Validate** that catches broken links, windings, duplicate IDs, and upload-size problems before an upload fails.
 - **Real camera tooling**: live picture-in-picture previews, set-from-view, and flying a camera directly.
 - **Tab-in editing** for groups and blocks, with the rest of the world ghosted out.
 - **Assign mode** for linking objects, with fading, markers, and assignment lines instead of hunting through a node tree.
@@ -103,5 +104,7 @@ The tool is in open beta and every report helps.
 Built and maintained by TabbedScamper.
 
 Thanks to dfanz0r for PortalSpatialMinifier, which the exporter's minification mirrors.
+
+The scene tree uses icons from the Godot Engine, used under the MIT licence; the licence text ships with them in the plugin's `Resources/GodotIcons`.
 
 Battlefield 6 and Battlefield Portal are trademarks of EA Digital Illusions CE AB. This project is not endorsed by or affiliated with EA or DICE.

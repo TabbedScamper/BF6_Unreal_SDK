@@ -22,6 +22,10 @@
 #include "Editor.h"
 #include "Engine/Selection.h"
 #include "ScopedTransaction.h"
+#include "Misc/ITransaction.h"
+#include "EditorActorFolders.h"
+#include "ActorEditorUtils.h"
+#include "Editor/TransBuffer.h"
 #include "LevelEditorViewport.h"
 #include "Input/DragAndDrop.h"
 #include "ImageUtils.h"
@@ -117,6 +121,12 @@ static const FName kTabName("BF6Objects");
 static const FName kPlacedTag("BF6Placed");
 static const FName kContextTag("BF6Context");
 static const FName kBaseTag("BF6Base");
+// Godot builds its hierarchy out of nodes: an empty Node3D used purely as a
+// parent, or an object with children hung off it. Both come back as real
+// attachment here rather than as an outliner folder, so a subtree moves and
+// deletes as one the way it does in the SDK. This tag marks the stand-in for
+// an empty node: no geometry, never exported, purely a parent.
+static const FName kGroupTag("BF6Group");
 
 // auto-organized outliner: file each object into its role/category folder
 // (defined below; forward-declared so spawn helpers can call it)
@@ -311,28 +321,56 @@ bool BF6_ReadMeshInto(UProceduralMeshComponent* Mesh, const FString& ResName, fl
 	return true;
 }
 
+// Search scoring.
+//
+// This used to be a plain subsequence match: any name containing the pattern's
+// letters IN ORDER counted, so "car" matched ConcreteBarrier and "sedan"
+// matched SoukHouse - 741 hits, none of them a car. What people type is a piece
+// of the NAME, so a substring is the match and everything else is a fallback:
+//
+//   - each space-separated word must appear; "car sedan" and "wreck tank" work
+//   - a word found as a substring scores by where it sits, best at the start or
+//     just after a separator
+//   - failing that, scattered letters count only if they stay tight together,
+//     which keeps genuine typos working without dragging in the whole library
+//
+// Measured over the catalogue: "sedan" went from 741 hits led by SoukHouse to
+// 113 led by CarSedan_03, and "acacia" from 67 to a single exact hit.
 static bool FuzzyScore(const FString& PatternLower, const FString& Str, int32& OutScore)
 {
 	OutScore = 0;
 	if (PatternLower.IsEmpty()) return true;
 	const FString S = Str.ToLower();
-	int32 pi = 0, score = 0, run = 0, firstHit = -1;
-	for (int32 si = 0; si < S.Len() && pi < PatternLower.Len(); si++)
+
+	TArray<FString> Words;
+	PatternLower.ParseIntoArray(Words, TEXT(" "), true);
+	if (Words.Num() == 0) return true;
+
+	int32 Total = 0;
+	for (const FString& W : Words)
 	{
-		if (S[si] == PatternLower[pi])
+		const int32 At = S.Find(W, ESearchCase::CaseSensitive);
+		if (At != INDEX_NONE)
 		{
-			if (firstHit < 0) firstHit = si;
-			run++; score += 1 + run;
-			const bool wordStart = (si == 0) || S[si - 1] == '_' || S[si - 1] == ' ' || S[si - 1] == '/';
-			if (wordStart) score += 5;
-			pi++;
+			int32 Sc = 1000 - FMath::Min(At, 200);
+			const bool bWordStart = At == 0 || S[At - 1] == '_' || S[At - 1] == ' '
+				|| S[At - 1] == '/' || S[At - 1] == '-' || FChar::IsDigit(S[At - 1]);
+			if (bWordStart) Sc += 200;
+			if (At == 0) Sc += 100;
+			Total += Sc;
+			continue;
 		}
-		else run = 0;
+		// no substring: allow a typo only for words long enough to be meant
+		if (W.Len() < 4) return false;
+		int32 pi = 0, First = -1, Last = -1;
+		for (int32 si = 0; si < S.Len() && pi < W.Len(); si++)
+			if (S[si] == W[pi]) { if (First < 0) First = si; Last = si; pi++; }
+		if (pi != W.Len()) return false;
+		if (Last - First + 1 > W.Len() + 4) return false;   // scattered letters are not a match
+		Total += 120 - (Last - First);
 	}
-	if (pi != PatternLower.Len()) return false;
-	if (firstHit == 0) score += 8;
-	score -= firstHit;
-	OutScore = score;
+
+	OutScore = Total - FMath::Min(S.Len() / 4, 50);   // a tighter name is the better hit
 	return true;
 }
 
@@ -389,10 +427,10 @@ static AActor* SpawnResource(const FString& ResName, const FString& Label, const
 	if (!Placed)
 	{
 		Actor->Tags.Remove(kPlacedTag); Actor->Tags.Add(kContextTag);
-		// context is scenery: not clickable, not movable, foldered out of the way
+		// Context is scenery: not clickable in the viewport, foldered out of the
+		// way. NOT location-locked - a locked actor never reaches the outliner
+		// hierarchy, which is why the map meshes could not be listed at all.
 		Mesh->bSelectable = false;
-		Actor->SetLockLocation(true);
-		Actor->SetFolderPath(FName(TEXT("BF6 Map Context")));
 	}
 	g_free(g_ctx, m);
 	return Actor;
@@ -424,6 +462,12 @@ static void ApplyObjectWhite(UProceduralMeshComponent* Mesh);
 
 // ---- low-poly map context: load an extracted .bf6mesh into a proc-mesh actor ----
 static void ClearActorsWithTag(FName Tag);   // defined below
+static int32 BF6_RebuildTreeFromTags();      // authored tree, hooked up as attachment
+static AActor* BF6_SpawnTreeNode(UWorld* W, const FString& Key, const FString& ParentKey,
+	const FTransform& Xf, int32 Order = MAX_int32);   // an empty Godot node, as an actor
+namespace BF6Api { static bool BF6_IsLinkProp(const FString& TypeName, const FString& PropName); }
+static int32 BF6_ApplyTreeMetadata(const TArray<TSharedPtr<FJsonValue>>* StaticArr);   // tree from a spatial file
+bool BF6_KeepGodotTree();                    // the creator's outliner preference
 
 // Which level's scenery is currently standing. Reopening or resuming the same
 // map is the common loop - build, export, come back - and the terrain and
@@ -450,44 +494,312 @@ static bool BF6_ContextAlreadyUp(const FString& Level)
 static bool GContextReused = false;
 
 // Drop the scenery only when the map actually changes.
+static void BF6_DropRayIndexes();   // defined with the index itself, below
+
+static AActor* BF6_EnsureStaticParent(UWorld* W);   // 'Static', the scenery's parent
+
+// Put the terrain and assets under 'Static'. Called after a fresh spawn AND when
+// the scenery is reused: reopening or re-importing the same map deliberately
+// leaves it standing, so nothing would ever adopt it otherwise.
+static void BF6_GroupContextUnderStatic(const FString& Level)
+{
+	ON_SCOPE_EXIT{ BF6Api::RefreshSceneTree(); };
+	if (!GEditor) return;
+	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+	TArray<AActor*> Loose;
+	for (TActorIterator<AActor> It(W); It; ++It)
+		if (It->Tags.Contains(kContextTag) && It->GetActorLabel() != TEXT("Static") && !It->GetAttachParentActor())
+			Loose.Add(*It);
+	if (Loose.Num() == 0) return;
+	AActor* Parent = BF6_EnsureStaticParent(W);
+	if (!Parent) return;
+	for (AActor* A : Loose)
+		A->AttachToActor(Parent, FAttachmentTransformRules::KeepWorldTransform);
+	// and Static itself belongs under the map's node, like everything else
+	const FString RootKey = FString(TEXT("gpath:")) + Level;
+	if (!Parent->GetAttachParentActor() && !Level.IsEmpty())
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (It->Tags.Contains(kGroupTag) && It->Tags.Contains(FName(*RootKey)))
+			{
+				Parent->AttachToActor(*It, FAttachmentTransformRules::KeepWorldTransform);
+				break;
+			}
+}
+
 static void BF6_ClearContextFor(const FString& Level)
 {
 	GContextReused = BF6_ContextAlreadyUp(Level);
-	if (GContextReused) return;
+	if (GContextReused) { BF6_GroupContextUnderStatic(Level); return; }
 	ClearActorsWithTag(kContextTag);
+	BF6_DropRayIndexes();   // the scenery is going, so is the ray index over it
 	GContextLevel = Level;
 }
 
-// Scenery whose collision has not been cooked yet, and the cook itself.
-// Kept out of the map-open path deliberately (see SpawnContextMesh).
-struct FBF6PendingCook { TWeakObjectPtr<UProceduralMeshComponent> Comp; FString Path; };
-static TArray<FBF6PendingCook> GPendingCooks;
-static FTSTicker::FDelegateHandle GCookTick;
-
-static void BF6_QueueContextCollision(UProceduralMeshComponent* Mesh, const FString& Path)
+// ---- our own ray index for the map's scenery ----
+// Cooking physics collision for the terrain and assets meshes was ~97% of the
+// cost of putting a map on screen (Battery: 0.12s to build the assets mesh,
+// 3.87s to cook it, and the big maps twice that again). Nothing but our own
+// rays ever used that collision - placement, the click classifier and
+// scatter's follow-terrain - so the cook is gone and those rays are answered
+// from a uniform grid over the triangles instead. Building the grid is one
+// linear pass over data we have already decoded.
+struct FBF6RayIndex
 {
-	if (!Mesh) return;
-	GPendingCooks.Add({ Mesh, Path });
-	if (GCookTick.IsValid()) return;
-	// one frame is not enough - let the map draw first, then take the hit
-	GCookTick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+	TWeakObjectPtr<AActor> Owner;
+	FTransform Xf = FTransform::Identity;
+	TArray<FVector3f> V;
+	TArray<int32> Tri;              // three entries per triangle
+	FBox3f Bounds = FBox3f(ForceInit);
+	int32 NX = 0, NY = 0;
+	float CX = 1.f, CY = 1.f;
+	TArray<int32> CellStart;        // NX*NY + 1, indexes into CellTri
+	TArray<int32> CellTri;
+	TArray<int32> Stamp;            // a triangle spanning cells is still tested once
+	int32 Epoch = 0;
+
+	int32 NumTris() const { return Tri.Num() / 3; }
+	int32 CellOfX(float X) const { return FMath::Clamp((int32)((X - Bounds.Min.X) / CX), 0, NX - 1); }
+	int32 CellOfY(float Y) const { return FMath::Clamp((int32)((Y - Bounds.Min.Y) / CY), 0, NY - 1); }
+	bool Trace(const FVector& WO, const FVector& WEnd, double& OutU, FVector& OutHit, FVector* OutNormal = nullptr);
+};
+static TArray<TSharedPtr<FBF6RayIndex>> GRayIndexes;
+static void BF6_DropRayIndexes() { GRayIndexes.Reset(); }
+
+// Moller-Trumbore, two sided - terrain gets looked at from underneath as often
+// as from above.
+static FORCEINLINE bool BF6_RayTri(const FVector3f& O, const FVector3f& D,
+	const FVector3f& A, const FVector3f& B, const FVector3f& C, float& OutT, FVector3f* OutN = nullptr)
+{
+	const FVector3f E1 = B - A, E2 = C - A;
+	const FVector3f P = FVector3f::CrossProduct(D, E2);
+	const float Det = FVector3f::DotProduct(E1, P);
+	if (FMath::Abs(Det) < 1e-8f) return false;
+	const float Inv = 1.f / Det;
+	const FVector3f T = O - A;
+	const float U = FVector3f::DotProduct(T, P) * Inv;
+	if (U < -1e-5f || U > 1.f + 1e-5f) return false;
+	const FVector3f Q = FVector3f::CrossProduct(T, E1);
+	const float Vv = FVector3f::DotProduct(D, Q) * Inv;
+	if (Vv < -1e-5f || U + Vv > 1.f + 1e-5f) return false;
+	const float Dist = FVector3f::DotProduct(E2, Q) * Inv;
+	if (Dist < 0.f) return false;
+	OutT = Dist;
+	if (OutN) *OutN = FVector3f::CrossProduct(E1, E2).GetSafeNormal();
+	return true;
+}
+
+bool FBF6RayIndex::Trace(const FVector& WO, const FVector& WEnd, double& OutU, FVector& OutHit, FVector* OutNormal)
+{
+	if (Tri.Num() == 0 || NX <= 0) return false;
+
+	// the grid lives in the mesh's own space, so the segment goes there too;
+	// working in segment parameter rather than distance keeps any scale on the
+	// component from mattering
+	const FVector3f A = (FVector3f)Xf.InverseTransformPosition(WO);
+	const FVector3f B = (FVector3f)Xf.InverseTransformPosition(WEnd);
+	FVector3f Dir = B - A;
+	const float Len = Dir.Size();
+	if (Len <= SMALL_NUMBER) return false;
+	Dir /= Len;
+
+	// clip against the whole mesh first: most rays miss it outright
+	float T0 = 0.f, T1 = Len;
+	for (int32 Axis = 0; Axis < 3; Axis++)
 	{
-		GCookTick.Reset();
-		TArray<FBF6PendingCook> Work = MoveTemp(GPendingCooks);
-		GPendingCooks.Reset();
-		const double T0 = FPlatformTime::Seconds();
-		int32 n = 0;
-		for (const FBF6PendingCook& W : Work)
+		const float d = Dir[Axis], o = A[Axis];
+		const float Mn = Bounds.Min[Axis], Mx = Bounds.Max[Axis];
+		if (FMath::Abs(d) < 1e-8f) { if (o < Mn || o > Mx) return false; continue; }
+		float tA = (Mn - o) / d, tB = (Mx - o) / d;
+		if (tA > tB) Swap(tA, tB);
+		T0 = FMath::Max(T0, tA);
+		T1 = FMath::Min(T1, tB);
+		if (T0 > T1) return false;
+	}
+
+	const FVector3f Entry = A + Dir * T0;
+	int32 X = CellOfX(Entry.X), Y = CellOfY(Entry.Y);
+	const int32 StepX = Dir.X > 0.f ? 1 : (Dir.X < 0.f ? -1 : 0);
+	const int32 StepY = Dir.Y > 0.f ? 1 : (Dir.Y < 0.f ? -1 : 0);
+	float TMaxX = FLT_MAX, TMaxY = FLT_MAX, TDeltaX = FLT_MAX, TDeltaY = FLT_MAX;
+	if (StepX != 0)
+	{
+		const float Edge = Bounds.Min.X + (X + (StepX > 0 ? 1 : 0)) * CX;
+		TMaxX = T0 + (Edge - Entry.X) / Dir.X;
+		TDeltaX = CX / FMath::Abs(Dir.X);
+	}
+	if (StepY != 0)
+	{
+		const float Edge = Bounds.Min.Y + (Y + (StepY > 0 ? 1 : 0)) * CY;
+		TMaxY = T0 + (Edge - Entry.Y) / Dir.Y;
+		TDeltaY = CY / FMath::Abs(Dir.Y);
+	}
+
+	Epoch++;
+	float Best = T1;
+	bool bAny = false;
+	FVector3f BestN(0, 0, 1);
+
+	for (;;)
+	{
+		const int32 Cell = Y * NX + X;
+		for (int32 i = CellStart[Cell], e = CellStart[Cell + 1]; i < e; i++)
 		{
-			UProceduralMeshComponent* M = W.Comp.Get();
-			if (!M) continue;
-			M->ClearAllMeshSections();
-			if (FillProcFromBf6Mesh(M, W.Path, true)) n++;   // same geometry, now with collision
+			const int32 t = CellTri[i];
+			if (Stamp[t] == Epoch) continue;
+			Stamp[t] = Epoch;
+			float Hit; FVector3f N;
+			if (!BF6_RayTri(A, Dir, V[Tri[t * 3]], V[Tri[t * 3 + 1]], V[Tri[t * 3 + 2]], Hit, &N)) continue;
+			if (Hit >= T0 - 1.f && Hit <= Best) { Best = Hit; BestN = N; bAny = true; }
 		}
-		if (n > 0)
-			UE_LOG(LogBF6, Warning, TEXT("context collision ready: %d mesh(es) in %.2fs"), n, FPlatformTime::Seconds() - T0);
-		return false;   // one shot
-	}), 0.75f);
+
+		// walking away from a hit we already have: nothing further can beat it
+		const float NextT = FMath::Min(TMaxX, TMaxY);
+		if (bAny && Best <= NextT) break;
+		if (NextT > T1) break;
+		if (TMaxX < TMaxY) { X += StepX; if (X < 0 || X >= NX) break; TMaxX += TDeltaX; }
+		else               { Y += StepY; if (Y < 0 || Y >= NY) break; TMaxY += TDeltaY; }
+	}
+
+	if (!bAny) return false;
+	OutU = (double)(Best / Len);
+	OutHit = WO + (WEnd - WO) * OutU;
+	if (OutNormal)
+	{
+		*OutNormal = Xf.TransformVectorNoScale(FVector(BestN)).GetSafeNormal();
+		if (FVector::DotProduct(*OutNormal, WO - OutHit) < 0.0) *OutNormal = -*OutNormal;   // face the ray
+	}
+	return true;
+}
+
+// Build the grid straight off the component we just filled.
+static void BF6_BuildRayIndex(AActor* Owner, UProceduralMeshComponent* M)
+{
+	if (!Owner || !M) return;
+	const double T0 = FPlatformTime::Seconds();
+
+	TSharedPtr<FBF6RayIndex> Ix = MakeShared<FBF6RayIndex>();
+	Ix->Owner = Owner;
+	Ix->Xf = M->GetComponentTransform();
+	for (int32 s = 0; s < M->GetNumSections(); s++)
+	{
+		FProcMeshSection* Sec = M->GetProcMeshSection(s);
+		if (!Sec) continue;
+		const int32 Base = Ix->V.Num();
+		Ix->V.Reserve(Base + Sec->ProcVertexBuffer.Num());
+		for (const FProcMeshVertex& Vx : Sec->ProcVertexBuffer) Ix->V.Add((FVector3f)Vx.Position);
+		Ix->Tri.Reserve(Ix->Tri.Num() + Sec->ProcIndexBuffer.Num());
+		for (uint32 Idx : Sec->ProcIndexBuffer) Ix->Tri.Add(Base + (int32)Idx);
+	}
+	const int32 NT = Ix->NumTris();
+	if (NT == 0) return;
+	for (const FVector3f& P : Ix->V) Ix->Bounds += P;
+	Ix->Bounds = Ix->Bounds.ExpandBy(10.f);
+
+	// Cell size follows the geometry rather than the triangle count: terrain
+	// triangles are metres across, and a cell smaller than one triangle just
+	// lists that triangle over and over, which costs memory and buys nothing.
+	// Sample a few thousand, aim a couple of triangles wide, and keep the grid
+	// within sane bounds either way.
+	const FVector3f Span = Ix->Bounds.Max - Ix->Bounds.Min;
+	double SumExtent = 0.0;
+	int32 Samples = 0;
+	const int32 Stride = FMath::Max(1, NT / 4096);
+	for (int32 t = 0; t < NT; t += Stride)
+	{
+		const FVector3f& A = Ix->V[Ix->Tri[t * 3]];
+		const FVector3f& B = Ix->V[Ix->Tri[t * 3 + 1]];
+		const FVector3f& C = Ix->V[Ix->Tri[t * 3 + 2]];
+		const float dx = FMath::Max3(A.X, B.X, C.X) - FMath::Min3(A.X, B.X, C.X);
+		const float dy = FMath::Max3(A.Y, B.Y, C.Y) - FMath::Min3(A.Y, B.Y, C.Y);
+		SumExtent += FMath::Max(dx, dy);
+		Samples++;
+	}
+	const float AvgExtent = Samples > 0 ? (float)(SumExtent / Samples) : 100.f;
+	const float MaxSpan = FMath::Max(Span.X, Span.Y);
+	const float Cell = FMath::Clamp(AvgExtent * 2.f, MaxSpan / 1024.f, MaxSpan / 8.f);
+	Ix->NX = FMath::Clamp(FMath::CeilToInt(Span.X / Cell), 1, 1024);
+	Ix->NY = FMath::Clamp(FMath::CeilToInt(Span.Y / Cell), 1, 1024);
+	Ix->CX = FMath::Max(Span.X / Ix->NX, KINDA_SMALL_NUMBER);
+	Ix->CY = FMath::Max(Span.Y / Ix->NY, KINDA_SMALL_NUMBER);
+
+	// counting sort into the cells: count, prefix sum, fill
+	const int32 NC = Ix->NX * Ix->NY;
+	TArray<int32> Count;
+	Count.SetNumZeroed(NC);
+	auto CellRange = [&Ix](int32 t, int32& X0, int32& X1, int32& Y0, int32& Y1)
+	{
+		const FVector3f& A = Ix->V[Ix->Tri[t * 3]];
+		const FVector3f& B = Ix->V[Ix->Tri[t * 3 + 1]];
+		const FVector3f& C = Ix->V[Ix->Tri[t * 3 + 2]];
+		X0 = Ix->CellOfX(FMath::Min3(A.X, B.X, C.X)); X1 = Ix->CellOfX(FMath::Max3(A.X, B.X, C.X));
+		Y0 = Ix->CellOfY(FMath::Min3(A.Y, B.Y, C.Y)); Y1 = Ix->CellOfY(FMath::Max3(A.Y, B.Y, C.Y));
+	};
+	for (int32 t = 0; t < NT; t++)
+	{
+		int32 X0, X1, Y0, Y1; CellRange(t, X0, X1, Y0, Y1);
+		for (int32 y = Y0; y <= Y1; y++) for (int32 x = X0; x <= X1; x++) Count[y * Ix->NX + x]++;
+	}
+	Ix->CellStart.SetNumUninitialized(NC + 1);
+	int32 Run = 0;
+	for (int32 c = 0; c < NC; c++) { Ix->CellStart[c] = Run; Run += Count[c]; }
+	Ix->CellStart[NC] = Run;
+	Ix->CellTri.SetNumUninitialized(Run);
+	TArray<int32> Cursor(Ix->CellStart);
+	for (int32 t = 0; t < NT; t++)
+	{
+		int32 X0, X1, Y0, Y1; CellRange(t, X0, X1, Y0, Y1);
+		for (int32 y = Y0; y <= Y1; y++) for (int32 x = X0; x <= X1; x++) Ix->CellTri[Cursor[y * Ix->NX + x]++] = t;
+	}
+	Ix->Stamp.SetNumZeroed(NT);
+	GRayIndexes.Add(Ix);
+
+	UE_LOG(LogBF6, Warning, TEXT("ray index for %s: %d tris, %dx%d cells (%.0f cm), %.1f MB in %.2fs"),
+		*Owner->GetActorLabel(), NT, Ix->NX, Ix->NY, Ix->CX,
+		(Ix->V.Num() * 12 + Ix->Tri.Num() * 4 + Ix->CellTri.Num() * 4 + Ix->CellStart.Num() * 4 + Ix->Stamp.Num() * 4) / 1048576.f,
+		FPlatformTime::Seconds() - T0);
+}
+
+// Nearest hit on the map's scenery. OutU is how far along the segment it
+// landed, 0..1, which is what the physics trace's Hit.Time used to give.
+static bool BF6_ContextRay(const FVector& O, const FVector& End, FVector& OutHit, double* OutU = nullptr, FVector* OutNormal = nullptr)
+{
+	bool bAny = false;
+	double BestU = 1.0;
+	for (int32 i = GRayIndexes.Num() - 1; i >= 0; i--)
+	{
+		TSharedPtr<FBF6RayIndex>& Ix = GRayIndexes[i];
+		if (!Ix.IsValid() || !Ix->Owner.IsValid()) { GRayIndexes.RemoveAt(i); continue; }
+		double U;
+		FVector P, N;
+		if (Ix->Trace(O, End, U, P, &N) && U < BestU)
+		{ BestU = U; OutHit = P; if (OutNormal) *OutNormal = N; bAny = true; }
+	}
+	if (bAny && OutU) *OutU = BestU;
+	return bAny;
+}
+
+
+// The map's own terrain and low-poly assets sit under a 'Static' parent in the
+// SDK's tree, and creators expect to find them in the same place - not least to
+// switch one off with the eye and see inside a building. Tagged as context only,
+// so it lives and dies with the scenery it holds rather than with the tree.
+static AActor* BF6_EnsureStaticParent(UWorld* W)
+{
+	if (!W) return nullptr;
+	for (TActorIterator<AActor> It(W); It; ++It)
+		if (It->Tags.Contains(kContextTag) && It->GetActorLabel() == TEXT("Static")) return *It;
+	AActor* A = W->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+	if (!A) return nullptr;
+	USceneComponent* Root = NewObject<USceneComponent>(A, TEXT("Node"));
+	A->SetRootComponent(Root);
+	Root->RegisterComponent();
+	A->SetActorLabel(TEXT("Static"));
+	A->Tags.Add(kContextTag);
+	// The default levels hang Static off the map's own node, last among its
+	// children (MP_Badlands.tscn: the HQs, then CombatArea, Camera3D, Static).
+	A->Tags.Add(FName(TEXT("gord:9000")));
+	A->SetFlags(RF_Transient);
+	return A;
 }
 
 static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
@@ -501,8 +813,6 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	Actor->SetActorLabel(Label);
 	Actor->Tags.Add(kContextTag);
 	Actor->SetFlags(RF_Transient);          // never saved into the level
-	Actor->SetLockLocation(true);
-	Actor->SetFolderPath(FName(TEXT("BF6 Map Context")));   // out of the way in the outliner
 	UProceduralMeshComponent* Mesh = MakeProcMesh(Actor, TEXT("ContextMesh"));
 	// Collision ON: the space-bar placement ray traces this surface so objects
 	// land where the crosshair points (not on a flat z=0 plane under the map).
@@ -514,7 +824,8 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	// after, while the creator is already looking around. Placement needs it,
 	// so it is deferred, never skipped.
 	if (!FillProcFromBf6Mesh(Mesh, FilePath, false)) { World->EditorDestroyActor(Actor, false); return nullptr; }
-	BF6_QueueContextCollision(Mesh, FilePath);
+	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	BF6_BuildRayIndex(Actor, Mesh);
 	const double CtxDecode = GMeshDecodeSec - CtxD0, CtxBuild = GMeshBuildSec - CtxB0;
 	// The map context is scenery: never selectable, never movable.
 	Mesh->bSelectable = false;
@@ -523,6 +834,7 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	if (UMaterialInterface* Mat = BF6_Material(bAssets ? TEXT("M_LevelAssets") : TEXT("M_LevelTerrain")))
 		for (int32 s = 0; s < Mesh->GetNumSections(); s++) Mesh->SetMaterial(s, Mat);
 	Mesh->SetVisibility(true, true);
+	BF6_GroupContextUnderStatic(Label.Left(Label.Find(TEXT("_"), ESearchCase::CaseSensitive, ESearchDir::FromEnd)));
 	UE_LOG(LogBF6, Warning, TEXT("Loaded context %s: %d section(s) - %.2fs reading, %.2fs building (collision cook included)."),
 		*Label, Mesh->GetNumSections(), CtxDecode, CtxBuild);
 	return Actor;
@@ -1264,8 +1576,40 @@ static void BF6_ApplyLoop(AActor* Vol, const TArray<FVector>& LocalLoop)
 	RebuildVolumeWalls(Vol, LocalLoop);
 }
 
+// Bring the tree tags back in line with the live hierarchy before writing them.
+// gtree: records where a node was when it arrived; the creator may have dragged
+// it somewhere else since, and the save has to keep what they built, not what
+// the scene file once said.
+static void BF6_SyncTreeTagsFromLive()
+{
+	if (!GEditor) return;
+	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+	for (TActorIterator<AActor> It(W); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kGroupTag)) continue;
+		// every node needs a key of its own before anything can point at it
+		if (TagValue(A, TEXT("gpath:")).IsEmpty())
+		{
+			FString Own = A->GetActorLabel(); Own.RemoveFromStart(TEXT("BF6_"));
+			A->Tags.Add(FName(*(FString(TEXT("gpath:")) + Own)));
+		}
+		FString Want;
+		if (AActor* P = A->GetAttachParentActor())
+		{
+			Want = TagValue(P, TEXT("gpath:"));
+			if (Want.IsEmpty()) { Want = P->GetActorLabel(); Want.RemoveFromStart(TEXT("BF6_")); }
+		}
+		const FString Have = TagValue(A, TEXT("gtree:"));
+		if (Have == Want) continue;
+		if (!Have.IsEmpty()) A->Tags.Remove(FName(*(FString(TEXT("gtree:")) + Have)));
+		if (!Want.IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("gtree:")) + Want)));
+	}
+}
+
 static void SaveSession(const FString& Level, const FString& Name)
 {
+	BF6_SyncTreeTagsFromLive();
 	if (!GEditor || Name.IsEmpty()) return;
 	UWorld* World = GEditor->GetEditorWorldContext().World();
 	if (!World) return;
@@ -1273,16 +1617,20 @@ static void SaveSession(const FString& Level, const FString& Name)
 	TMap<AGroupActor*, int32> GroupIdx;   // group root -> stable save index
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
-		if (!It->Tags.Contains(kPlacedTag)) continue;
+		const bool bNode = It->Tags.Contains(kGroupTag);
+		if (!It->Tags.Contains(kPlacedTag) && !bNode) continue;
 		if (It->Tags.Contains(kHandleTag)) continue;
 		const FString MeshName = TagValue(*It, TEXT("mesh:"));
 		const FString LabelName = TagValue(*It, TEXT("label:"));
-		// volumes carry no mesh - the label identifies them
-		if (MeshName.IsEmpty() && LabelName.IsEmpty()) continue;
+		// volumes carry no mesh - the label identifies them. A node carries
+		// neither: it IS the tree, and rebuilding it from a child's tags would
+		// lose the pivot it was given and drop empty nodes altogether.
+		if (!bNode && MeshName.IsEmpty() && LabelName.IsEmpty()) continue;
 		const FTransform Xf = It->GetActorTransform();
 		const FVector L = Xf.GetLocation(); const FRotator R = Xf.Rotator(); const FVector S = Xf.GetScale3D();
 		TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
 		O->SetStringField(TEXT("mesh"), MeshName);
+		if (bNode) O->SetBoolField(TEXT("node"), true);
 		O->SetStringField(TEXT("label"), TagValue(*It, TEXT("label:")));
 		// identity that must SURVIVE a reload: the actor's own name (links
 		// between placed objects reference it), its block tags, and which
@@ -1297,7 +1645,9 @@ static void SaveSession(const FString& Level, const FString& Name)
 			{
 				const FString TS = T.ToString();
 				if (TS.StartsWith(TEXT("blk:")) || TS.StartsWith(TEXT("blkid:")) || TS.StartsWith(TEXT("blkat:"))
-					|| TS.StartsWith(TEXT("gtree:")) || TS.StartsWith(TEXT("tint:")))   // authored tree + colour
+					|| TS.StartsWith(TEXT("gtree:")) || TS.StartsWith(TEXT("gpath:"))   // the authored tree
+					|| TS.StartsWith(TEXT("gord:"))                              // and its order
+					|| TS.StartsWith(TEXT("tint:")))                            // and its colour
 					RawTags.Add(MakeShared<FJsonValueString>(TS));
 			}
 			if (RawTags.Num()) O->SetArrayField(TEXT("tags"), RawTags);
@@ -1408,6 +1758,7 @@ static void LoadSession(const FString& Level, const FString& Name)
 	TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
 	if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid()) return;
 	ClearActorsWithTag(kPlacedTag);
+	ClearActorsWithTag(kGroupTag);
 	const TArray<TSharedPtr<FJsonValue>>* Objs = nullptr;
 	if (!Root->TryGetArrayField(TEXT("objects"), Objs)) return;
 	int n = 0;
@@ -1423,8 +1774,15 @@ static void LoadSession(const FString& Level, const FString& Name)
 		FVector Sc(O->GetNumberField(TEXT("sx")), O->GetNumberField(TEXT("sy")), O->GetNumberField(TEXT("sz")));
 
 		AActor* A = nullptr;
+		// a tree node: no model, no label, just the pivot it was given
+		bool bIsNode = false;
+		if (O->TryGetBoolField(TEXT("node"), bIsNode) && bIsNode)
+		{
+			if (UWorld* Wld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
+				A = BF6_SpawnTreeNode(Wld, FString(), FString(), FTransform(Rot, L, Sc));
+		}
 		const TArray<TSharedPtr<FJsonValue>>* LArr = nullptr;
-		if (O->TryGetArrayField(TEXT("loop"), LArr) && LArr->Num() >= 9)
+		if (!A && O->TryGetArrayField(TEXT("loop"), LArr) && LArr->Num() >= 9)
 		{
 			// a placed zone volume: rebuild it from its polygon
 			if (UWorld* Wld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
@@ -1446,12 +1804,12 @@ static void LoadSession(const FString& Level, const FString& Name)
 				}
 			}
 		}
-		else if (Label == TEXT("OBBVolume"))
+		else if (!A && Label == TEXT("OBBVolume"))
 		{
 			if (UWorld* Wld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
 				A = SpawnObbActor(Wld, FTransform(Rot, L, Sc), FVector(10, 10, 10));
 		}
-		else
+		else if (!A)   // a node is already made above
 			A = SpawnSdkModel(MeshName, Label, FTransform(Rot, L, Sc));
 
 		if (A)
@@ -1555,6 +1913,8 @@ static void LoadSession(const FString& Level, const FString& Name)
 			}
 		}
 	}
+	// the tree the creator authored, rebuilt from the keys the save kept
+	if (BF6_KeepGodotTree()) BF6_RebuildTreeFromTags();
 	UE_LOG(LogBF6, Warning, TEXT("Loaded %d object(s) from %s"), n, *Path);
 	UE_LOG(LogBF6, Warning, TEXT("  load: %.2fs total - %.2fs reading models (%d of %d already cached), %.2fs building meshes"),
 		FPlatformTime::Seconds() - LoadT0, GMeshDecodeSec, GMeshCacheHits, GMeshCalls, GMeshBuildSec);
@@ -1812,6 +2172,7 @@ private:
 		BF6_ClearContextFor(CurrentLevel);
 		ClearActorsWithTag(kPlacedTag);
 		ClearActorsWithTag(kBaseTag);
+		ClearActorsWithTag(kGroupTag);   // the nodes go with them, or they double up
 		LoadLevel(); ApplyFilter();
 		LoadBudgetMax();
 		if (ListView.IsValid()) ListView->RequestListRefresh();
@@ -2145,6 +2506,7 @@ private:
 		BF6_ClearContextFor(CurrentLevel);
 		ClearActorsWithTag(kPlacedTag);
 		ClearActorsWithTag(kBaseTag);
+		ClearActorsWithTag(kGroupTag);   // the nodes go with them, or they double up
 		LoadLevel(); ApplyFilter(); LoadBudgetMax();
 		if (ListView.IsValid()) ListView->RequestListRefresh();
 		LoadTerrainContext();
@@ -2219,6 +2581,8 @@ private:
 			spawned++;
 		}
 
+		const int32 Hooked = BF6_ApplyTreeMetadata(StaticArr);
+		if (Hooked > 0) UE_LOG(LogBF6, Warning, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
 		Notify(FString::Printf(TEXT("Imported %d objects into %s (%d volumes, %d markers). Editable now."), spawned, *CurrentLevel, volumes, markers));
 		UE_LOG(LogBF6, Warning, TEXT("Imported spatial.json: %d objects (%d volumes, %d markers) from %s"), spawned, volumes, markers, *File);
 		return FReply::Handled();
@@ -2549,10 +2913,73 @@ static void BF6_SaveCatOverrides()
 	FFileHelper::SaveStringToFile(Out, *BF6_CategoriesPath());
 }
 
+// Which shelf an object belongs on.
+//
+// Taking the TOP folder segment - what this used to do - buries the library:
+// 5,325 of the SDK's 11,142 types sit under "Generic" and another 1,339 under
+// "Uncategorized", so trees (Generic/Common/Nature) showed up as "Generic" and
+// cars (Generic/Common/Props) as "Props" or nothing at all. Creators went
+// looking for a tree by name and never found one.
+//
+// So: take the most MEANINGFUL folder anywhere in the path, ranked so a weak
+// label like Props cannot beat Nature or Military; then read the object's own
+// name, which is where DICE actually says what a thing is (Acacia, CarSedan,
+// WreckTank); and only then fall back. Measured over the whole catalogue this
+// empties Generic entirely and gives Vehicles 615 types and Nature 1,022 where
+// both had none and 345.
 static FString BF6_EffectiveCategory(const FPlaceableRow& r)
 {
 	if (const FString* O = GCatOverrides.Find(r.Type)) return *O;
-	return BF6_TopSeg(r.Directory);
+
+	// folder labels, strongest first
+	static const TCHAR* kFolders[][2] = {
+		{ TEXT("nature"), TEXT("Nature") },     { TEXT("vehicles"), TEXT("Vehicles") },
+		{ TEXT("military"), TEXT("Military") }, { TEXT("industrial"), TEXT("Industrial") },
+		{ TEXT("roads"), TEXT("Roads") },       { TEXT("lightfixtures"), TEXT("Lighting") },
+		{ TEXT("architecture"), TEXT("Architecture") }, { TEXT("backdrop"), TEXT("Backdrop") },
+		{ TEXT("audio"), TEXT("Audio") },       { TEXT("fx"), TEXT("FX") },
+		{ TEXT("gameplay"), TEXT("Gameplay") } };
+
+	TArray<FString> Segs;
+	r.Directory.ParseIntoArray(Segs, TEXT("/"));
+	for (const TCHAR** Pair : kFolders)
+		for (const FString& S : Segs)
+			if (S.Equals(Pair[0], ESearchCase::IgnoreCase)) return Pair[1];
+
+	// then what the object calls itself
+	const FString T = r.Type.ToLower();
+	auto Has = [&T](std::initializer_list<const TCHAR*> Words)
+	{
+		for (const TCHAR* W : Words) if (T.Contains(W)) return true;
+		return false;
+	};
+	if (Has({ TEXT("car"), TEXT("sedan"), TEXT("suv"), TEXT("truck"), TEXT("van"), TEXT("bus"),
+		TEXT("taxi"), TEXT("police"), TEXT("ambulance"), TEXT("forklift"), TEXT("tractor"),
+		TEXT("trailer"), TEXT("motorcycle"), TEXT("scooter"), TEXT("boat"), TEXT("ship"),
+		TEXT("heli"), TEXT("airplane"), TEXT("jet"), TEXT("tank"), TEXT("apc"), TEXT("humvee"),
+		TEXT("jeep"), TEXT("pickup") })) return TEXT("Vehicles");
+	if (Has({ TEXT("tree"), TEXT("acacia"), TEXT("birch"), TEXT("pine"), TEXT("palm"), TEXT("oak"),
+		TEXT("maple"), TEXT("willow"), TEXT("cypress"), TEXT("poplar"), TEXT("eucalyptus"),
+		TEXT("juniper"), TEXT("cedar"), TEXT("spruce"), TEXT("bush"), TEXT("shrub"), TEXT("grass"),
+		TEXT("fern"), TEXT("rock"), TEXT("boulder"), TEXT("cliff"), TEXT("stump"), TEXT("hedge"),
+		TEXT("flower"), TEXT("plant"), TEXT("vine"), TEXT("ivy"), TEXT("cactus"), TEXT("reed"),
+		TEXT("branch"), TEXT("moss"), TEXT("mushroom"), TEXT("coral") })) return TEXT("Nature");
+	if (Has({ TEXT("sign"), TEXT("billboard"), TEXT("banner"), TEXT("poster"), TEXT("ads") })) return TEXT("Signs");
+	if (Has({ TEXT("fence"), TEXT("railing"), TEXT("barrier"), TEXT("barbedwire"), TEXT("bollard"),
+		TEXT("gate"), TEXT("wall") })) return TEXT("Barriers");
+	if (Has({ TEXT("door"), TEXT("window"), TEXT("shutter"), TEXT("hatch") })) return TEXT("Doors & Windows");
+	if (Has({ TEXT("debris"), TEXT("rubble"), TEXT("wreck"), TEXT("broken"), TEXT("destroyed"),
+		TEXT("ruin") })) return TEXT("Debris");
+	if (Has({ TEXT("pipe"), TEXT("duct"), TEXT("cabletray"), TEXT("vent") })) return TEXT("Pipes & Ducts");
+	if (Has({ TEXT("container"), TEXT("crate"), TEXT("barrel"), TEXT("dumpster"), TEXT("pallet"),
+		TEXT("sack") })) return TEXT("Containers");
+	if (Has({ TEXT("chair"), TEXT("table"), TEXT("desk"), TEXT("sofa"), TEXT("couch"), TEXT("bed"),
+		TEXT("shelf"), TEXT("cabinet"), TEXT("stall"), TEXT("market") })) return TEXT("Furniture");
+
+	for (const FString& S : Segs)
+		if (S.Equals(TEXT("props"), ESearchCase::IgnoreCase)) return TEXT("Props");
+	const FString Top = BF6_TopSeg(r.Directory);
+	return (Top.IsEmpty() || Top.Equals(TEXT("Generic"), ESearchCase::IgnoreCase)) ? TEXT("Uncategorized") : Top;
 }
 
 // ---- auto-organized outliner ----
@@ -2629,11 +3056,188 @@ static FString BF6_FolderForActor(AActor* A)
 	return Cat.IsEmpty() ? TEXT("BF6 Build/Props") : (TEXT("BF6 Build/") + Cat);
 }
 
+// ---- the authored tree, as real attachment ----
+// Every imported node carries its own Godot key (gpath:) and its parent's
+// (gtree:). One pass over those tags rebuilds the whole tree, whatever the
+// import came from - a .tscn, a base setup, or a session save reopened.
+static AActor* BF6_SpawnTreeNode(UWorld* W, const FString& Key, const FString& ParentKey,
+	const FTransform& Xf, int32 Order)
+{
+	if (!W) return nullptr;
+	AActor* A = W->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+	if (!A) return nullptr;
+	// A node holds no geometry, so without a marker it is invisible in the
+	// viewport and can only be found in the tree. Same small cube the volume
+	// points use, drawn through walls, in cyan so it reads as structure rather
+	// than something placeable.
+	UProceduralMeshComponent* Root = NewObject<UProceduralMeshComponent>(A, TEXT("Node"));
+	A->SetRootComponent(Root);
+	Root->RegisterComponent();
+	Root->SetFlags(RF_Transactional);   // the gizmo needs this to undo a move
+	BuildHandleCube(Root);
+	Root->SetDepthPriorityGroup(SDPG_Foreground);
+	Root->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	if (UMaterialInterface* Base = BF6_Material(TEXT("M_NeonHighlight")))
+		if (UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(Base, Root))
+		{
+			Mid->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.f, 0.85f, 1.f));
+			Mid->SetVectorParameterValue(TEXT("Tint"),  FLinearColor(0.f, 0.85f, 1.f));
+			Root->SetMaterial(0, Mid);
+		}
+	A->SetActorTransform(Xf);
+	A->Tags.Add(kGroupTag);
+	A->Tags.Add(FName(*(FString(TEXT("gpath:")) + Key)));
+	if (!ParentKey.IsEmpty() && ParentKey != TEXT("."))
+		A->Tags.Add(FName(*(FString(TEXT("gtree:")) + ParentKey)));
+	if (Order != MAX_int32) A->Tags.Add(FName(*FString::Printf(TEXT("gord:%d"), Order)));
+	A->SetFlags(RF_Transient);
+	return A;
+}
+
+// Everything hanging off this actor, the actor itself first.
+static void BF6_CollectSubtree(AActor* Root, TArray<AActor*>& Out)
+{
+	if (!Root || Out.Contains(Root)) return;
+	Out.Add(Root);
+	TArray<AActor*> Kids;
+	Root->GetAttachedActors(Kids);
+	for (AActor* K : Kids) BF6_CollectSubtree(K, Out);
+}
+
+// Hook every child onto its parent. World transforms are already correct
+// (the importers accumulate the Godot parent chain themselves), so the
+// attachment keeps them and only takes over from here on.
+static int32 BF6_RebuildTreeFromTags()
+{
+	ON_SCOPE_EXIT{ BF6Api::RefreshSceneTree(); };   // rows for a batch just re-parented
+	if (!GEditor) return 0;
+	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+	TMap<FString, AActor*> ByKey;
+	TArray<AActor*> Kids;
+	for (TActorIterator<AActor> It(W); It; ++It)
+	{
+		const FString K = TagValue(*It, TEXT("gpath:"));
+		if (!K.IsEmpty()) ByKey.Add(K, *It);
+		if (!TagValue(*It, TEXT("gtree:")).IsEmpty()) Kids.Add(*It);
+	}
+	// A parent with no actor of its own is Godot's empty node, and it has to
+	// BECOME one - otherwise the child has nothing to hang off and falls back
+	// to a folder, which is what filled the outliner with folders where the SDK
+	// shows nodes. Path-style keys carry their own ancestry, so the whole chain
+	// gets built from the key itself.
+	TFunction<AActor*(const FString&, int32)> Ensure = [&](const FString& Key, int32 Depth) -> AActor*
+	{
+		if (Key.IsEmpty() || Key == TEXT(".")) return nullptr;
+		if (AActor** Found = ByKey.Find(Key)) return *Found;
+		if (Depth > 32) return nullptr;   // a malformed key cannot spin forever
+		FString ParentKey, Leaf = Key;
+		int32 Slash;
+		if (Key.FindLastChar('/', Slash)) { ParentKey = Key.Left(Slash); Leaf = Key.RightChop(Slash + 1); }
+		AActor* Made = BF6_SpawnTreeNode(W, Key, ParentKey, FTransform::Identity);
+		if (!Made) return nullptr;
+		BF6_SetPrettyLabel(Made, Leaf);
+		ByKey.Add(Key, Made);
+		if (AActor* Up = Ensure(ParentKey, Depth + 1))
+			Made->AttachToActor(Up, FAttachmentTransformRules::KeepWorldTransform);
+		return Made;
+	};
+
+	// folders left by earlier sessions: the tree replaces them
+	if (BF6_KeepGodotTree())
+	{
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (!It->GetFolderPath().IsNone()) It->SetFolderPath(NAME_None);
+		TArray<FFolder> Empties;
+		FActorFolders::Get().ForEachFolder(*W, [&Empties](const FFolder& F){ Empties.Add(F); return true; });
+		for (const FFolder& F : Empties) FActorFolders::Get().DeleteFolder(*W, F);
+	}
+
+	int32 n = 0;
+	for (int32 i = 0; i < Kids.Num(); i++)
+	{
+		AActor* A = Kids[i];
+		if (!IsValid(A)) continue;
+		// Only adopt orphans. An actor that already has a parent has been placed
+		// there - by the import, or by the creator dragging it in the tree - and
+		// re-attaching it from the imported tags would drag it back every load.
+		if (A->GetAttachParentActor()) continue;
+		AActor* P = Ensure(TagValue(A, TEXT("gtree:")), 0);
+		if (!P || P == A) continue;
+		// a cycle would take the attach call down with it
+		bool bLoop = false;
+		for (AActor* Up = P; Up; Up = Up->GetAttachParentActor())
+			if (Up == A) { bLoop = true; break; }
+		if (bLoop) continue;
+		if (A->GetAttachParentActor() == P) continue;
+		A->AttachToActor(P, FAttachmentTransformRules::KeepWorldTransform);
+		n++;
+	}
+	return n;
+}
+
+// Put the tree back on a freshly imported spatial file. The format carries
+// no hierarchy of its own, so ours travels as Static metadata (see the
+// exporter); a file from anywhere else simply has none and imports flat.
+static int32 BF6_ApplyTreeMetadata(const TArray<TSharedPtr<FJsonValue>>* StaticArr)
+{
+	if (!StaticArr || !GEditor) return 0;
+	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+	FString Raw;
+	for (const TSharedPtr<FJsonValue>& v : *StaticArr)
+		if (const TSharedPtr<FJsonObject> o = v->AsObject())
+			if (o->TryGetStringField(TEXT("metadata/bf6_tree"), Raw) && !Raw.IsEmpty()) break;
+	if (Raw.IsEmpty()) return 0;
+	TArray<TSharedPtr<FJsonValue>> Arr;
+	TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(Raw);
+	if (!FJsonSerializer::Deserialize(R, Arr)) return 0;
+
+	struct FTreeRow { FString Parent; bool bGroup = false; FTransform Xf; };
+	TMap<FString, FTreeRow> Rows;
+	for (const TSharedPtr<FJsonValue>& v : Arr)
+	{
+		const TSharedPtr<FJsonObject> o = v->AsObject(); if (!o.IsValid()) continue;
+		FString N; if (!o->TryGetStringField(TEXT("n"), N) || N.IsEmpty()) continue;
+		FTreeRow Row;
+		o->TryGetStringField(TEXT("p"), Row.Parent);
+		o->TryGetBoolField(TEXT("g"), Row.bGroup);
+		if (Row.bGroup)
+			Row.Xf = FTransform(
+				FRotator(o->GetNumberField(TEXT("rp")), o->GetNumberField(TEXT("ry")), o->GetNumberField(TEXT("rr"))),
+				FVector(o->GetNumberField(TEXT("x")), o->GetNumberField(TEXT("y")), o->GetNumberField(TEXT("z"))));
+		Rows.Add(N, Row);
+	}
+
+	// the objects that came in, keyed the way the file names them
+	for (TActorIterator<AActor> It(W); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
+		FString Nm = A->GetActorLabel(); Nm.RemoveFromStart(TEXT("BF6_"));
+		if (TagValue(A, TEXT("gpath:")).IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("gpath:")) + Nm)));
+		if (const FTreeRow* Row = Rows.Find(Nm))
+			if (!Row->Parent.IsEmpty() && TagValue(A, TEXT("gtree:")).IsEmpty())
+				A->Tags.Add(FName(*(FString(TEXT("gtree:")) + Row->Parent)));
+	}
+	// and the empty parents, which have no object of their own in the file
+	for (const TPair<FString, FTreeRow>& KV : Rows)
+	{
+		if (!KV.Value.bGroup) continue;
+		if (AActor* GA = BF6_SpawnTreeNode(W, KV.Key, KV.Value.Parent, KV.Value.Xf))
+			BF6_SetPrettyLabel(GA, KV.Key);
+	}
+	return BF6_RebuildTreeFromTags();
+}
+
 // File one actor into its computed folder (no-op for handles/context).
 static void BF6_FileActor(AActor* A)
 {
 	if (!A || A->Tags.Contains(kHandleTag) || A->Tags.Contains(kContextTag)) return;
-	if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) return;
+	if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kGroupTag)) return;
+	// an attached actor shows under its parent; a folder on it would be ignored
+	if (A->GetAttachParentActor()) return;
+	// Keeping the authored tree means the tree IS the organisation, as it is in
+	// the SDK. Folders alongside it would be a second, conflicting hierarchy.
+	if (BF6_KeepGodotTree()) { A->SetFolderPath(NAME_None); return; }
 	A->SetFolderPath(FName(*BF6_FolderForActor(A)));
 }
 
@@ -2784,9 +3388,27 @@ static void BF6_LoadBaseSetup(const FString& Level)
 	const TArray<TSharedPtr<FJsonValue>>* Objs = nullptr;
 	if (!Root->TryGetArrayField(TEXT("objects"), Objs)) return;
 
+	// "." is Godot's scene root - the node named after the map. Treating it as
+	// "no parent" left every top-level object loose at the root of the tree
+	// rather than under the map, which is not how the SDK shows it.
+	FString RootName;
+	TMap<FString, int32> OrderOf;
 	TMap<FString, FVector> LocalPos; TMap<FString, FString> ParentOf;
 	auto ReadPos = [](const TSharedPtr<FJsonObject>& O){ FVector p(0,0,0); const TArray<TSharedPtr<FJsonValue>>* a=nullptr; if(O->TryGetArrayField(TEXT("pos"),a)&&a->Num()>=3){p.X=(*a)[0]->AsNumber();p.Y=(*a)[1]->AsNumber();p.Z=(*a)[2]->AsNumber();} return p; };
-	for (const auto& v : *Objs){ const TSharedPtr<FJsonObject> o=v->AsObject(); if(!o.IsValid())continue; const FString nm=o->GetStringField(TEXT("name")); LocalPos.Add(nm,ReadPos(o)); FString par; o->TryGetStringField(TEXT("parent"),par); ParentOf.Add(nm,par); }
+	{
+		int32 Idx = 0;
+		for (const auto& v : *Objs)
+		{
+			const TSharedPtr<FJsonObject> o = v->AsObject(); if (!o.IsValid()) continue;
+			const FString nm = o->GetStringField(TEXT("name"));
+			LocalPos.Add(nm, ReadPos(o));
+			FString par; o->TryGetStringField(TEXT("parent"), par);
+			ParentOf.Add(nm, par);
+			OrderOf.Add(nm, Idx++);   // the order the file lists them in
+			if (par.IsEmpty()) RootName = nm;
+		}
+	}
+	auto ResolveParent = [&RootName](const FString& Par) { return Par == TEXT(".") ? RootName : Par; };
 	auto ToUnreal = [](const FVector& G){ return FVector((float)G.X,(float)G.Z,(float)G.Y)*100.f; };
 
 	int32 oid = 0, spawned = 0;
@@ -2796,9 +3418,18 @@ static void BF6_LoadBaseSetup(const FString& Level)
 	{
 		const TSharedPtr<FJsonObject> o = v->AsObject(); if (!o.IsValid()) continue;
 		const FString nm = o->GetStringField(TEXT("name")); const FString ty = o->GetStringField(TEXT("type"));
-		// Godot pivots/cameras stay in the json for parent-chain math but
-		// never become actors (and never export - the site rejects them)
-		if (BF6_IsEngineNodeType(ty)) continue;
+		// Godot pivots and cameras never export - the site rejects them - but
+		// they ARE the tree the creator built, so each becomes a parent actor
+		// holding nothing but its transform, exactly as it does in the SDK.
+		if (BF6_IsEngineNodeType(ty))
+		{
+			double EB[9]; FVector eg;
+			BF6_GWorldOf(GMap, nm, EB, eg);
+			if (AActor* GA = BF6_SpawnTreeNode(World, nm, ResolveParent(ParentOf.FindRef(nm)),
+				FTransform(BF6_GRotFromB(EB), ToUnreal(eg), BF6_GScaleFromB(EB)), OrderOf.FindRef(nm)))
+				BF6_SetPrettyLabel(GA, nm);
+			continue;
+		}
 		// FULL parent-chain accumulation: rotation and scale ride pivots down
 		// (the deploy camera's aim lives on its Camera3D parent)
 		double WB[9]; FVector gw;
@@ -2830,8 +3461,15 @@ static void BF6_LoadBaseSetup(const FString& Level)
 		if (!A) continue;
 		if (!bVolume) A->SetActorTransform(FTransform(Rot, ToUnreal(gw), Scl));
 		A->SetActorLabel(nm);   // exact base name: saves match base objects by it
-		BF6_FileActor(A);
 		A->Tags.Add(kBaseTag);
+		// its place in the authored tree, hooked up once the whole file is in
+		A->Tags.Add(FName(*(FString(TEXT("gpath:")) + nm)));
+		A->Tags.Add(FName(*FString::Printf(TEXT("gord:%d"), OrderOf.FindRef(nm))));   // the order the file declares
+		{
+			const FString Par = ResolveParent(ParentOf.FindRef(nm));
+			if (!Par.IsEmpty() && Par != TEXT(".")) A->Tags.Add(FName(*(FString(TEXT("gtree:")) + Par)));
+		}
+		BF6_FileActor(A);
 		A->Tags.Add(FName(*(FString(TEXT("type:")) + ty)));
 		A->Tags.Add(FName(*(FString(TEXT("oid:")) + FString::FromInt(oid))));
 		// seed the object's shipped field values (Team, ObjId, timers, links) so
@@ -2887,6 +3525,13 @@ static void BF6_LoadBaseSetup(const FString& Level)
 		FBaseObj bo; bo.Type = ty; g_ss.BaseObjects.Add(oid, bo);
 		oid++; spawned++;
 	}
+	if (BF6_KeepGodotTree())
+	{
+		const int32 Hooked = BF6_RebuildTreeFromTags();
+		if (Hooked > 0) UE_LOG(LogBF6, Warning, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
+	}
+	// a fresh map: look at the play area rather than wherever the editor was
+	BF6Api::FrameCombatArea();
 	UE_LOG(LogBF6, Warning, TEXT("Base setup loaded for %s: %d objects."), *Level, spawned);
 }
 
@@ -2897,7 +3542,7 @@ static void BF6_OpenMapWorldImpl(const FString& Level, const FString& Save)
 	if (!GEditor) return;
 	BF6_EnsureBaseSetupFormat();
 	g_ss.CurrentLevel = Level; g_ss.CurrentSave = Save; g_ss.bEditing = !Save.IsEmpty();
-	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
+	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag); ClearActorsWithTag(kGroupTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
 	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh"));
 	if (!GContextReused) if (FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
@@ -3153,6 +3798,47 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 		// (corpus-proven: Godot leaks metadata/_edit_group_ into uploads), and
 		// our importer reads it back so round-trips keep the user's name
 		if (!g_ss.CurrentSave.IsEmpty()) e->SetStringField(TEXT("metadata/bf6_save"), g_ss.CurrentSave);
+		// The tree rides along the same way. The spatial format is a flat list -
+		// it has no parent field and never will - so an export that did not carry
+		// this would come back as loose objects however carefully it was built.
+		// Empty parents have no entry of their own, so their transform travels
+		// here too; names go through ShortName so a minified file still matches.
+		{
+			TArray<TSharedPtr<FJsonValue>> TreeArr;
+			for (TActorIterator<AActor> It(World); It; ++It)
+			{
+				AActor* A = *It;
+				const bool bGroup = A->Tags.Contains(kGroupTag);
+				if (!bGroup && !A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
+				AActor* Par = A->GetAttachParentActor();
+				if (!Par && !bGroup) continue;   // a loose object needs no entry
+				FString Nm = A->GetActorLabel(); Nm.RemoveFromStart(TEXT("BF6_"));
+				TSharedPtr<FJsonObject> t = MakeShared<FJsonObject>();
+				t->SetStringField(TEXT("n"), ShortName(Nm));
+				if (Par)
+				{
+					FString PN = Par->GetActorLabel(); PN.RemoveFromStart(TEXT("BF6_"));
+					t->SetStringField(TEXT("p"), ShortName(PN));
+				}
+				if (bGroup)
+				{
+					t->SetBoolField(TEXT("g"), true);
+					const FTransform Xf = A->GetActorTransform();
+					const FVector L = Xf.GetLocation();
+					const FRotator R = Xf.Rotator();
+					t->SetNumberField(TEXT("x"), L.X); t->SetNumberField(TEXT("y"), L.Y); t->SetNumberField(TEXT("z"), L.Z);
+					t->SetNumberField(TEXT("rp"), R.Pitch); t->SetNumberField(TEXT("ry"), R.Yaw); t->SetNumberField(TEXT("rr"), R.Roll);
+				}
+				TreeArr.Add(MakeShared<FJsonValueObject>(t));
+			}
+			if (TreeArr.Num() > 0)
+			{
+				FString TreeStr;
+				TSharedRef<TJsonWriter<>> TW = TJsonWriterFactory<>::Create(&TreeStr);
+				FJsonSerializer::Serialize(TreeArr, TW);
+				e->SetStringField(TEXT("metadata/bf6_tree"), TreeStr);
+			}
+		}
 		e->SetObjectField(TEXT("right"),Vec(1,0,0)); e->SetObjectField(TEXT("up"),Vec(0,1,0)); e->SetObjectField(TEXT("front"),Vec(0,0,1)); e->SetObjectField(TEXT("position"),Vec(0,0,0));
 		e->SetStringField(TEXT("id"),FString::Printf(TEXT("Static/%s"),*snm));
 		Static.Add(MakeShared<FJsonValueObject>(e));
@@ -3216,13 +3902,29 @@ static void BF6_ExportSpatial(bool bMinify)
 // NodePath links resolve to our name-based link tags, and enum ints become
 // their selection strings.
 // ============================================================================
+// Reads one attribute out of a .tscn line. The match has to START a word:
+// searching for id=" would otherwise find it inside uid=", which is how every
+// PolygonVolume in a scene came to be dropped on import - the resource
+// registered under "uid://jv31so3xcr7p" instead of "5_6gimq", the nodes that
+// referenced it resolved to no type at all, and 25 combat volumes, HQ areas and
+// capture areas vanished without a word. Godot writes uid= on anything that has
+// one, so this is not a one-off.
 static FString BF6_TscnAttr(const FString& Line, const TCHAR* Key)
 {
-	int32 i = Line.Find(Key, ESearchCase::CaseSensitive);
-	if (i == INDEX_NONE) return FString();
-	i += FCString::Strlen(Key);
-	const int32 e = Line.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, i);
-	return e == INDEX_NONE ? FString() : Line.Mid(i, e - i);
+	const int32 KeyLen = FCString::Strlen(Key);
+	for (int32 i = Line.Find(Key, ESearchCase::CaseSensitive); i != INDEX_NONE;
+		i = Line.Find(Key, ESearchCase::CaseSensitive, ESearchDir::FromStart, i + 1))
+	{
+		if (i > 0)
+		{
+			const TCHAR Before = Line[i - 1];
+			if (FChar::IsAlnum(Before) || Before == TEXT('_')) continue;   // uid= is not id=
+		}
+		const int32 s = i + KeyLen;
+		const int32 e = Line.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, s);
+		return e == INDEX_NONE ? FString() : Line.Mid(s, e - s);
+	}
+	return FString();
 }
 
 static bool BF6_TscnNums(const FString& S, TArray<double>& Out)
@@ -3414,7 +4116,7 @@ static bool BF6_ImportTscnFile(const FString& File)
 	g_ss.CurrentLevel = Level;
 	g_ss.CurrentSave = FPaths::GetBaseFilename(File);
 	g_ss.bEditing = true;
-	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
+	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag); ClearActorsWithTag(kGroupTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
 	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh")); if (!GContextReused && FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
 	const FString AP = BF6_MapMeshPath(Level, TEXT("_assets.bf6mesh")); if (!GContextReused && FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
@@ -3437,8 +4139,25 @@ static bool BF6_ImportTscnFile(const FString& File)
 	for (const TSharedPtr<FTNode>& N : Nodes)
 	{
 		if (N->bSkip || N->Type.IsEmpty()) continue;
-		// engine-class nodes that came through without instance/script
-		if (N->Type == TEXT("Node3D") || N->Type == TEXT("Camera3D") || N->Type == TEXT("AnimationPlayer") || N->Type == TEXT("Path3D")) continue;
+		// Engine-class nodes carry no object of their own, but they are the
+		// tree: this scene is 92 of them holding 1,962 instances. Each becomes
+		// a parent node at its own accumulated transform, so moving one moves
+		// its children about the pivot the creator built it on, as in the SDK.
+		if (N->Type == TEXT("Node3D") || N->Type == TEXT("Camera3D")
+			|| N->Type == TEXT("AnimationPlayer") || N->Type == TEXT("Path3D"))
+		{
+			const FVector Rg((float)N->WM[0], (float)N->WM[3], (float)N->WM[6]);
+			const FVector Ug((float)N->WM[1], (float)N->WM[4], (float)N->WM[7]);
+			const FVector Fg((float)N->WM[2], (float)N->WM[5], (float)N->WM[8]);
+			auto SwapG = [](const FVector& v) { return FVector(v.X, v.Z, v.Y); };
+			const FVector NScale(FMath::Max(Rg.Size(), 0.0001f), FMath::Max(Fg.Size(), 0.0001f), FMath::Max(Ug.Size(), 0.0001f));
+			const FVector NAx = SwapG(Rg).GetSafeNormal(), NAy = SwapG(Fg).GetSafeNormal(), NAz = SwapG(Ug).GetSafeNormal();
+			const FTransform NXf(FMatrix(NAx, NAy, NAz, FVector::ZeroVector).Rotator(),
+				ToUnreal(N->WO[0], N->WO[1], N->WO[2]), NScale);
+			if (AActor* GA = BF6_SpawnTreeNode(World, N->Path, N->ParentPath, NXf))
+				BF6_SetPrettyLabel(GA, N->Name);
+			continue;
+		}
 
 		FString Nm = N->Name;
 		for (int32 sfx = 2; UsedNames.Contains(Nm); sfx++) Nm = FString::Printf(TEXT("%s_%d"), *N->Name, sfx);
@@ -3502,6 +4221,11 @@ static bool BF6_ImportTscnFile(const FString& File)
 		// Remember the tree the creator actually built. ParentPath is the Godot
 		// folder path ("FinalAssault/FinalArea1/.../Sidewalk"); "." means the
 		// scene root, which has no folder of its own.
+		A->Tags.Add(FName(*(FString(TEXT("gpath:")) + N->Path)));
+		// Godot lists children in the order the scene declares them, not by name.
+		// Keeping each node's position in the file is the only way to show the
+		// same order back, since nothing about the object implies it.
+		A->Tags.Add(FName(*FString::Printf(TEXT("gord:%d"), Nodes.IndexOfByKey(N))));
 		if (!N->ParentPath.IsEmpty() && N->ParentPath != TEXT("."))
 			A->Tags.Add(FName(*(FString(TEXT("gtree:")) + N->ParentPath)));
 		BF6_SetPrettyLabel(A, Nm);
@@ -3591,6 +4315,11 @@ static bool BF6_ImportTscnFile(const FString& File)
 		for (TActorIterator<AActor> It(World); It; ++It) BF6_FileActor(*It);   // apply the pick now
 	}
 	BF6_RecomputeBudget();
+	if (BF6_KeepGodotTree())
+	{
+		const int32 Hooked = BF6_RebuildTreeFromTags();
+		if (Hooked > 0) UE_LOG(LogBF6, Warning, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
+	}
 	Notify(FString::Printf(TEXT("Imported Godot scene '%s' onto %s: %d objects%s. Editable now."),
 		*g_ss.CurrentSave, *Level, spawned,
 		skippedTypes > 0 ? *FString::Printf(TEXT(" (%d had no model and were skipped)"), skippedTypes) : TEXT("")));
@@ -3642,7 +4371,7 @@ static bool BF6_ImportSpatialDialog()
 				if (o->TryGetStringField(TEXT("metadata/bf6_save"), SaveName) && !SaveName.IsEmpty()) break;
 	if (SaveName.IsEmpty()) SaveName = FPaths::GetBaseFilename(File).Replace(TEXT(".spatial"), TEXT(""));
 	g_ss.CurrentLevel = Level; g_ss.CurrentSave = SaveName; g_ss.bEditing = true;
-	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
+	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag); ClearActorsWithTag(kGroupTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
 	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh")); if (!GContextReused && FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
 	const FString AP = BF6_MapMeshPath(Level, TEXT("_assets.bf6mesh")); if (!GContextReused && FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
@@ -3750,6 +4479,8 @@ static bool BF6_ImportSpatialDialog()
 		spawned++;
 	}
 	BF6_RecomputeBudget();
+	const int32 Hooked = BF6_ApplyTreeMetadata(StaticArr);
+	if (Hooked > 0) UE_LOG(LogBF6, Warning, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
 	Notify(FString::Printf(TEXT("Imported '%s' onto %s: %d objects. Editable now."), *g_ss.CurrentSave, *Level, spawned));
 	return true;
 }
@@ -4472,6 +5203,7 @@ static void BF6_ReportUpdateOutcome()
 // defined after the namespace (it's the post-undo geometry resync); the focus
 // edit's revert path reuses it to rebuild zone walls from restored tags
 static void BF6_RepairAfterUndo();
+static void BF6_RebuildActorGeometry(AActor* A);   // refill one mesh from disk/cache
 
 // ---- BF6Api: data + action surface consumed by the Build Mode widgets ----
 namespace BF6Api
@@ -5555,6 +6287,9 @@ namespace BF6Api
 		{
 			AActor* A = Cast<AActor>(Sel->GetSelectedObject(i));
 			if (!A) continue;
+			// a node has no type of its own, but the radial still has to open on it:
+			// carrying or multiplying one takes its whole subtree
+			if (A->Tags.Contains(kGroupTag)) { OutType = TEXT("Node3D"); return A; }
 			if (!A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kPlacedTag)) continue;
 			FString Ty = TagValue(A, TEXT("label:"));
 			if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("type:"));
@@ -6264,6 +6999,32 @@ namespace BF6Api
 	// Whether THIS selection is already showing collision. The pill toggles on
 	// the selection, not on the map: picking a different object should offer to
 	// show that one, not to hide the one you were looking at before.
+	// Selecting a NODE means the things under it. A node holds nothing of its own
+	// but a marker, so colouring it or asking what it collides with would
+	// otherwise act on a cube nobody cares about. Every per-object tool takes its
+	// targets from here, so a parent behaves like the thing it stands for.
+	void SelectionTargets(TArray<AActor*>& Out)
+	{
+		Out.Reset();
+		if (!GEditor) return;
+		USelection* S = GEditor->GetSelectedActors();
+		TSet<AActor*> Set;
+		for (int32 i = 0; S && i < S->Num(); i++)
+		{
+			AActor* A = Cast<AActor>(S->GetSelectedObject(i));
+			if (!A) continue;
+			if (A->Tags.Contains(kGroupTag))
+			{
+				TArray<AActor*> Sub;
+				BF6_CollectSubtree(A, Sub);
+				for (AActor* K : Sub)
+					if (!K->Tags.Contains(kGroupTag)) Set.Add(K);   // the contents, not the markers
+			}
+			else Set.Add(A);
+		}
+		Out = Set.Array();
+	}
+
 	bool SelectionHasCollisionOverlay()
 	{
 		if (!GEditor) return false;
@@ -6316,10 +7077,9 @@ namespace BF6Api
 		int32 n = 0;
 		if (Scope == 0)
 		{
-			USelection* S = GEditor->GetSelectedActors();
-			for (int32 i = 0; S && i < S->Num(); i++)
-				if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
-					if (BF6_ColVisAdd(A)) n++;
+			TArray<AActor*> Targets; SelectionTargets(Targets);
+			for (AActor* A : Targets)
+				if (BF6_ColVisAdd(A)) n++;
 		}
 		else
 		{
@@ -6437,11 +7197,10 @@ namespace BF6Api
 	int32 RecolorSelection(FLinearColor C)
 	{
 		if (!GEditor) return 0;
-		USelection* S = GEditor->GetSelectedActors(); if (!S) return 0;
+		TArray<AActor*> Targets; SelectionTargets(Targets);
 		int32 n = 0;
-		for (int32 i = 0; i < S->Num(); i++)
-			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
-				if (BF6_RecolorTarget(A)) { BF6_RecolorOne(A, C); n++; }
+		for (AActor* A : Targets)
+			if (BF6_RecolorTarget(A)) { BF6_RecolorOne(A, C); n++; }
 		BF6_Redraw();
 		return n;
 	}
@@ -7040,9 +7799,9 @@ namespace BF6Api
 	static bool BF6_GatherMultiUnit(FBF6MultiUnit& U)
 	{
 		if (!GEditor) return false;
-		USelection* S = GEditor->GetSelectedActors(); if (!S) return false;
-		for (int32 i = 0; i < S->Num(); i++)
-			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
+		// a node stands for what hangs off it, so multiplying one multiplies the lot
+		TArray<AActor*> Targets; SelectionTargets(Targets);
+		for (AActor* A : Targets)
 			{
 				if (Cast<AGroupActor>(A) || A->Tags.Contains(kHandleTag)) continue;
 				if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
@@ -7227,6 +7986,9 @@ namespace BF6Api
 	// if asked), every one dropped onto the ground by a vertical trace. Made
 	// for trees, rocks, and clutter. A spacing floor derived from the object's
 	// own footprint stops ugly clumping without adding a knob.
+	void CollectPlacedIn(const FBox2D& Area, TArray<AActor*>& Out);            // fwd (ray section)
+	bool GroundRay(const FVector& From, const FVector& To, const TArray<AActor*>* Placed, FVector& OutHit, FVector* OutNormal = nullptr);
+
 	int32 MultiplyScatter(int32 Count, double RadiusMetres, bool bVarySize)
 	{
 		FBF6MultiUnit U;
@@ -7246,6 +8008,11 @@ namespace BF6Api
 		FScopedTransaction Tx(FText::FromString(TEXT("Scatter")));
 		FCollisionQueryParams QP(FName(TEXT("BF6Scatter")), true);
 		for (AActor* M : U.Members) QP.AddIgnoredActor(M);
+		// what is already standing in the circle, so copies can sit on it
+		TArray<AActor*> Nearby;
+		CollectPlacedIn(FBox2D(FVector2D(U.Center.X - R, U.Center.Y - R),
+			FVector2D(U.Center.X + R, U.Center.Y + R)), Nearby);
+		Nearby.RemoveAll([&U](AActor* A){ return U.Members.Contains(A); });
 		TArray<FVector> Placed;
 		Placed.Add(U.Center);
 		TArray<AActor*> NewOnes;
@@ -7264,11 +8031,11 @@ namespace BF6Api
 			// scatter under a bridge stays under it), high-altitude second
 			// (hillsides), and with no hit at all the seed's height stands -
 			// nothing ever falls into the void on terrain-less spots
-			FHitResult Hit;
-			if (W->LineTraceSingleByChannel(Hit, P + FVector(0, 0, 500), P - FVector(0, 0, 50000), ECC_Visibility, QP))
-				P.Z = Hit.Location.Z;
-			else if (W->LineTraceSingleByChannel(Hit, P + FVector(0, 0, 50000), P - FVector(0, 0, 50000), ECC_Visibility, QP))
-				P.Z = Hit.Location.Z;
+			FVector Gnd;
+			if (GroundRay(P + FVector(0, 0, 500), P - FVector(0, 0, 50000), &Nearby, Gnd))
+				P.Z = Gnd.Z;
+			else if (GroundRay(P + FVector(0, 0, 50000), P - FVector(0, 0, 50000), &Nearby, Gnd))
+				P.Z = Gnd.Z;
 			const double Yaw = FMath::FRandRange(0.0, 360.0);
 			const double Scale = bVarySize ? FMath::FRandRange(0.85, 1.15) : 1.0;
 			if (BF6_SpawnUnitCopy(U, P, Yaw, Scale, QP, NewOnes) > 0)
@@ -7302,6 +8069,309 @@ namespace BF6Api
 		return false;
 	}
 
+	// Godot's other half of tree editing: making a node to hang things off. A new
+	// node lands under the selection if there is one, at the selection's centre so
+	// the pivot is where the creator is looking, and empty otherwise.
+	AActor* AddTreeNode()
+	{
+		// the base map is read only - nothing is added to it, from here or anywhere
+		if (!GEditor || !IsEditing()) return nullptr;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return nullptr;
+		TArray<AActor*> Sel;
+		USelection* S = GEditor->GetSelectedActors();
+		for (int32 i = 0; S && i < S->Num(); i++)
+			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i))) Sel.Add(A);
+
+		FVector Where = FVector::ZeroVector;
+		if (Sel.Num() > 0)
+		{
+			for (AActor* A : Sel) Where += A->GetActorLocation();
+			Where /= Sel.Num();
+		}
+		else if (FEditorViewportClient* VC = (FEditorViewportClient*)GEditor->GetActiveViewport()->GetClient())
+			Where = VC->GetViewLocation() + VC->GetViewRotation().Vector() * 1000.f;
+
+		FScopedTransaction Tx(FText::FromString(TEXT("Add Node")));
+		AActor* Node = BF6_SpawnTreeNode(W, FString(), FString(), FTransform(Where));
+		if (!Node) return nullptr;
+		BF6_SetPrettyLabel(Node, TEXT("Node3D"));
+		FString Key = Node->GetActorLabel(); Key.RemoveFromStart(TEXT("BF6_"));
+		Node->Tags.Add(FName(*(FString(TEXT("gpath:")) + Key)));
+		// under whatever the selection hangs off, so it lands beside its siblings
+		if (Sel.Num() > 0)
+			if (AActor* Up = Sel[0]->GetAttachParentActor())
+				Node->AttachToActor(Up, FAttachmentTransformRules::KeepWorldTransform);
+		GEditor->SelectNone(false, true);
+		GEditor->SelectActor(Node, true, true);
+		RefreshSceneTree();
+		return Node;
+	}
+
+	// Godot's 'reparent to new node': the selection keeps its world transforms and
+	// moves as one from here on.
+	int32 GroupSelectionUnderNode()
+	{
+		if (!GEditor || !IsEditing()) return 0;
+		TArray<AActor*> Sel;
+		USelection* S = GEditor->GetSelectedActors();
+		for (int32 i = 0; S && i < S->Num(); i++)
+			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i))) Sel.Add(A);
+		if (Sel.Num() == 0) return 0;
+		AActor* Node = AddTreeNode();
+		if (!Node) return 0;
+		for (AActor* A : Sel)
+			if (A != Node) A->AttachToActor(Node, FAttachmentTransformRules::KeepWorldTransform);
+		RefreshSceneTree();
+		return Sel.Num();
+	}
+
+	// Quick hides for the two things that clutter a viewport while building:
+	// zone walls and the node markers. Both stay ON, and this only hides them in
+	// the viewport - nothing leaves the tree, and nothing changes on export.
+	static bool GVolumesShown = true, GNodesShown = true;
+
+	bool VolumesShown() { return GVolumesShown; }
+	bool NodesShown()   { return GNodesShown; }
+
+	int32 SetVolumesShown(bool bShow)
+	{
+		GVolumesShown = bShow;
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		int32 n = 0;
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (IsVolumeActor(*It) || IsObbActor(*It))
+			{ It->SetIsTemporarilyHiddenInEditor(!bShow); n++; }
+		BF6_Redraw();
+		return n;
+	}
+
+	int32 SetNodesShown(bool bShow)
+	{
+		GNodesShown = bShow;
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		int32 n = 0;
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (It->Tags.Contains(kGroupTag))
+			{
+				// hide the marker, not the subtree: children stay visible
+				if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(It->GetRootComponent()))
+					M->SetVisibility(bShow, false);
+				n++;
+			}
+		BF6_Redraw();
+		return n;
+	}
+
+	// ---- walking the map ----
+	// A creator cannot judge scale from a flying camera: a doorway, a wall, a
+	// crate all look right from above and wrong at eye level. This walks the
+	// editor camera at head height with gravity, standing on the same surfaces
+	// the placement ray uses - the map's terrain and assets, and anything placed.
+	// No PIE, no pawn: the whole tool stays live, so objects can still be placed
+	// and edited while walking around them.
+	struct FBF6Walk
+	{
+		bool bActive = false;
+		FVector SavedLoc = FVector::ZeroVector;
+		FRotator SavedRot = FRotator::ZeroRotator;
+		double VelZ = 0.0;
+		FVector Vel = FVector::ZeroVector;   // horizontal momentum
+		bool bGrounded = false;
+		bool bCrouch = false;
+		float SavedFov = 90.f;
+		double Eye = 172.0;          // measured off a spawn point when the map has one
+		TArray<AActor*> Nearby;      // placed objects worth testing, refreshed as we go
+		FVector NearbyAt = FVector::ZeroVector;
+	};
+	static FBF6Walk GWalk;
+
+	// A six foot soldier is 183 cm tall and sees from about 172, which is the
+	// fallback. Better is to MEASURE the map: a SpawnPoint marker is a soldier's
+	// height, so standing eye-to-eye with one is right whatever the scale turns
+	// out to be - and it self-corrects if the import scale is ever not 1:100.
+	static const double kEyeHeight = 172.0;
+
+	static double BF6_MeasureSoldierEye()
+	{
+		if (!GEditor) return kEyeHeight;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return kEyeHeight;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)) continue;
+			FString Ty = TagValue(*It, TEXT("label:"));
+			if (Ty.IsEmpty()) Ty = TagValue(*It, TEXT("type:"));
+			if (!Ty.Contains(TEXT("SpawnPoint"))) continue;
+			FVector Org, Ext;
+			It->GetActorBounds(false, Org, Ext);
+			const double H = Ext.Z * 2.0;
+			if (H > 50.0 && H < 600.0)
+			{
+				UE_LOG(LogBF6, Log, TEXT("walk: spawn point stands %.0f cm, eye at %.0f"), H, H - 12.0);
+				return H - 12.0;   // the eyes sit just below the top of the head
+			}
+		}
+		return kEyeHeight;
+	}
+	static const double kStepUp    = 45.0;    // curbs and low crates, not walls
+	static const double kRadius    = 35.0;    // shoulder room for the wall probes
+
+	bool IsWalking() { return GWalk.bActive; }
+
+	// the surface under a point, terrain/assets plus whatever is placed nearby
+	static bool BF6_WalkGround(const FVector& From, double Down, double& OutZ)
+	{
+		FVector Hit;
+		if (!GroundRay(From, From - FVector(0, 0, Down), &GWalk.Nearby, Hit)) return false;
+		OutZ = Hit.Z;
+		return true;
+	}
+
+	void ToggleWalk()
+	{
+		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+		if (!VC) return;
+		if (GWalk.bActive)
+		{
+			// Stand up where you walked to, not where you dropped in. Creators walk
+			// somewhere to look at it and then want to keep building THERE - being
+			// thrown back across the map on the way out undoes the whole point.
+			// Only the lens goes back to the editor's.
+			VC->ViewFOV = GWalk.SavedFov;
+			GWalk.bActive = false;
+			GWalk.Nearby.Reset();
+			GWalk.Vel = FVector::ZeroVector;
+			Notify(TEXT("Flying again, from where you were standing."));
+			BF6_Redraw();
+			return;
+		}
+		GWalk.SavedLoc = VC->GetViewLocation();
+		GWalk.SavedRot = VC->GetViewRotation();
+		GWalk.VelZ = 0.0;
+		GWalk.NearbyAt = FVector(BIG_NUMBER);
+		GWalk.bActive = true;
+		GWalk.Vel = FVector::ZeroVector;
+		GWalk.bGrounded = false;
+		GWalk.Eye = BF6_MeasureSoldierEye();
+		GWalk.SavedFov = VC->ViewFOV;
+		VC->ViewFOV = 90.f;   // an FPS lens, not the editor's 60
+		// No snapping to the ground: you drop in from wherever the camera was and
+		// FALL. Teleporting someone onto the terrain loses the very thing they
+		// came for - a sense of the height they were looking from - and falling
+		// off a roof to see how far it is down is worth having.
+		FRotator R = GWalk.SavedRot; R.Roll = 0.f;   // level the horizon, keep the aim
+		VC->SetViewRotation(R);
+		Notify(TEXT("On foot. Mouse looks, WASD walks, Shift runs, Ctrl crouches, Space jumps. F for the menu, Esc to fly again."));
+		BF6_Redraw();
+	}
+
+	// Move-and-slide, the shape every character controller uses (Rapier, Unity's
+	// CharacterController, Godot's move_and_slide): step the movement, and when
+	// it hits something, take the part of it that runs ALONG the surface and try
+	// again. Sliding on the surface normal is what stops a shoulder against a
+	// wall from halting you dead, and what lets a corner feel like a corner.
+	// Constants follow Unreal's own character defaults - 45 cm step, ~45 degree
+	// slope limit, 34 cm radius - so a map that walks right here walks right in
+	// game.
+	void WalkJump()
+	{
+		if (GWalk.bActive && GWalk.bGrounded) { GWalk.VelZ = 420.0; GWalk.bGrounded = false; }
+	}
+
+	void WalkCrouch(bool bDown) { GWalk.bCrouch = bDown; }
+
+	void TickWalk(float Dt, float Fwd, float Strafe, bool bRun)
+	{
+		if (!GWalk.bActive) return;
+		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+		if (!VC) { GWalk.bActive = false; return; }
+		Dt = FMath::Clamp(Dt, 0.001f, 0.1f);   // a stall must not fling the walker
+
+		FVector Pos = VC->GetViewLocation();
+		if (FVector::DistSquared(Pos, GWalk.NearbyAt) > FMath::Square(1500.0))
+		{
+			const FVector2D C(Pos.X, Pos.Y);
+			CollectPlacedIn(FBox2D(C - FVector2D(4000, 4000), C + FVector2D(4000, 4000)), GWalk.Nearby);
+			GWalk.NearbyAt = Pos;
+		}
+
+		const FRotator Yaw(0.f, VC->GetViewRotation().Yaw, 0.f);
+		FVector Want = Yaw.Vector() * Fwd + FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y) * Strafe;
+		if (!Want.IsNearlyZero()) Want.Normalize();
+		// Accelerate toward the wanted direction and coast when input stops, so
+		// starting, stopping and turning have weight. Instant velocity is what
+		// makes a walker feel like a spreadsheet rather than a game.
+		const double Top = (GWalk.bCrouch ? 140.0 : (bRun ? 600.0 : 260.0));
+		const FVector Target = Want * Top;
+		const double Accel = GWalk.bGrounded ? 2400.0 : 700.0;   // less control in the air
+		GWalk.Vel = FMath::VInterpConstantTo(GWalk.Vel, Target, Dt, Accel);
+		FVector Move = GWalk.Vel * Dt;
+
+		// ---- horizontal: slide along whatever we run into ----
+		const double Skin = 8.0;      // a small gap, or probes start inside the wall
+		for (int32 Pass = 0; Pass < 4 && !Move.IsNearlyZero(); Pass++)
+		{
+			const double Len = Move.Size();
+			const FVector Dir = Move / Len;
+			bool bHit = false;
+			FVector Normal(0, 0, 1);
+			// knees, chest and head: a doorway must pass, a railing must not
+			for (double H : { -GWalk.Eye + kStepUp + 10.0, -GWalk.Eye * 0.45, -10.0 })
+			{
+				const FVector From = Pos + FVector(0, 0, H);
+				FVector P, N;
+				if (!GroundRay(From, From + Dir * (Len + kRadius), &GWalk.Nearby, P, &N)) continue;
+				bHit = true; Normal = N; break;
+			}
+			if (!bHit) { Pos += Move; break; }
+			// keep the part of the move that runs along the surface
+			Normal.Z = 0.0;
+			if (Normal.IsNearlyZero()) break;
+			Normal.Normalize();
+			Move -= Normal * FVector::DotProduct(Move, Normal);
+			Move -= Dir * FMath::Min(Len, Skin);   // never end the frame inside it
+		}
+
+		// ---- vertical: gravity, ground, and the slope you are allowed to stand on ----
+		const bool bWasOnFloor = GWalk.bGrounded;   // snapping is only for walkers
+		GWalk.VelZ = FMath::Max(GWalk.VelZ - 980.0 * Dt, -3000.0);
+		Pos.Z += GWalk.VelZ * Dt;
+
+		const double Eye = GWalk.bCrouch ? GWalk.Eye * 0.58 : GWalk.Eye;
+		const FVector Probe(Pos.X, Pos.Y, Pos.Z - Eye + kStepUp);
+		FVector GroundPt, GroundN(0, 0, 1);
+		if (GroundRay(Probe, Probe - FVector(0, 0, 100000.0), &GWalk.Nearby, GroundPt, &GroundN))
+		{
+			const double Stand = GroundPt.Z + Eye;
+			const bool bWalkable = GroundN.Z >= 0.71;   // about 45 degrees, Unreal's limit
+			// Snap down only when we were ALREADY on the floor and the ground has
+			// dropped by less than a step - that is stairs and ramps. Applying it
+			// while airborne is what cut jumps short: the arc got yanked back to
+			// the ground the moment it started coming down.
+			const bool bSnap = bWasOnFloor && GWalk.VelZ <= 0.0 && (Pos.Z - Stand) <= kStepUp;
+			if (bWalkable && (Pos.Z <= Stand || bSnap))
+			{
+				Pos.Z = Stand;
+				GWalk.VelZ = 0.0;
+				GWalk.bGrounded = true;
+			}
+			else if (Pos.Z > Stand + 2.0) GWalk.bGrounded = false;
+			else if (!bWalkable && Pos.Z <= Stand)
+			{
+				// too steep to stand on: sit on it but slide down the face
+				Pos.Z = Stand;
+				GWalk.bGrounded = false;
+				const FVector Down = FVector(GroundN.X, GroundN.Y, 0).GetSafeNormal();
+				Pos += Down * (200.0 * Dt);
+				GWalk.VelZ = 0.0;
+			}
+		}
+
+		VC->SetViewLocation(Pos);
+		VC->Invalidate(false, false);
+	}
+
 	int32 SetOutlinerMode(bool bKeepTree)
 	{
 		BF6_SetKeepGodotTree(bKeepTree);
@@ -7314,9 +8384,16 @@ namespace BF6Api
 	{
 		if (!GEditor) return 0;
 		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		// Keeping the tree means real attachment; filing by category means the
+		// tree comes apart first, because an attached actor takes its place in
+		// the outliner from its parent and would ignore any folder we set.
+		if (BF6_KeepGodotTree()) return BF6_RebuildTreeFromTags();
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (It->GetAttachParentActor() && !TagValue(*It, TEXT("gtree:")).IsEmpty())
+				It->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 		int32 n = 0;
 		for (TActorIterator<AActor> It(W); It; ++It)
-			if (It->Tags.Contains(kPlacedTag) || It->Tags.Contains(kBaseTag))
+			if (It->Tags.Contains(kPlacedTag) || It->Tags.Contains(kBaseTag) || It->Tags.Contains(kGroupTag))
 			{ BF6_FileActor(*It); n++; }
 		return n;
 	}
@@ -7331,6 +8408,85 @@ namespace BF6Api
 	static TWeakObjectPtr<USceneCaptureComponent2D> GCamCap;
 	static TWeakObjectPtr<AActor> GCamTarget;
 	static UTextureRenderTarget2D* GCamRT = nullptr;   // rooted, tiny, reused
+
+	// ---- the camera an HQ or a flag carries ----
+	// These have no camera NODE: HQ_PlayerSpawner and CapturePoint each declare a
+	// dozen Camera* attributes (offset, look angle, FOV, look-at offset) and the
+	// game builds the deploy/objective camera from them. So a creator sets numbers
+	// and finds out what they framed only in game. Here those numbers are turned
+	// into a real transform, which the existing preview rig can look through.
+	// The type's own schema, not the actor's tags: an object only carries a p:
+	// tag for a value the scene OVERRODE, so an HQ that kept its default camera
+	// has none at all. GetActorProp does not fall back to the schema (whatever
+	// its comment says), so the default is fetched here.
+	static FString BF6_TypeOf(AActor* A)
+	{
+		if (!A) return FString();
+		FString Ty = TagValue(A, TEXT("label:"));
+		if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("type:"));
+		if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("mesh:"));
+		return Ty;
+	}
+
+	static FString BF6_PropOrDefault(AActor* A, const TCHAR* Key)
+	{
+		const FString Live = GetActorProp(A, Key);
+		if (!Live.IsEmpty()) return Live;
+		for (const FPropDef& D : PropsForType(BF6_TypeOf(A)))
+			if (D.Name == Key)
+			{
+				FString V = D.Default;
+				V.ReplaceInline(TEXT("["), TEXT("")); V.ReplaceInline(TEXT("]"), TEXT(""));
+				V.ReplaceInline(TEXT(" "), TEXT(""));
+				return V;
+			}
+		return FString();
+	}
+
+	static bool BF6_HasAttributeCamera(AActor* A)
+	{
+		if (!A) return false;
+		if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) return false;
+		for (const FPropDef& D : PropsForType(BF6_TypeOf(A)))
+			if (D.Name == TEXT("CameraOffsetPosition")) return true;
+		return false;
+	}
+
+	// "x,y,z" in Godot metres -> Unreal centimetres, with the axis swap
+	static FVector BF6_PropVec(AActor* A, const TCHAR* Key, const FVector& Fallback)
+	{
+		TArray<FString> P;
+		BF6_PropOrDefault(A, Key).ParseIntoArray(P, TEXT(","));
+		if (P.Num() != 3) return Fallback;
+		const double gx = FCString::Atod(*P[0]), gy = FCString::Atod(*P[1]), gz = FCString::Atod(*P[2]);
+		return FVector(gx, gz, gy) * 100.0;   // godot y is up
+	}
+
+	static double BF6_PropNum(AActor* A, const TCHAR* Key, double Fallback)
+	{
+		const FString V = BF6_PropOrDefault(A, Key);
+		return V.IsNumeric() ? FCString::Atod(*V) : Fallback;
+	}
+
+	// Where that camera sits and what it looks at. CameraLookAtPosition means it
+	// aims at the object (plus its look-at offset); otherwise CameraLookAngle is
+	// the pitch and CameraRotationDirection the yaw it holds.
+	bool AttributeCameraView(AActor* A, FVector& OutLoc, FRotator& OutRot, float& OutFov)
+	{
+		if (!BF6_HasAttributeCamera(A)) return false;
+		const FVector Base = A->GetActorLocation();
+		OutLoc = Base + BF6_PropVec(A, TEXT("CameraOffsetPosition"), FVector(1500, 1500, 4500));
+		const FVector LookAt = Base + BF6_PropVec(A, TEXT("CameraLookAtPositionOffset"), FVector::ZeroVector);
+		const FString Aim = BF6_PropOrDefault(A, TEXT("CameraLookAtPosition"));
+		const bool bAimAtObject = Aim.IsEmpty() || Aim.Equals(TEXT("true"), ESearchCase::IgnoreCase);
+		if (bAimAtObject && !(LookAt - OutLoc).IsNearlyZero())
+			OutRot = (LookAt - OutLoc).Rotation();
+		else
+			OutRot = FRotator(BF6_PropNum(A, TEXT("CameraLookAngle"), -30.0),
+				BF6_PropNum(A, TEXT("CameraRotationDirection"), 0.0), 0.0);
+		OutFov = (float)BF6_PropNum(A, TEXT("CameraFOV"), 70.0);
+		return true;
+	}
 
 	static bool BF6_IsCameraActor(AActor* A)
 	{
@@ -7390,7 +8546,7 @@ namespace BF6Api
 			if (USelection* Sel = GEditor->GetSelectedActors())
 				for (int32 i = 0; i < Sel->Num(); i++)
 					if (AActor* A = Cast<AActor>(Sel->GetSelectedObject(i)))
-						if (BF6_IsCameraActor(A)) { Cam = A; break; }
+						if (BF6_IsCameraActor(A) || BF6_HasAttributeCamera(A)) { Cam = A; break; }
 		GCamTarget = Cam;
 		if (Cam) BF6_EnsureCameraComponent(Cam);
 		if (!Cam)
@@ -7426,8 +8582,32 @@ namespace BF6Api
 			GCamRig = R;
 			GCamCap = C;
 		}
+		// The preview must show the MAP, not our editing aids. A node marker sits
+		// exactly where its node is - and a deploy camera hangs off a node - so the
+		// cyan cube was parked in front of the lens, drawn in the foreground pass,
+		// filling the shot. Markers and drag handles are hidden from the capture.
+		if (USceneCaptureComponent2D* Cap = GCamCap.Get())
+		{
+			Cap->HiddenActors.Reset();
+			if (UWorld* CW = GEditor->GetEditorWorldContext().World())
+				for (TActorIterator<AActor> It(CW); It; ++It)
+					if (It->Tags.Contains(kGroupTag) || It->Tags.Contains(kHandleTag))
+						Cap->HiddenActors.Add(*It);
+		}
 		if (AActor* R = GCamRig.Get())
-			R->SetActorLocationAndRotation(Cam->GetActorLocation(), BF6_CamViewQuat(Cam));
+		{
+			FVector L; FRotator Rt; float Fov = 75.f;
+			if (AttributeCameraView(Cam, L, Rt, Fov))
+			{
+				R->SetActorLocationAndRotation(L, Rt.Quaternion());
+				if (USceneCaptureComponent2D* C = GCamCap.Get()) C->FOVAngle = Fov;
+			}
+			else
+			{
+				R->SetActorLocationAndRotation(Cam->GetActorLocation(), BF6_CamViewQuat(Cam));
+				if (USceneCaptureComponent2D* C = GCamCap.Get()) C->FOVAngle = 75.f;
+			}
+		}
 	}
 
 	void SetCameraFromView()
@@ -7437,6 +8617,34 @@ namespace BF6Api
 		if (!Cam || !VC) return;
 		FScopedTransaction Tx(FText::FromString(TEXT("Set Camera From View")));
 		Cam->Modify();
+		// An HQ or a flag has no camera to move: its camera IS the numbers. So the
+		// editor's viewpoint is written back as the offset from the object, and the
+		// aim is expressed the way the object already asks for it - a look-at
+		// offset if it aims at itself, otherwise a pitch and a yaw.
+		if (BF6_HasAttributeCamera(Cam))
+		{
+			const FVector Base = Cam->GetActorLocation();
+			const FVector Off = VC->GetViewLocation() - Base;
+			auto ToGodot = [](const FVector& V){ return FString::Printf(TEXT("%.3f,%.3f,%.3f"), V.X / 100.0, V.Z / 100.0, V.Y / 100.0); };
+			SetActorProp(Cam, TEXT("CameraOffsetPosition"), ToGodot(Off));
+			const FString Aim = BF6_PropOrDefault(Cam, TEXT("CameraLookAtPosition"));
+			const bool bAimAtObject = Aim.IsEmpty() || Aim.Equals(TEXT("true"), ESearchCase::IgnoreCase);
+			if (bAimAtObject)
+			{
+				// where the view is actually pointed, at the object's own distance
+				const double Dist = FMath::Max(100.0, Off.Size());
+				const FVector Aimed = VC->GetViewLocation() + VC->GetViewRotation().Vector() * Dist;
+				SetActorProp(Cam, TEXT("CameraLookAtPositionOffset"), ToGodot(Aimed - Base));
+			}
+			else
+			{
+				const FRotator R = VC->GetViewRotation();
+				SetActorProp(Cam, TEXT("CameraLookAngle"), FString::SanitizeFloat(R.Pitch));
+				SetActorProp(Cam, TEXT("CameraRotationDirection"), FString::SanitizeFloat(R.Yaw));
+			}
+			Notify(TEXT("Camera offset and aim written from the view."));
+			return;
+		}
 		// inverse of BF6_CamViewQuat: the actor takes the editor's view,
 		// respecting the TYPE's facing convention (FixedCamera +Z, DeployCam -Z)
 		const FQuat ViewQ = VC->GetViewRotation().Quaternion();
@@ -7449,6 +8657,15 @@ namespace BF6Api
 		AActor* Cam = GCamTarget.Get();
 		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
 		if (!Cam || !VC) return;
+		FVector L; FRotator Rt; float Fov;
+		if (AttributeCameraView(Cam, L, Rt, Fov))
+		{
+			VC->SetViewLocation(L);
+			VC->SetViewRotation(Rt);
+			VC->ViewFOV = Fov;
+			VC->Invalidate();
+			return;
+		}
 		VC->SetViewLocation(Cam->GetActorLocation());
 		VC->SetViewRotation(BF6_CamViewQuat(Cam).Rotator());
 	}
@@ -7536,16 +8753,21 @@ namespace BF6Api
 		GScatRegion.Reset();
 	}
 
-	static double BF6_ScatterGroundZ(UWorld* W, FCollisionQueryParams& QP, double X, double Y)
+	// RefZ is the height to search DOWN from, and it matters: sampling every
+	// vertex of a drawn region from the seed unit's height starts the ray
+	// underneath the terrain wherever the region sits higher than the seed,
+	// and the first surface below it is then whatever lies under the map.
+	// Every caller passes the height it already knows for that spot.
+	static double BF6_ScatterGroundZ(double X, double Y, double RefZ, const TArray<AActor*>* Placed)
 	{
-		const FVector P(X, Y, GScat.U.Center.Z);
+		const FVector P(X, Y, RefZ);
 		if (GScat.bFollowTerrain)
 		{
-			FHitResult Hit;
-			if (W->LineTraceSingleByChannel(Hit, P + FVector(0, 0, 500), P - FVector(0, 0, 50000), ECC_Visibility, QP)) return Hit.Location.Z;
-			if (W->LineTraceSingleByChannel(Hit, P + FVector(0, 0, 50000), P - FVector(0, 0, 50000), ECC_Visibility, QP)) return Hit.Location.Z;
+			FVector Gnd;
+			if (GroundRay(P + FVector(0, 0, 500), P - FVector(0, 0, 50000), Placed, Gnd)) return Gnd.Z;
+			if (GroundRay(P + FVector(0, 0, 50000), P - FVector(0, 0, 50000), Placed, Gnd)) return Gnd.Z;
 		}
-		return GScat.U.Center.Z;
+		return RefZ;
 	}
 
 	static void BF6_ScatterRegionRebuild()
@@ -7560,10 +8782,16 @@ namespace BF6Api
 		const double Lift = 20.0;
 		const double R = FMath::Max(GScat.RadiusM, 1.f) * 100.0;
 		const FVector C = GScat.U.Center;
+		// what the creator has already built inside this area, gathered once
+		FBox2D Area(FVector2D(C.X - R, C.Y - R), FVector2D(C.X + R, C.Y + R));
+		if (GScat.Shape == 3) { Area = FBox2D(ForceInit); for (const FVector& Q : GScat.Poly) Area += FVector2D(Q.X, Q.Y); }
+		TArray<AActor*> Nearby;
+		CollectPlacedIn(Area, Nearby);
+		Nearby.RemoveAll([](AActor* A){ return GScat.U.Members.Contains(A); });
 		TArray<FVector> V; TArray<int32> T; TArray<FLinearColor> VC;
-		auto Vert = [&](double X, double Y)
+		auto Vert = [&](double X, double Y, double RefZ)
 		{
-			V.Add(FVector(X, Y, BF6_ScatterGroundZ(W, QP, X, Y) + Lift));
+			V.Add(FVector(X, Y, BF6_ScatterGroundZ(X, Y, RefZ, &Nearby) + Lift));
 			VC.Add(FLinearColor(0.15f, 0.45f, 1.f, 0.35f));
 		};
 		auto Quad = [&](int32 a, int32 b, int32 c2, int32 d)
@@ -7585,26 +8813,35 @@ namespace BF6Api
 					const double Y0 = BB.Min.Y + r * Step;
 					const double Ym = Y0 + Step * 0.5;
 					const double Y1 = Y0 + Step * 0.8;   // 20% gap = the hatch look
-					TArray<double> Xs;
+					// the outline was drawn ON the surface, so its own height is what
+					// each vertex should search down from - carried across with X
+					struct FCross { double X, Z; };
+					TArray<FCross> Xs;
 					for (int32 i = 0, j = GScat.Poly.Num() - 1; i < GScat.Poly.Num(); j = i++)
 					{
 						const FVector& A = GScat.Poly[i];
 						const FVector& B = GScat.Poly[j];
 						if ((A.Y > Ym) != (B.Y > Ym))
-							Xs.Add((B.X - A.X) * (Ym - A.Y) / (B.Y - A.Y) + A.X);
+						{
+							const double f = (Ym - A.Y) / (B.Y - A.Y);
+							Xs.Add({ (B.X - A.X) * f + A.X, FMath::Lerp(A.Z, B.Z, f) });
+						}
 					}
-					Xs.Sort();
+					Xs.Sort([](const FCross& L, const FCross& R){ return L.X < R.X; });
 					for (int32 s = 0; s + 1 < Xs.Num(); s += 2)
 					{
 						// subdivide long strips so they follow the terrain
-						const double X0 = Xs[s], X1 = Xs[s + 1];
+						const double X0 = Xs[s].X, X1 = Xs[s + 1].X;
+						const double Z0 = Xs[s].Z, Z1 = Xs[s + 1].Z;
 						const int32 SubN = FMath::Clamp((int32)((X1 - X0) / 400.0), 1, 24);
 						for (int32 k = 0; k < SubN; k++)
 						{
 							const double Xa = FMath::Lerp(X0, X1, (double)k / SubN);
 							const double Xb = FMath::Lerp(X0, X1, (double)(k + 1) / SubN);
 							const int32 Base = V.Num();
-							Vert(Xa, Y0); Vert(Xb, Y0); Vert(Xb, Y1); Vert(Xa, Y1);
+							const double Za = FMath::Lerp(Z0, Z1, (double)k / SubN);
+							const double Zb = FMath::Lerp(Z0, Z1, (double)(k + 1) / SubN);
+							Vert(Xa, Y0, Za); Vert(Xb, Y0, Zb); Vert(Xb, Y1, Zb); Vert(Xa, Y1, Za);
 							Quad(Base, Base + 1, Base + 2, Base + 3);
 						}
 					}
@@ -7616,7 +8853,7 @@ namespace BF6Api
 			const int32 Base = V.Num();
 			for (int32 y = 0; y <= N; y++)
 				for (int32 x = 0; x <= N; x++)
-					Vert(C.X + ((double)x / N * 2.0 - 1.0) * R, C.Y + ((double)y / N * 2.0 - 1.0) * R);
+					Vert(C.X + ((double)x / N * 2.0 - 1.0) * R, C.Y + ((double)y / N * 2.0 - 1.0) * R, C.Z);
 			for (int32 y = 0; y < N; y++)
 				for (int32 x = 0; x < N; x++)
 				{
@@ -7634,7 +8871,7 @@ namespace BF6Api
 				{
 					const double Rr = FMath::Lerp(R0, R, (double)ri / Rad);
 					const double Th = (double)s / Seg * 2.0 * PI;
-					Vert(C.X + FMath::Cos(Th) * Rr, C.Y + FMath::Sin(Th) * Rr);
+					Vert(C.X + FMath::Cos(Th) * Rr, C.Y + FMath::Sin(Th) * Rr, C.Z);
 				}
 			for (int32 ri = 0; ri < Rad; ri++)
 				for (int32 s = 0; s < Seg; s++)
@@ -7689,12 +8926,38 @@ namespace BF6Api
 		}
 		const double FitDist = FMath::Sqrt(Area / ((double)Count * 2.6));
 		const double MinDist = FMath::Clamp(FMath::Min(FMath::Max(GScat.U.Size.X, GScat.U.Size.Y) * 0.7, FitDist), 50.0, FMath::Max(R, 100.0));
+		// nearest point on the drawn outline, which carries the height it was
+		// drawn at. Strided: the outline is recorded while dragging so it is
+		// dense, and 64 samples of it place a point as well as all of them.
+		auto PolyRefZ = [&](double X, double Y)
+		{
+			double Best = TNumericLimits<double>::Max(), Z = GScat.U.Center.Z;
+			const int32 Step = FMath::Max(1, GScat.Poly.Num() / 64);
+			for (int32 i = 0; i < GScat.Poly.Num(); i += Step)
+			{
+				const FVector& A = GScat.Poly[i];
+				const double dd = FMath::Square(A.X - X) + FMath::Square(A.Y - Y);
+				if (dd < Best) { Best = dd; Z = A.Z; }
+			}
+			return Z;
+		};
 		FRandomStream Rng(GScat.Seed);
 		FCollisionQueryParams QP(FName(TEXT("BF6ScatterLive")), true);
 		for (AActor* M : GScat.U.Members) QP.AddIgnoredActor(M);
 		TArray<FVector> Placed;
 		Placed.Add(GScat.U.Center);
 		TArray<AActor*> NewOnes;
+		// The map's scenery is always in play; this is what the creator has
+		// built inside the area, so a scatter can land on a roof or a walkway
+		// as readily as on the ground. Gathered once - sweeping the whole map
+		// per sample would not be usable.
+		FBox2D Area2 = bDrawn ? BB : FBox2D(
+			FVector2D(GScat.U.Center.X - R, GScat.U.Center.Y - R),
+			FVector2D(GScat.U.Center.X + R, GScat.U.Center.Y + R));
+		TArray<AActor*> Nearby;
+		CollectPlacedIn(Area2, Nearby);
+		Nearby.RemoveAll([](AActor* A){ return GScat.U.Members.Contains(A); });
+		for (TWeakObjectPtr<AActor>& Wk : GScat.Preview) Nearby.Remove(Wk.Get());
 		int32 n = 0;
 		for (int32 s = 0; s < Count * 40 && n < Count; s++)
 		{
@@ -7723,6 +8986,11 @@ namespace BF6Api
 						bIn = !bIn;
 				}
 				if (!bIn) continue;
+				// Only X and Y come from the outline; without this the height is
+				// still the seed unit's, so a region drawn on higher ground starts
+				// its ground ray underneath the terrain and lands on whatever is
+				// below the map. The outline knows the height it was drawn at.
+				P.Z = PolyRefZ(P.X, P.Y);
 			}
 			else if (GScat.Shape == 1)
 			{
@@ -7742,11 +9010,11 @@ namespace BF6Api
 			if (bClose) continue;
 			if (GScat.bFollowTerrain)
 			{
-				FHitResult Hit;
-				if (W->LineTraceSingleByChannel(Hit, P + FVector(0, 0, 500), P - FVector(0, 0, 50000), ECC_Visibility, QP))
-					P.Z = Hit.Location.Z;
-				else if (W->LineTraceSingleByChannel(Hit, P + FVector(0, 0, 50000), P - FVector(0, 0, 50000), ECC_Visibility, QP))
-					P.Z = Hit.Location.Z;
+				FVector Gnd;
+				if (GroundRay(P + FVector(0, 0, 500), P - FVector(0, 0, 50000), &Nearby, Gnd))
+					P.Z = Gnd.Z;
+				else if (GroundRay(P + FVector(0, 0, 50000), P - FVector(0, 0, 50000), &Nearby, Gnd))
+					P.Z = Gnd.Z;
 			}
 			else P.Z = GScat.U.Center.Z;
 			P.Z += Elev;
@@ -8055,6 +9323,13 @@ namespace BF6Api
 
 	void GroupSelection()
 	{
+		// grouping a node without its children would group an empty marker
+		if (GEditor)
+		{
+			TArray<AActor*> Targets; SelectionTargets(Targets);
+			for (AActor* A : Targets) GEditor->SelectActor(A, true, false);
+			GEditor->NoteSelectionChange();
+		}
 		if (!UActorGroupingUtils::IsGroupingActive()) UActorGroupingUtils::SetGroupingActive(true);
 		UActorGroupingUtils::Get()->GroupSelected();
 	}
@@ -8128,7 +9403,11 @@ namespace BF6Api
 			{
 				if (Cast<AGroupActor>(A)) continue;   // the wrapper, not a thing
 				if (A->Tags.Contains(kHandleTag)) continue;
-				if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
+				// nodes count too: carrying or moving one takes its whole subtree,
+				// which is half of what a tree is for
+				if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)
+					&& !A->Tags.Contains(kGroupTag)) continue;
+				if (A->Tags.Contains(kGroupTag)) I.bNode = true;
 				I.Count++;
 				Single = A;
 				if (!TagValue(A, TEXT("blkid:")).IsEmpty()) I.bBlock = true;
@@ -8363,7 +9642,8 @@ namespace BF6Api
 		int32 n = 0;
 		for (TActorIterator<AActor> It(W); It; ++It)
 		{
-			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)) continue;
+			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)
+				&& !It->Tags.Contains(kGroupTag)) continue;   // nodes drag-select too
 			if (It->Tags.Contains(kHandleTag)) continue;
 			// ghosted (unselectable) objects stay out, like native selection
 			if (UPrimitiveComponent* RC = Cast<UPrimitiveComponent>(It->GetRootComponent()))
@@ -8445,7 +9725,10 @@ namespace BF6Api
 		double BestT = 1e18;
 		for (TActorIterator<AActor> It(W); It; ++It)
 		{
-			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)) continue;
+			// nodes are pickable too - the marker is the only way to grab one in the
+			// viewport instead of hunting for it in the tree
+			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)
+				&& !It->Tags.Contains(kGroupTag)) continue;
 			if (It->Tags.Contains(kHandleTag)) continue;
 			if (UPrimitiveComponent* RC = Cast<UPrimitiveComponent>(It->GetRootComponent()))
 				if (!RC->bSelectable) continue;   // ghosted stays unpickable
@@ -8472,10 +9755,9 @@ namespace BF6Api
 		// that click was on the ground in front of the object
 		if (OutActor)
 		{
-			FHitResult Hit;
-			FCollisionQueryParams QP(FName(TEXT("BF6Pick")), true);
-			if (W->LineTraceSingleByChannel(Hit, O, End, ECC_Visibility, QP)
-				&& (double)Hit.Time < BestT - 1e-4)
+			FVector CtxHit;
+			double CtxU = 1.0;
+			if (BF6_ContextRay(O, End, CtxHit, &CtxU) && CtxU < BestT - 1e-4)
 				OutActor = nullptr;
 		}
 
@@ -8512,7 +9794,10 @@ namespace BF6Api
 		USelection* Sel = GEditor->GetSelectedActors();
 		for (int32 i = 0; Sel && i < Sel->Num(); i++)
 			if (AActor* A = Cast<AActor>(Sel->GetSelectedObject(i)))
-				if (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag) || Cast<AGroupActor>(A))
+				// nodes too, or deleting one falls through to the editor's own delete -
+				// which walks every object in the world and took seconds on a big map
+				if (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag)
+					|| A->Tags.Contains(kGroupTag) || Cast<AGroupActor>(A))
 					Doomed.Add(A);
 		if (Doomed.Num() == 0) return false;   // nothing of ours: stock delete
 		// group members ride along, like the editor's own delete
@@ -8525,7 +9810,10 @@ namespace BF6Api
 				G->GetGroupActors(Members, true);
 				for (AActor* M : Members) if (M) All.Add(M);
 			}
-			All.Add(A);
+			// children go with the parent, as they do in Godot
+			TArray<AActor*> Sub;
+			BF6_CollectSubtree(A, Sub);
+			for (AActor* S : Sub) All.Add(S);
 		}
 		const double T0 = FPlatformTime::Seconds();
 		for (AActor* A : All)
@@ -8557,6 +9845,97 @@ namespace BF6Api
 		}
 		else GEditor->SelectActor(A, true, false);
 		GEditor->NoteSelectionChange();
+	}
+
+	// ---- moving with UNREAL'S gizmo ----
+	// The gizmo opens its own transaction and speculatively Modify()s the
+	// selection, which snapshots our whole vertex payload into the undo buffer -
+	// seconds of stall on a big object, the same bill deletes used to pay. There
+	// is no engine hook before that Modify, but our input handler sees the mouse
+	// press first, so the payload is emptied there and put back the moment the
+	// transaction is open (GUndo set) and the snapshot is already taken. The
+	// object is only bare for that instant. Undo restores an empty mesh and the
+	// repair pass refills it, exactly as it does for a delete.
+	static TArray<TWeakObjectPtr<AActor>> GStripped;
+
+	// Emptying the payload the public way (ClearAllMeshSections) also shrinks the
+	// bounds, rebuilds collision and marks the render state dirty, and that last
+	// one is what made the object blink out for a frame at each end of a drag: the
+	// scene proxy is thrown away and rebuilt from an array we just emptied. The
+	// proxy keeps its own copy of the vertices, so dropping the data without
+	// telling the renderer leaves it drawing while the snapshot is taken. The array
+	// is private, hence reflection; it is a UPROPERTY, which is exactly why the
+	// transaction was serialising it in the first place.
+	bool EmptySectionsQuietly(UProceduralMeshComponent* M)
+	{
+		static FArrayProperty* Prop = FindFProperty<FArrayProperty>(
+			UProceduralMeshComponent::StaticClass(), TEXT("ProcMeshSections"));
+		if (!Prop) return false;   // renamed by an engine update: caller falls back
+		FScriptArrayHelper Sections(Prop, Prop->ContainerPtrToValuePtr<void>(M));
+		Sections.EmptyValues();
+		return true;
+	}
+
+	int32 StripSelectionForTransaction()
+	{
+		if (!GEditor) return 0;   // additive: anything already emptied is skipped below
+		USelection* Sel = GEditor->GetSelectedActors();
+		TSet<AActor*> Set;
+		for (int32 i = 0; Sel && i < Sel->Num(); i++)
+		{
+			AActor* S = Cast<AActor>(Sel->GetSelectedObject(i));
+			if (!S) continue;
+			if (AGroupActor* G = Cast<AGroupActor>(S))
+			{
+				TArray<AActor*> Members;
+				G->GetGroupActors(Members, true);
+				for (AActor* M : Members) if (M) Set.Add(M);
+			}
+			else Set.Add(S);
+		}
+		// moving a parent moves - and transacts - everything under it
+		for (AActor* S : TSet<AActor*>(Set))
+		{
+			TArray<AActor*> Sub;
+			BF6_CollectSubtree(S, Sub);
+			for (AActor* K : Sub) Set.Add(K);
+		}
+		int32 n = 0;
+		for (AActor* A : Set)
+		{
+			if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
+			UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
+			if (!M || M->GetNumSections() == 0) continue;
+			if (!EmptySectionsQuietly(M)) M->ClearAllMeshSections();
+			GStripped.Add(A);
+			n++;
+		}
+		if (n > 0) UE_LOG(LogBF6, Log, TEXT("gizmo drag: stripped %d object(s) before the snapshot"), n);
+		return n;
+	}
+
+	bool HasStrippedGeometry() { return GStripped.Num() > 0; }
+
+	// Put the geometry back only for objects the transaction has already
+	// recorded. Waiting on 'a transaction exists' was not enough: the gizmo
+	// takes its snapshot at some point AFTER opening one, so refilling too
+	// early simply handed it the full mesh again - which is why the stall
+	// survived the first attempt.
+	void RestoreStrippedGeometry(bool bForce)
+	{
+		if (GStripped.Num() == 0) return;
+		bool bAny = false;
+		for (int32 i = GStripped.Num() - 1; i >= 0; i--)
+		{
+			AActor* A = GStripped[i].Get();
+			if (!A) { GStripped.RemoveAt(i); continue; }
+			const bool bRecorded = GUndo && GUndo->ContainsObject(A);
+			if (!bForce && !bRecorded) continue;   // snapshot not taken yet
+			BF6_RebuildActorGeometry(A);
+			GStripped.RemoveAt(i);
+			bAny = true;
+		}
+		if (bAny) BF6_Redraw();
 	}
 
 	bool BeginDragMoveOn(AActor* A)
@@ -8618,9 +9997,25 @@ namespace BF6Api
 		if (!GDragMove.bMoving)
 		{
 			GDragMove.bMoving = true;
+			// A proc-mesh component is TRANSACTIONAL so the gizmo can undo a move,
+			// which means Modify() snapshots its whole vertex payload into the undo
+			// buffer - megabytes per object, and the reason a drag on a dense map
+			// took seconds to start and to let go. Same cure as delete: empty the
+			// mesh first so the buffer records a featherweight component, then put
+			// the geometry straight back. Undo restores the empty mesh and the
+			// repair pass refills it, exactly as it already does for deletes.
+			const double MoveT0 = FPlatformTime::Seconds();
+			for (TWeakObjectPtr<AActor>& Wk : GDragMove.Movers)
+				if (AActor* M = Wk.Get())
+					if (UProceduralMeshComponent* PM = Cast<UProceduralMeshComponent>(M->GetRootComponent()))
+						PM->ClearAllMeshSections();
 			GEditor->BeginTransaction(FText::FromString(TEXT("Move")));
 			for (TWeakObjectPtr<AActor>& Wk : GDragMove.Movers)
 				if (AActor* M = Wk.Get()) M->Modify();
+			for (TWeakObjectPtr<AActor>& Wk : GDragMove.Movers)
+				if (AActor* M = Wk.Get()) BF6_RebuildActorGeometry(M);
+			UE_LOG(LogBF6, Log, TEXT("drag start: %d object(s) in %.0f ms"),
+				GDragMove.Movers.Num(), (FPlatformTime::Seconds() - MoveT0) * 1000.0);
 		}
 		for (TWeakObjectPtr<AActor>& Wk : GDragMove.Movers)
 			if (AActor* M = Wk.Get())
@@ -8633,8 +10028,12 @@ namespace BF6Api
 		ClearPlacementIgnore();
 		if (GDragMove.bMoving && GEditor)
 		{
+			// closing the transaction is the other half of the old stall
+			const double EndT0 = FPlatformTime::Seconds();
 			GEditor->EndTransaction();
 			GEditor->NoteSelectionChange();
+			const double EndMs = (FPlatformTime::Seconds() - EndT0) * 1000.0;
+			if (EndMs > 100.0) UE_LOG(LogBF6, Warning, TEXT("drag end took %.0f ms"), EndMs);
 		}
 		GDragMove = FBF6DragMove();
 	}
@@ -8760,11 +10159,11 @@ namespace BF6Api
 	int32 SaveBlockFromSelection(const FString& InName)
 	{
 		if (!GEditor) return 0;
-		USelection* Sel = GEditor->GetSelectedActors(); if (!Sel) return 0;
+		// selecting the node that holds a build is the natural way to save it
+		TArray<AActor*> Targets; SelectionTargets(Targets);
 		TArray<AActor*> Picked;
-		for (int32 i = 0; i < Sel->Num(); i++)
-			if (AActor* A = Cast<AActor>(Sel->GetSelectedObject(i)))
-				if (A->Tags.Contains(kPlacedTag)) Picked.Add(A);
+		for (AActor* A : Targets)
+			if (A->Tags.Contains(kPlacedTag)) Picked.Add(A);
 		if (Picked.Num() == 0) { Notify(TEXT("Select placed objects first (base objects can't go in a block).")); return 0; }
 		return BF6_SaveBlockFromActors(InName, Picked);
 	}
@@ -9196,9 +10595,73 @@ namespace BF6Api
 		return true;
 	}
 
+	// What the scene tree hangs its warning badges on. Re-running the whole lint
+	// per row per frame is out of the question on a two thousand object map, so
+	// the result is cached by actor and refreshed on a timer (or whenever the
+	// Validate panel runs, which fills this on its way past).
+	struct FLintMark { uint8 Severity = 2; FString Message; };
+	static TMap<TWeakObjectPtr<AActor>, FLintMark> GLintMarks;
+	static double GLintStamp = 0.0;
+
+	static void BF6_CacheLint(const TArray<FLintItem>& Items)
+	{
+		GLintMarks.Reset();
+		for (const FLintItem& I : Items)
+		{
+			AActor* A = I.Actor.Get();
+			if (!A || I.Severity > 1) continue;   // advisories stay out of the tree
+			FLintMark& M = GLintMarks.FindOrAdd(A);
+			if (I.Severity <= M.Severity) { M.Severity = I.Severity; M.Message = I.Message; }
+		}
+		GLintStamp = FPlatformTime::Seconds();
+
+		// Say what was found, once per change. A creator seeing badges appear on a
+		// fresh import needs to know WHICH check fired without hovering rows one by
+		// one, and it is the same line we need to read a bug report from.
+		TMap<FString, int32> ByMessage;
+		for (const FLintItem& I : Items)
+			if (I.Severity <= 1) ByMessage.FindOrAdd(I.Message)++;
+		FString Sig = FString::FromInt(Items.Num());
+		for (const TPair<FString, int32>& KV : ByMessage) Sig += FString::Printf(TEXT("|%s=%d"), *KV.Key, KV.Value);
+		static FString LastSig;
+		if (Sig == LastSig) return;
+		LastSig = Sig;
+		if (ByMessage.Num() == 0) { UE_LOG(LogBF6, Warning, TEXT("validate: all clear")); return; }
+		ByMessage.ValueSort([](int32 A, int32 B){ return A > B; });
+		UE_LOG(LogBF6, Warning, TEXT("validate: %d flagged object(s), %d distinct issue(s):"), GLintMarks.Num(), ByMessage.Num());
+		int32 Shown = 0;
+		for (const TPair<FString, int32>& KV : ByMessage)
+		{
+			UE_LOG(LogBF6, Warning, TEXT("   x%-4d %s"), KV.Value, *KV.Key);
+			if (++Shown >= 12) break;
+		}
+	}
+
+	bool LintMarkFor(AActor* A, uint8& OutSeverity, FString& OutMessage)
+	{
+		if (const FLintMark* M = GLintMarks.Find(A))
+		{
+			OutSeverity = M->Severity;
+			OutMessage = M->Message;
+			return true;
+		}
+		return false;
+	}
+
+	void RefreshLintIfStale(double MaxAgeSeconds)
+	{
+		if (FPlatformTime::Seconds() - GLintStamp < MaxAgeSeconds) return;
+		GLintStamp = FPlatformTime::Seconds();   // stamp first: RunLint is not free
+		const double T0 = FPlatformTime::Seconds();
+		RunLint();
+		const double Ms = (FPlatformTime::Seconds() - T0) * 1000.0;
+		if (Ms > 100.0) UE_LOG(LogBF6, Warning, TEXT("validate sweep took %.0f ms"), Ms);
+	}
+
 	TArray<FLintItem> RunLint()
 	{
 		TArray<FLintItem> Out;
+		ON_SCOPE_EXIT{ BF6_CacheLint(Out); };   // the scene tree reads its badges off this
 		if (!GEditor) return Out;
 		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return Out;
 		auto Add = [&Out](uint8 Sev, AActor* A, const FString& Msg, bool bWindingFix = false)
@@ -9229,6 +10692,35 @@ namespace BF6Api
 			for (FString& P : Parts)
 				if (AActor* const* T = ByName.Find(P.TrimStartAndEnd())) OutT.Add(*T);
 		};
+		// ---- will the game read this, and is it listed for this map? ----
+		// Keyed on TYPE and nothing else. DICE reshuffles which folder an object
+		// lives in between SDK releases, and an object that moved folder - or that
+		// dropped off a map's list - usually still loads on that map. So a type the
+		// catalogue knows but this level does not list is a WARNING to go and check
+		// in game, never a failure. Only a type the catalogue has never heard of is
+		// treated as broken, and then only for objects placed from the library,
+		// where the catalogue is the authority on what exists.
+		{
+			TSet<FString> LevelTypes, AllTypes;
+			for (const TSharedPtr<FPlaceableRow>& r : g_ss.AllItems) if (r.IsValid()) LevelTypes.Add(r->Type);
+			for (const TSharedPtr<FPlaceableRow>& r : g_allGlobal)  if (r.IsValid()) AllTypes.Add(r->Type);
+			if (AllTypes.Num() > 0)
+				for (AActor* A : Ours)
+				{
+					FString Ty = TagValue(A, TEXT("type:"));
+					if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("label:"));
+					if (Ty.IsEmpty()) continue;
+					const bool bFromLibrary = !TagValue(A, TEXT("mesh:")).IsEmpty();
+					if (!AllTypes.Contains(Ty))
+					{
+						if (bFromLibrary)
+							Add(0, A, FString::Printf(TEXT("'%s' is not in this SDK's catalogue at all - the game has nothing to load for it. It may have been renamed or removed in an SDK update."), *Ty));
+					}
+					else if (!LevelTypes.Contains(Ty))
+						Add(1, A, FString::Printf(TEXT("'%s' is not listed for %s in this SDK release. It usually still loads - objects move between folders and map lists between releases - but check it in game before shipping."), *Ty, *g_ss.CurrentLevel));
+				}
+		}
+
 		auto VolHeight = [](AActor* V) { const FString H = TagValue(V, TEXT("p:height=")); return H.IsEmpty() ? 0.0 : FCString::Atod(*H); };
 		auto LoopOf = [](AActor* Vol, TArray<FVector>& OutLoop)
 		{
@@ -9260,8 +10752,13 @@ namespace BF6Api
 			if (Ty == TEXT("CombatArea"))
 			{
 				LinkTargets(A, TEXT("CombatVolume"), T, bLegacy);
+				// Advisory, not a warning. The SDK's own CombatArea.gd exports
+				// CombatVolume as optional and its _get_configuration_warnings()
+				// says nothing when it is empty - it only checks the area limit.
+				// Shipped maps do link one 91 times out of 95, so it is worth
+				// mentioning, but it is not a fault and earns no badge.
 				if (T.Num() == 0 && !bLegacy)
-					Add(1, A, TEXT("Combat area has no combat volume linked - the whole map counts as out of bounds."));
+					Add(2, A, TEXT("Combat area has no combat volume linked. Most maps link one; check this is deliberate."));
 				for (AActor* Vol : T)
 				{
 					TArray<FVector> Loop;
@@ -9350,15 +10847,15 @@ namespace BF6Api
 				const FVector Sc = A->GetActorScale3D();
 				const double Mx = FMath::Max3(Sc.X, Sc.Y, Sc.Z), Mn = FMath::Min3(Sc.X, Sc.Y, Sc.Z);
 				if (Mn > 0.0 && Mx / Mn > 1.01)
-					Add(1, A, FString::Printf(TEXT("Non-uniform scale (%.2f, %.2f, %.2f) - collision desyncs from the visual mesh in game. Scale uniformly."), Sc.X, Sc.Y, Sc.Z));
+					Add(1, A, FString::Printf(TEXT("Non-uniform scale (%.2f, %.2f, %.2f). The shipped maps almost never do this (2 objects in 380) and collision can disagree with the visual - check it in game."), Sc.X, Sc.Y, Sc.Z));
 			}
 		}
 
-		// HQs must sit OUTSIDE the combat volume (inside = instant out of bounds)
-		if (CombatLoop.Num() >= 3)
-			for (AActor* A : Ours)
-				if (BF6_ObjIdType(A) == TEXT("HQ_PlayerSpawner") && PointInPoly(A->GetActorLocation(), CombatLoop))
-					Add(1, A, TEXT("HQ sits INSIDE the combat volume - HQs belong outside it, inside the surrounding area."));
+		// No check on where an HQ sits relative to the combat volume. The inside
+		// of that volume IS the play area, and DICE's own shipped setups put HQs
+		// on both sides of it - 5 of 16 are inside (Abbasid and Aftermath put both
+		// there; Badlands and Battery keep them out). It is a design choice, not a
+		// defect, and flagging it told creators their working map was broken.
 
 		// duplicate ObjIds break scripts silently. EA's own base setups reuse
 		// ids ACROSS types (a DeployCam 1 next to an HQ 1), so cross-type reuse
@@ -9444,7 +10941,7 @@ namespace BF6Api
 	{
 		if (!GWiz.bActive) return FString();
 		if (GWiz.bConquest && GWiz.Step <= 1)
-			return TEXT("Aim at the ground and click. You get the HQ, its protected area, and four linked spawn points. Keep it OUTSIDE the combat area walls.");
+			return TEXT("Aim at the ground and click. You get the HQ, its protected area, and four linked spawn points. Inside or outside the combat area both work - the shipped maps do both.");
 		if (GWiz.bConquest)
 			return TEXT("Click where the flag goes. You get the capture point, its capture area, and four spawn points per team, all linked. The sector wires up automatically after the last flag.");
 		const int32 sub = GWiz.Step % 4;
@@ -9648,6 +11145,44 @@ namespace BF6Api
 		return true;
 	}
 
+	// Opening a map used to leave the camera wherever the editor happened to be -
+	// often the origin, which on most maps is under the terrain or off in a
+	// corner. A new map now opens looking down at the middle of the play area
+	// from a height that fits it on screen, the way the SDK presents a level.
+	// Resuming a save is left alone: the creator's own view is restored there.
+	void FrameCombatArea()
+	{
+		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+		if (!VC || !GEditor) return;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+
+		// the combat volume if there is one, else everything the map ships with
+		FBox Play(ForceInit);
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!It->Tags.Contains(kBaseTag) && !It->Tags.Contains(kPlacedTag)) continue;
+			const TArray<FVector>* Loop = GVolumeLoops.Find(*It);
+			if (!Loop || Loop->Num() < 3) continue;
+			FString Ty = TagValue(*It, TEXT("label:"));
+			if (Ty.IsEmpty()) Ty = TagValue(*It, TEXT("type:"));
+			const FString Nm = It->GetActorLabel();
+			if (!Nm.Contains(TEXT("Combat")) && !Ty.Contains(TEXT("Combat"))) continue;
+			for (const FVector& Pt : BF6_LoopToWorld(*It, *Loop)) Play += Pt;
+		}
+		if (!Play.IsValid)
+			for (TActorIterator<AActor> It(W); It; ++It)
+				if (It->Tags.Contains(kBaseTag)) Play += It->GetActorLocation();
+		if (!Play.IsValid) return;   // nothing to look at: leave the view alone
+
+		const FVector Centre = Play.GetCenter();
+		const double Span = FMath::Max3(Play.GetSize().X, Play.GetSize().Y, 5000.0);
+		// far enough back that the whole play area fits, at the SDK's overview angle
+		const FRotator Look(-50.f, -45.f, 0.f);
+		VC->SetViewLocation(Centre - Look.Vector() * (Span * 0.9));
+		VC->SetViewRotation(Look);
+		VC->Invalidate();
+	}
+
 	void CameraOrbit(const FVector2D& DeltaPx, const FVector& Pivot)
 	{
 		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
@@ -9689,6 +11224,13 @@ namespace BF6Api
 	bool WorldFromViewportCursor(FVector& OutWorld)
 	{
 		if (!GCurrentLevelEditingViewportClient) return false;
+		// On foot the pointer is captured for looking, so the aim comes from the
+		// centre of the screen - place what you are looking at, like a crosshair.
+		if (GWalk.bActive)
+		{
+			FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+			return TraceToSurface(VC->GetViewLocation(), VC->GetViewRotation().Vector(), OutWorld);
+		}
 		const FViewportCursorLocation Cursor = GCurrentLevelEditingViewportClient->GetCursorWorldLocationFromMousePos();
 		const FVector O = Cursor.GetOrigin(), D = Cursor.GetDirection();
 		if (D.IsNearlyZero()) return false;
@@ -9732,7 +11274,11 @@ namespace BF6Api
 	// exactly the bill we just removed from map opens), so the ray is tested
 	// against their geometry directly: a cheap bounds check first, then real
 	// triangles from the mesh cache for the handful that survive it.
-	static bool BF6_RayHitsPlaced(const FVector& O, const FVector& D, double MaxDist, FVector& OutHit)
+	// Only: a shortlist gathered once by the caller, for rays fired in bulk.
+	// Scatter samples thousands of points, and walking every actor in the map
+	// per sample is the difference between instant and unusable.
+	static bool BF6_RayHitsPlaced(const FVector& O, const FVector& D, double MaxDist, FVector& OutHit,
+		const TArray<AActor*>* Only)
 	{
 		if (!GEditor) return false;
 		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return false;
@@ -9745,11 +11291,18 @@ namespace BF6Api
 		// distance, sorted, and only opened up nearest-first.
 		struct FCand { AActor* A; double Dist; FVector BoxHit; };
 		TArray<FCand> Cands;
-		for (TActorIterator<AActor> It(W); It; ++It)
+		TArray<AActor*> Everything;
+		if (!Only)
 		{
-			AActor* A = *It;
+			for (TActorIterator<AActor> It(W); It; ++It) Everything.Add(*It);
+			Only = &Everything;
+		}
+		for (AActor* A : *Only)
+		{
+			if (!IsValid(A)) continue;
 			if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
 			if (A->Tags.Contains(kHandleTag) || A->Tags.Contains(kContextTag)) continue;
+			if (A->Tags.Contains(kGroupTag)) continue;          // nor is a node marker
 			if (IsVolumeActor(A) || IsObbActor(A)) continue;   // zones are not surfaces
 			if (GRayIgnore.Contains(A)) continue;   // the thing being placed
 			FVector Org, Ext;
@@ -9801,26 +11354,62 @@ namespace BF6Api
 		return bAny;
 	}
 
+	// Everything the creator has placed whose footprint overlaps an area, so a
+	// scatter can land on a roof or a gantry the same as on the terrain.
+	void CollectPlacedIn(const FBox2D& Area, TArray<AActor*>& Out)
+	{
+		Out.Reset();
+		if (!GEditor) return;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			AActor* A = *It;
+			if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
+			if (A->Tags.Contains(kHandleTag) || A->Tags.Contains(kContextTag)) continue;
+			if (IsVolumeActor(A) || IsObbActor(A)) continue;
+			FVector Org, Ext;
+			A->GetActorBounds(false, Org, Ext);
+			if (Ext.IsNearlyZero()) continue;
+			const FBox2D Foot(FVector2D(Org.X - Ext.X, Org.Y - Ext.Y), FVector2D(Org.X + Ext.X, Org.Y + Ext.Y));
+			if (Foot.Intersect(Area)) Out.Add(A);
+		}
+	}
+
+	// The surface under a point: the map's own scenery, or anything the
+	// creator has built on it, whichever comes first.
+	bool GroundRay(const FVector& From, const FVector& To, const TArray<AActor*>* Placed, FVector& OutHit, FVector* OutNormal)
+	{
+		bool bAny = false;
+		double Best = (To - From).Size();
+		FVector P, N(0, 0, 1);
+		if (BF6_ContextRay(From, To, P, nullptr, &N))
+		{ Best = (P - From).Size(); OutHit = P; if (OutNormal) *OutNormal = N; bAny = true; }
+		if (Placed && Placed->Num() > 0)
+		{
+			const FVector D = (To - From).GetSafeNormal();
+			// a placed object has no normal from this test; flat-up is close enough
+			// for standing on a crate and the wall probe only needs the hit
+			if (BF6_RayHitsPlaced(From, D, Best, P, Placed))
+			{ OutHit = P; if (OutNormal) *OutNormal = FVector::UpVector; bAny = true; }
+		}
+		return bAny;
+	}
+
 	static bool TraceToSurface(const FVector& O, const FVector& D, FVector& OutWorld)
 	{
-		// Trace the actual map surface (the context meshes carry collision), so
-		// placements land on the bridge deck / terrain under the crosshair instead
-		// of a flat z=0 plane below the map.
 		const double kReach = 500000.f;
 		bool bHitWorld = false;
 		double WorldDist = kReach;
-		if (GEditor)
-			if (UWorld* World = GEditor->GetEditorWorldContext().World())
-			{
-				FHitResult Hit;
-				FCollisionQueryParams QP(FName(TEXT("BF6PlaceTrace")), true);
-				if (World->LineTraceSingleByChannel(Hit, O, O + D * kReach, ECC_Visibility, QP))
-				{ OutWorld = Hit.Location; WorldDist = (Hit.Location - O).Size(); bHitWorld = true; }
-			}
+		// The map's own surface, answered by our ray index rather than by physics
+		// (see FBF6RayIndex): placements land on the bridge deck or the hillside
+		// under the crosshair instead of a flat z=0 plane below the map.
+		FVector CtxHit;
+		if (BF6_ContextRay(O, O + D * kReach, CtxHit))
+		{ OutWorld = CtxHit; WorldDist = (CtxHit - O).Size(); bHitWorld = true; }
 
 		// whichever comes first: the map, or something the creator placed on it
 		FVector PlacedHit;
-		if (BF6_RayHitsPlaced(O, D, WorldDist, PlacedHit)) { OutWorld = PlacedHit; return true; }
+		if (BF6_RayHitsPlaced(O, D, WorldDist, PlacedHit, nullptr)) { OutWorld = PlacedHit; return true; }
 		if (bHitWorld) return true;
 
 		// fallback: ground plane
@@ -9837,10 +11426,79 @@ namespace BF6Api
 // sections are not transactional), so they'd reappear invisible. After every
 // undo/redo, rebuild any of our actors that came back empty.
 static FDelegateHandle g_postUndoHandle;
+// Put one actor's geometry back. Undo needs it because a transaction that
+// recorded an emptied mesh restores an emptied mesh; the drag path needs it
+// because emptying is exactly how we keep vertex data out of the undo buffer.
+static void BF6_RebuildActorGeometry(AActor* A)
+{
+	if (!A) return;
+	UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
+	if (!M || M->GetNumSections() > 0) return;
+	if (A->Tags.Contains(kHandleTag)) { BuildHandleCube(M); ApplyHandleStyle(M); return; }
+	if (const TArray<FVector>* Loop = GVolumeLoops.Find(A)) { RebuildVolumeWalls(A, *Loop); return; }
+	FString Mesh = TagValue(A, TEXT("mesh:"));
+	if (Mesh.IsEmpty()) Mesh = TagValue(A, TEXT("type:"));
+	if (!Mesh.IsEmpty() && FillProcFromBf6Mesh(M, ObjModelPath(Mesh))) { ApplyObjectWhite(M); BF6Api::ReapplyTint(A); return; }
+	BuildMarker(M); ApplyObjectWhite(M);
+}
+
+// Undo pays the same bill a third time. Before it applies the recorded state it
+// serialises the CURRENT state so redo can come back to it, and by then the drag
+// has already put the geometry back - so ctrl+Z on a big object froze for the
+// same couple of seconds. This fires before that, and empties the payload of
+// exactly the objects the transaction touches. The direction is not in the
+// context, so both candidates are covered: the one about to be undone and the
+// one about to be redone. Over-stripping is harmless, the repair pass below
+// refills anything left empty.
+static FDelegateHandle g_preUndoHandle;
+static void BF6_StripBeforeUndoRedo(const FTransactionContext&)
+{
+	UTransBuffer* TB = GEditor ? Cast<UTransBuffer>(GEditor->Trans) : nullptr;
+	if (!TB) return;
+	const int32 Len = TB->GetQueueLength();
+	const int32 Und = TB->GetUndoCount();
+	const int32 Candidates[2] = { Len - Und - 1, Len - Und };
+	TSet<AActor*> Seen;
+	int32 n = 0;
+	for (int32 Idx : Candidates)
+	{
+		if (Idx < 0 || Idx >= Len) continue;
+		const FTransaction* T = TB->GetTransaction(Idx);
+		if (!T) continue;
+		TArray<UObject*> Objs;
+		T->GetTransactionObjects(Objs);
+		for (UObject* O : Objs)
+		{
+			AActor* A = Cast<AActor>(O);
+			if (!A) if (UActorComponent* C = Cast<UActorComponent>(O)) A = C->GetOwner();
+			if (!A || Seen.Contains(A)) continue;
+			Seen.Add(A);
+			if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
+			UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
+			if (!M || M->GetNumSections() == 0) continue;
+			if (BF6Api::EmptySectionsQuietly(M)) n++;
+		}
+	}
+	if (n > 0) UE_LOG(LogTemp, Log, TEXT("BF6: undo/redo stripped %d object(s) before the flip"), n);
+}
+
+// The transaction buffer does not exist yet when this module starts up, so the
+// hook above has to be attached later - and quietly went unattached until the
+// log showed it never firing. Attempted at startup and again once the engine is
+// up, whichever gets there first.
+static void BF6_HookTransBuffer()
+{
+	if (g_preUndoHandle.IsValid()) return;
+	UTransBuffer* TB = GEditor ? Cast<UTransBuffer>(GEditor->Trans) : nullptr;
+	if (!TB) return;
+	g_preUndoHandle = TB->OnBeforeRedoUndo().AddStatic(&BF6_StripBeforeUndoRedo);
+}
+
 static void BF6_RepairAfterUndo()
 {
 	if (!GEditor) return;
 	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+	const double RepairT0 = FPlatformTime::Seconds();
 	for (TActorIterator<AActor> It(W); It; ++It)
 	{
 		AActor* A = *It;
@@ -9862,16 +11520,11 @@ static void BF6_RepairAfterUndo()
 				GVolEdit.Active = 0;
 			}
 		}
-		UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
-		if (!M || M->GetNumSections() > 0) continue;
-		if (A->Tags.Contains(kHandleTag)) { BuildHandleCube(M); ApplyHandleStyle(M); continue; }
-		if (const TArray<FVector>* Loop = GVolumeLoops.Find(A)) { RebuildVolumeWalls(A, *Loop); continue; }
-		FString Mesh = TagValue(A, TEXT("mesh:"));
-		if (Mesh.IsEmpty()) Mesh = TagValue(A, TEXT("type:"));
-		if (!Mesh.IsEmpty() && FillProcFromBf6Mesh(M, ObjModelPath(Mesh))) { ApplyObjectWhite(M); BF6Api::ReapplyTint(A); continue; }
-		BuildMarker(M); ApplyObjectWhite(M);
+		BF6_RebuildActorGeometry(A);
 	}
 	BF6_RecomputeBudget();
+	const double RepairMs = (FPlatformTime::Seconds() - RepairT0) * 1000.0;
+	if (RepairMs > 100.0) UE_LOG(LogTemp, Log, TEXT("BF6: undo repair took %.0f ms"), RepairMs);
 }
 
 // The viewport Del key goes through DeleteSelectionFast, but the outliner's
@@ -9881,9 +11534,12 @@ static void BF6_RepairAfterUndo()
 // delete begins, before any component's Modify() snapshot, so emptying the
 // sections here keeps those snapshots featherweight too. BF6_RepairAfterUndo
 // refills the meshes if the delete is undone.
-static FDelegateHandle g_preDeleteHandle;
+static FDelegateHandle g_preDeleteHandle, g_postDeleteHandle;
+static double g_deleteT0 = 0.0;
+static TArray<TWeakObjectPtr<AActor>> GStrippedForDelete;
 static void BF6_StripMeshesBeforeStockDelete()
 {
+	g_deleteT0 = FPlatformTime::Seconds();
 	if (!GEditor) return;
 	USelection* Sel = GEditor->GetSelectedActors();
 	TSet<AActor*> All;
@@ -9896,18 +11552,58 @@ static void BF6_StripMeshesBeforeStockDelete()
 				G->GetGroupActors(Members, true);
 				for (AActor* M : Members) if (M) All.Add(M);
 			}
-			All.Add(A);
+			// The WHOLE subtree, not just the selection. Deleting a parent records
+			// every actor hanging off it in the transaction as well - it has to,
+			// to put the attachments back on undo - so a node with a few hundred
+			// props under it serialised every one of their vertex payloads and
+			// took seconds to disappear.
+			TArray<AActor*> Sub;
+			BF6_CollectSubtree(A, Sub);
+			for (AActor* S : Sub) All.Add(S);
 		}
-	for (AActor* A : All)
-		if (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag) || A->Tags.Contains(kHandleTag))
-			if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent()))
-				M->ClearAllMeshSections();
+	// Deleting ANY actor makes the editor walk every object in the world looking
+	// for references to fix up, and that walk visits our vertex arrays element by
+	// element - they are UPROPERTY data. One empty node took 3.1 SECONDS to
+	// delete on a 2,000 object map for that reason alone, with our own work
+	// measuring 0 ms. So the payload comes out of EVERY object of ours for the
+	// duration of the delete, and goes back straight after.
+	int32 n = 0;
+	const double T0 = FPlatformTime::Seconds();
+	if (UWorld* W = GEditor->GetEditorWorldContext().World())
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (It->Tags.Contains(kPlacedTag) || It->Tags.Contains(kBaseTag)
+				|| It->Tags.Contains(kHandleTag) || It->Tags.Contains(kGroupTag))
+				if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(It->GetRootComponent()))
+					if (M->GetNumSections() > 0)
+					{
+						BF6Api::EmptySectionsQuietly(M);
+						if (!All.Contains(*It)) GStrippedForDelete.Add(*It);   // the doomed ones do not come back
+						n++;
+					}
+	if (n > 0)
+		UE_LOG(LogBF6, Log, TEXT("stock delete: stripped %d object(s) in %.0f ms"), n,
+			(FPlatformTime::Seconds() - T0) * 1000.0);
 }
 
 void FBF6UnrealSDKModule::StartupModule()
 {
 	g_postUndoHandle = FEditorDelegates::PostUndoRedo.AddStatic(&BF6_RepairAfterUndo);
+	BF6_HookTransBuffer();
+	FCoreDelegates::OnPostEngineInit.AddStatic(&BF6_HookTransBuffer);
 	g_preDeleteHandle = FEditorDelegates::OnDeleteActorsBegin.AddStatic(&BF6_StripMeshesBeforeStockDelete);
+	g_postDeleteHandle = FEditorDelegates::OnDeleteActorsEnd.AddStatic([]
+		{
+			const double Ms = (FPlatformTime::Seconds() - g_deleteT0) * 1000.0;
+			const double R0 = FPlatformTime::Seconds();
+			int32 Back = 0;
+			for (const TWeakObjectPtr<AActor>& Wk : GStrippedForDelete)
+				if (AActor* A = Wk.Get()) { BF6_RebuildActorGeometry(A); Back++; }
+			GStrippedForDelete.Reset();
+			if (Ms > 100.0)
+				UE_LOG(LogBF6, Warning, TEXT("stock delete took %.0f ms, then %d object(s) refilled in %.0f ms"),
+					Ms, Back, (FPlatformTime::Seconds() - R0) * 1000.0);
+			BF6_Redraw();
+		});
 	g_pluginDir = IPluginManager::Get().FindPlugin(TEXT("BF6UnrealSDK"))->GetBaseDir();
 	BF6_LoadCatOverrides();   // the user's "move to category" choices
 
@@ -10001,6 +11697,10 @@ void FBF6UnrealSDKModule::StartupModule()
 	IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
 	auto EnterFullScreen = []()
 	{
+		// The outliner becomes OURS: same tab, same dock, SDK contents. Done
+		// here rather than at module startup because the level editor - and so
+		// its tab manager - does not exist that early.
+		BF6Api::RegisterOutlinerTab();
 		// A bare-minimum editor layout, once: close Unreal's default panels so
 		// only the viewport (our whole UI) and the World Outliner remain. Users
 		// can reopen anything from the Window menu; we never fight them again.
@@ -10023,8 +11723,6 @@ void FBF6UnrealSDKModule::StartupModule()
 					for (const TCHAR* Id : CloseIds)
 						if (TSharedPtr<SDockTab> Tab = TM->FindExistingLiveTab(FTabId(Id)))
 							Tab->RequestCloseTab();
-					// the scene tree stays: it's how users select like in Godot
-					TM->TryInvokeTab(FTabId(TEXT("LevelEditorSceneOutliner")));
 				}
 				GConfig->SetBool(TEXT("BF6UnrealSDK"), TEXT("MinimalLayoutApplied"), true, GEditorPerProjectIni);
 				GConfig->Flush(false, GEditorPerProjectIni);
@@ -10091,6 +11789,12 @@ void FBF6UnrealSDKModule::StartupModule()
 void FBF6UnrealSDKModule::ShutdownModule()
 {
 	if (g_postUndoHandle.IsValid()) { FEditorDelegates::PostUndoRedo.Remove(g_postUndoHandle); g_postUndoHandle.Reset(); }
+	if (g_preUndoHandle.IsValid())
+	{
+		if (UTransBuffer* TB = GEditor ? Cast<UTransBuffer>(GEditor->Trans) : nullptr)
+			TB->OnBeforeRedoUndo().Remove(g_preUndoHandle);
+		g_preUndoHandle.Reset();
+	}
 	if (g_preDeleteHandle.IsValid()) { FEditorDelegates::OnDeleteActorsBegin.Remove(g_preDeleteHandle); g_preDeleteHandle.Reset(); }
 	// release the assign-mode MIDs before static destruction (GLinkPick is a
 	// file-scope global; its strong pointers must not outlive the UObject system)
@@ -10099,6 +11803,7 @@ void FBF6UnrealSDKModule::ShutdownModule()
 	if (GUpdateToast.IsValid()) { new TSharedPtr<SNotificationItem>(GUpdateToast); GUpdateToast.Reset(); }
 	BF6Api::DetachUI();
 	BF6Api::RemoveInputHandler();
+	BF6Api::UnregisterOutlinerTab();
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(kTabName);
 	if (g_ctx && g_close) { g_close(g_ctx); g_ctx = nullptr; }
 	if (DllHandle) { FPlatformProcess::FreeDllHandle(DllHandle); DllHandle = nullptr; }
