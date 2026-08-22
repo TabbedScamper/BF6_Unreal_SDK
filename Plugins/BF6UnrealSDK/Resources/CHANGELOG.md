@@ -1,5 +1,9 @@
 # BF6 Unreal SDK version history
 
+## 0.5.5 (2026-08-21)
+
+- The object library gets out of your way while you fly. Hold right mouse to move around and the strip drops away; let go and it comes straight back, up if you had it pinned, hidden if you had it on auto-hide.
+
 ## 0.5.4 (2026-08-21)
 
 - The space bar menu is five choices instead of seventeen: Objects, Mode Setup, Validate, Colorize, Collision. Every object category now lives one step inside Objects, with a Back wedge that always sits in the same place. Checks is renamed Validate and has taken in Object IDs, since duplicate and missing ids are the same question as the rest of the checks.

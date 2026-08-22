@@ -1,7 +1,7 @@
 ﻿{
 	"FileVersion": 3,
-	"Version": 13,
-	"VersionName": "0.5.4",
+	"Version": 14,
+	"VersionName": "0.5.5",
 	"FriendlyName": "BF6 Unreal SDK",
 	"Description": "Build Battlefield 6 Portal maps inside Unreal Engine: map selector, SDK object placement, physics budget, and spatial.json export for Portal.",
 	"Category": "Editing",

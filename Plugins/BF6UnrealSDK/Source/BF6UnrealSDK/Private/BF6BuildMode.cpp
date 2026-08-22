@@ -1603,6 +1603,22 @@ public:
 			bDragHidden = false;
 			SlideTarget = bPinned ? 1.f : 0.f;
 		}
+
+		// flying: holding the right mouse button is Unreal's WASD fly, and the
+		// strip sits right where you are looking. It drops out of the way for
+		// the flight and comes back the moment the button is released - up if
+		// pinned, hidden if it was on auto-hide, exactly like a drag-out.
+		const bool bFlying = FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::RightMouseButton);
+		if (bFlying && !bFlyHidden && Slide > 0.01f)
+		{
+			bFlyHidden = true;
+			SlideTarget = 0.f;
+		}
+		else if (!bFlying && bFlyHidden)
+		{
+			bFlyHidden = false;
+			if (!FBF6LibDragOp::bActive) SlideTarget = bPinned ? 1.f : 0.f;
+		}
 	}
 
 	virtual void OnMouseEnter(const FGeometry& G, const FPointerEvent& E) override
@@ -1621,7 +1637,7 @@ public:
 
 private:
 	static inline const FString kBlocksTab = TEXT("::blocks");
-	bool bPinned = false, bFull = false, bDragHidden = false;
+	bool bPinned = false, bFull = false, bDragHidden = false, bFlyHidden = false;
 	float Slide = 0.f; float SlideTarget = 0.f;
 	float TileSize = 108.f;
 	FString ActiveCat, Query, CachedLevel;
