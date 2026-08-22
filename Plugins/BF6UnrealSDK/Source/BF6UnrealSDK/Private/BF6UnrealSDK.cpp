@@ -4,6 +4,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
+#include "Misc/ScopeExit.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/IConsoleManager.h"
@@ -221,13 +222,28 @@ static FVector BF6_GScaleFromB(const double B[9])
 // identity is still "label minus BF6_", which is a no-op on new names, so
 // old saves and blocks (whose stored names were already stripped) keep
 // resolving unchanged.
+// load-cost counters, reported by the session load line
+double GLabelSec = 0.0, GSpawnSec = 0.0, GStatSec = 0.0, GFolderSec = 0.0;
+
+// Naming was 60% of a map load. SetActorLabelUnique walks every actor in the
+// world to prove a name is free, so loading N objects costs N*N/2 string
+// compares - 3,000 objects meant millions of them, and it climbs steeply with
+// map size. The engine's own answer is FCachedActorLabels: build the set once
+// and hand it in, so each name is a hash lookup. GBulkLabels points at that
+// set for the length of a bulk load and is null the rest of the time, when
+// one-off renames should still consult the world.
+static FCachedActorLabels* GBulkLabels = nullptr;
+
 static void BF6_SetPrettyLabel(AActor* A, const FString& InName)
 {
 	if (!A) return;
 	FString Nm = InName;
 	Nm.RemoveFromStart(TEXT("BF6_"));
 	if (Nm.IsEmpty()) Nm = TEXT("Object");
-	FActorLabelUtilities::SetActorLabelUnique(A, Nm);
+	const double T0 = FPlatformTime::Seconds();
+	FActorLabelUtilities::SetActorLabelUnique(A, Nm, GBulkLabels);
+	if (GBulkLabels) GBulkLabels->Add(A->GetActorLabel());   // keep the set honest
+	GLabelSec += FPlatformTime::Seconds() - T0;
 }
 
 // ------------------------------------------------------------------ helpers
@@ -402,9 +418,77 @@ static void SpawnResourceAtCursor(const FString& ResName, const FString& Label)
 // forward decls (definitions live in the base-setup helpers below)
 static UProceduralMeshComponent* MakeProcMesh(AActor* A, const FName Name);
 static bool FillProcFromBf6Mesh(UProceduralMeshComponent* Mesh, const FString& FilePath, bool bCollision = false);
+extern double GMeshDecodeSec, GMeshBuildSec;   // defined with the mesh cache below
 static void ApplyObjectWhite(UProceduralMeshComponent* Mesh);
 
 // ---- low-poly map context: load an extracted .bf6mesh into a proc-mesh actor ----
+static void ClearActorsWithTag(FName Tag);   // defined below
+
+// Which level's scenery is currently standing. Reopening or resuming the same
+// map is the common loop - build, export, come back - and the terrain and
+// assets are identical every time, so they are left in place instead of being
+// torn down and rebuilt (which would re-cook collision as well). Switching to
+// a different map clears them as before.
+static FString GContextLevel;
+
+static bool BF6_ContextAlreadyUp(const FString& Level)
+{
+	if (Level.IsEmpty() || GContextLevel != Level || !GEditor) return false;
+	UWorld* W = GEditor->GetEditorWorldContext().World();
+	if (!W) return false;
+	for (TActorIterator<AActor> It(W); It; ++It)
+		if (It->Tags.Contains(kContextTag)) return true;   // still standing
+	return false;
+}
+
+// Drop the scenery only when the map actually changes.
+// Set by BF6_ClearContextFor: true means the scenery already standing is for
+// this map and was kept, so nothing should respawn it. Decided ONCE per map
+// open - checking 'is anything standing' per mesh would let the terrain make
+// the assets look redundant, and the map would come up without its buildings.
+static bool GContextReused = false;
+
+// Drop the scenery only when the map actually changes.
+static void BF6_ClearContextFor(const FString& Level)
+{
+	GContextReused = BF6_ContextAlreadyUp(Level);
+	if (GContextReused) return;
+	ClearActorsWithTag(kContextTag);
+	GContextLevel = Level;
+}
+
+// Scenery whose collision has not been cooked yet, and the cook itself.
+// Kept out of the map-open path deliberately (see SpawnContextMesh).
+struct FBF6PendingCook { TWeakObjectPtr<UProceduralMeshComponent> Comp; FString Path; };
+static TArray<FBF6PendingCook> GPendingCooks;
+static FTSTicker::FDelegateHandle GCookTick;
+
+static void BF6_QueueContextCollision(UProceduralMeshComponent* Mesh, const FString& Path)
+{
+	if (!Mesh) return;
+	GPendingCooks.Add({ Mesh, Path });
+	if (GCookTick.IsValid()) return;
+	// one frame is not enough - let the map draw first, then take the hit
+	GCookTick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+	{
+		GCookTick.Reset();
+		TArray<FBF6PendingCook> Work = MoveTemp(GPendingCooks);
+		GPendingCooks.Reset();
+		const double T0 = FPlatformTime::Seconds();
+		int32 n = 0;
+		for (const FBF6PendingCook& W : Work)
+		{
+			UProceduralMeshComponent* M = W.Comp.Get();
+			if (!M) continue;
+			M->ClearAllMeshSections();
+			if (FillProcFromBf6Mesh(M, W.Path, true)) n++;   // same geometry, now with collision
+		}
+		if (n > 0)
+			UE_LOG(LogBF6, Warning, TEXT("context collision ready: %d mesh(es) in %.2fs"), n, FPlatformTime::Seconds() - T0);
+		return false;   // one shot
+	}), 0.75f);
+}
+
 static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 {
 	if (!GEditor) return nullptr;
@@ -421,7 +505,16 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	UProceduralMeshComponent* Mesh = MakeProcMesh(Actor, TEXT("ContextMesh"));
 	// Collision ON: the space-bar placement ray traces this surface so objects
 	// land where the crosshair points (not on a flat z=0 plane under the map).
-	if (!FillProcFromBf6Mesh(Mesh, FilePath, true)) { World->EditorDestroyActor(Actor, false); return nullptr; }
+	const double CtxD0 = GMeshDecodeSec, CtxB0 = GMeshBuildSec;
+	// Collision is ~97% of the cost of a map's scenery: on Battery the assets
+	// mesh takes 0.12s to build and 3.87s to cook, and the big maps are twice
+	// that again. So the surface goes up WITHOUT collision - the map is on
+	// screen and flyable in a moment - and the cook is queued to happen just
+	// after, while the creator is already looking around. Placement needs it,
+	// so it is deferred, never skipped.
+	if (!FillProcFromBf6Mesh(Mesh, FilePath, false)) { World->EditorDestroyActor(Actor, false); return nullptr; }
+	BF6_QueueContextCollision(Mesh, FilePath);
+	const double CtxDecode = GMeshDecodeSec - CtxD0, CtxBuild = GMeshBuildSec - CtxB0;
 	// The map context is scenery: never selectable, never movable.
 	Mesh->bSelectable = false;
 	// SDK proxy look: flat unlit green terrain / orange assets.
@@ -431,7 +524,8 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, MatPath))
 		for (int32 s = 0; s < Mesh->GetNumSections(); s++) Mesh->SetMaterial(s, Mat);
 	Mesh->SetVisibility(true, true);
-	UE_LOG(LogBF6, Warning, TEXT("Loaded context %s: %d section(s)."), *Label, Mesh->GetNumSections());
+	UE_LOG(LogBF6, Warning, TEXT("Loaded context %s: %d section(s) - %.2fs reading, %.2fs building (collision cook included)."),
+		*Label, Mesh->GetNumSections(), CtxDecode, CtxBuild);
 	return Actor;
 }
 
@@ -449,14 +543,21 @@ static AActor* SpawnSdkModel(const FString& MeshName, const FString& Label, cons
 	UWorld* World = GEditor->GetEditorWorldContext().World();
 	if (!World) return nullptr;
 	const FString Path = ObjModelPath(MeshName);
-	if (!FPaths::FileExists(Path)) { UE_LOG(LogBF6, Warning, TEXT("no SDK model bundled for '%s'"), *MeshName); return nullptr; }
+	const double S0 = FPlatformTime::Seconds();
+	const bool bHave = FPaths::FileExists(Path);
+	GStatSec += FPlatformTime::Seconds() - S0;
+	if (!bHave) { UE_LOG(LogBF6, Warning, TEXT("no SDK model bundled for '%s'"), *MeshName); return nullptr; }
+	const double P0 = FPlatformTime::Seconds();
 	AActor* Actor = World->SpawnActor<AActor>(AActor::StaticClass(), Xform);
+	GSpawnSec += FPlatformTime::Seconds() - P0;
 	if (!Actor) return nullptr;
 	BF6_SetPrettyLabel(Actor, Label.IsEmpty() ? MeshName : Label);
 	Actor->Tags.Add(kPlacedTag);
 	Actor->Tags.Add(FName(*(FString(TEXT("mesh:")) + MeshName)));
 	if (!Label.IsEmpty()) Actor->Tags.Add(FName(*(FString(TEXT("label:")) + Label)));
+	const double F0 = FPlatformTime::Seconds();
 	BF6_FileActor(Actor);   // self-sorting outliner: role/category folder
+	GFolderSec += FPlatformTime::Seconds() - F0;
 	UProceduralMeshComponent* M = MakeProcMesh(Actor, TEXT("ProcMesh"));
 	if (!FillProcFromBf6Mesh(M, Path)) { World->EditorDestroyActor(Actor, false); return nullptr; }
 	ApplyObjectWhite(M);               // pure white, like Godot's object library
@@ -667,51 +768,107 @@ static void ApplyObjectWhite(UProceduralMeshComponent* Mesh)
 // small object/gameplay models. Returns false if missing/unreadable.
 // bCollision cooks collision (async) - used by the map context so the space-bar
 // placement ray can find the actual surface under the cursor.
+// Decoded mesh data, kept so a model is read and unzipped ONCE per session.
+// A resumed map is mostly repeats - a few hundred distinct models across
+// thousands of objects - and every one of those objects used to re-read its
+// file from disk, gunzip it and re-parse it. Big one-off meshes (the map's own
+// terrain and assets) are deliberately not cached: they are loaded once and
+// keeping them would cost hundreds of megabytes for nothing.
+struct FBF6Surface
+{
+	TArray<FVector> V, N;
+	TArray<FVector2D> UV;
+	TArray<int32> T;
+};
+static TMap<FString, TArray<FBF6Surface>> GMeshCache;
+static int64 GMeshCacheBytes = 0;
+static const int64 kMeshCacheMaxBytes = 512ll * 1024 * 1024;   // generous, still bounded
+static const int64 kMeshCacheMaxFile  = 4ll * 1024 * 1024;     // skip the map-sized meshes
+
+// load timing, read back by the session load log
+double GMeshDecodeSec = 0.0, GMeshBuildSec = 0.0;
+int32  GMeshCalls = 0, GMeshCacheHits = 0;
+
+void BF6_ClearMeshCache()
+{
+	GMeshCache.Empty();
+	GMeshCacheBytes = 0;
+}
+
 static bool FillProcFromBf6Mesh(UProceduralMeshComponent* Mesh, const FString& FilePath, bool bCollision)
 {
-	if (!Mesh || !FPaths::FileExists(FilePath)) return false;
+	if (!Mesh) return false;
 	if (bCollision) Mesh->bUseAsyncCooking = true;   // don't hitch the load
-	TArray<uint8> File;
-	if (!FFileHelper::LoadFileToArray(File, *FilePath) || File.Num() < 12) return false;
+	GMeshCalls++;
 
-	// 'BF6Z' = gzip-compressed payload; 'BF6S' = raw payload (legacy, uncompressed).
-	uint32 fileMagic = 0; FMemory::Memcpy(&fileMagic, File.GetData(), 4);
-	TArray<uint8> Raw;
-	if (fileMagic == 0x5A364642)   // BF6Z
+	const double T0 = FPlatformTime::Seconds();
+	TArray<FBF6Surface>* Cached = GMeshCache.Find(FilePath);
+	TArray<FBF6Surface> Decoded;
+	if (Cached) GMeshCacheHits++;
+	else
 	{
-		uint32 rawSize = 0; FMemory::Memcpy(&rawSize, File.GetData() + 4, 4);
-		Raw.SetNumUninitialized((int32)rawSize);
-		if (!FCompression::UncompressMemory(NAME_Gzip, Raw.GetData(), (int32)rawSize, File.GetData() + 8, File.Num() - 8))
-			return false;
-	}
-	else if (fileMagic == 0x42463653)   // BF6S
-	{
-		Raw = MoveTemp(File);
-	}
-	else return false;
+		if (!FPaths::FileExists(FilePath)) return false;
+		TArray<uint8> File;
+		if (!FFileHelper::LoadFileToArray(File, *FilePath) || File.Num() < 12) return false;
 
-	FMemoryReader Ar(Raw);
-	uint32 magic = 0, ver = 0, surf = 0;
-	Ar << magic; Ar << ver; Ar << surf;
-	if (magic != 0x42463653) return false;
-	const float M = 100.0f;
-	for (uint32 s = 0; s < surf; s++)
-	{
-		uint32 vc = 0, ic = 0; Ar << vc; Ar << ic;
-		TArray<FVector> V; V.Reserve(vc);
-		for (uint32 v = 0; v < vc; v++) { float x, y, z; Ar << x; Ar << y; Ar << z; V.Add(FVector(x * M, z * M, y * M)); }
-		uint8 hasN = 0, hasU = 0; Ar << hasN; Ar << hasU;
-		TArray<FVector> N;
-		if (hasN) { N.Reserve(vc); for (uint32 v = 0; v < vc; v++) { float x, y, z; Ar << x; Ar << y; Ar << z; N.Add(FVector(x, z, y)); } }
-		TArray<FVector2D> UV;
-		if (hasU) { UV.Reserve(vc); for (uint32 v = 0; v < vc; v++) { float u, w; Ar << u; Ar << w; UV.Add(FVector2D(u, w)); } }
-		TArray<int32> T; T.Reserve(ic);
-		for (uint32 i = 0; i < ic; i++) { int32 idx = 0; Ar << idx; T.Add(idx); }
-		for (int32 t = 0; t + 2 < T.Num(); t += 3) { const int32 tmp = T[t + 1]; T[t + 1] = T[t + 2]; T[t + 2] = tmp; }
-		const TArray<FLinearColor> NC; const TArray<FProcMeshTangent> NT;
-		Mesh->CreateMeshSection_LinearColor((int32)s, V, T, N, UV, NC, NT, bCollision);
+		// 'BF6Z' = gzip-compressed payload; 'BF6S' = raw payload (legacy, uncompressed).
+		uint32 fileMagic = 0; FMemory::Memcpy(&fileMagic, File.GetData(), 4);
+		const int64 FileBytes = File.Num();
+		TArray<uint8> Raw;
+		if (fileMagic == 0x5A364642)   // BF6Z
+		{
+			uint32 rawSize = 0; FMemory::Memcpy(&rawSize, File.GetData() + 4, 4);
+			Raw.SetNumUninitialized((int32)rawSize);
+			if (!FCompression::UncompressMemory(NAME_Gzip, Raw.GetData(), (int32)rawSize, File.GetData() + 8, File.Num() - 8))
+				return false;
+		}
+		else if (fileMagic == 0x42463653)   // BF6S
+		{
+			Raw = MoveTemp(File);
+		}
+		else return false;
+
+		FMemoryReader Ar(Raw);
+		uint32 magic = 0, ver = 0, surf = 0;
+		Ar << magic; Ar << ver; Ar << surf;
+		if (magic != 0x42463653) return false;
+		const float M = 100.0f;
+		Decoded.SetNum((int32)surf);
+		for (uint32 s = 0; s < surf; s++)
+		{
+			FBF6Surface& Sf = Decoded[(int32)s];
+			uint32 vc = 0, ic = 0; Ar << vc; Ar << ic;
+			Sf.V.Reserve(vc);
+			for (uint32 v = 0; v < vc; v++) { float x, y, z; Ar << x; Ar << y; Ar << z; Sf.V.Add(FVector(x * M, z * M, y * M)); }
+			uint8 hasN = 0, hasU = 0; Ar << hasN; Ar << hasU;
+			if (hasN) { Sf.N.Reserve(vc); for (uint32 v = 0; v < vc; v++) { float x, y, z; Ar << x; Ar << y; Ar << z; Sf.N.Add(FVector(x, z, y)); } }
+			if (hasU) { Sf.UV.Reserve(vc); for (uint32 v = 0; v < vc; v++) { float u, w; Ar << u; Ar << w; Sf.UV.Add(FVector2D(u, w)); } }
+			Sf.T.Reserve(ic);
+			for (uint32 i = 0; i < ic; i++) { int32 idx = 0; Ar << idx; Sf.T.Add(idx); }
+			for (int32 t = 0; t + 2 < Sf.T.Num(); t += 3) { const int32 tmp = Sf.T[t + 1]; Sf.T[t + 1] = Sf.T[t + 2]; Sf.T[t + 2] = tmp; }
+		}
+
+		if (FileBytes <= kMeshCacheMaxFile && GMeshCacheBytes < kMeshCacheMaxBytes)
+		{
+			int64 Bytes = 0;
+			for (const FBF6Surface& Sf : Decoded)
+				Bytes += Sf.V.Num() * sizeof(FVector) + Sf.N.Num() * sizeof(FVector)
+					+ Sf.UV.Num() * sizeof(FVector2D) + Sf.T.Num() * sizeof(int32);
+			GMeshCacheBytes += Bytes;
+			Cached = &GMeshCache.Add(FilePath, MoveTemp(Decoded));
+		}
 	}
-	return true;
+	const double T1 = FPlatformTime::Seconds();
+
+	const TArray<FBF6Surface>& Src = Cached ? *Cached : Decoded;
+	const TArray<FLinearColor> NC; const TArray<FProcMeshTangent> NT;
+	for (int32 s = 0; s < Src.Num(); s++)
+		Mesh->CreateMeshSection_LinearColor(s, Src[s].V, Src[s].T, Src[s].N, Src[s].UV, NC, NT, bCollision);
+
+	const double T2 = FPlatformTime::Seconds();
+	GMeshDecodeSec += T1 - T0;
+	GMeshBuildSec  += T2 - T1;
+	return Src.Num() > 0;
 }
 
 // A vertical pillar marker (local space, centered on the actor).
@@ -1220,6 +1377,14 @@ static void SaveSession(const FString& Level, const FString& Name)
 
 static void LoadSession(const FString& Level, const FString& Name)
 {
+	const double LoadT0 = FPlatformTime::Seconds();
+	GMeshDecodeSec = GMeshBuildSec = 0.0; GMeshCalls = GMeshCacheHits = 0;
+	GLabelSec = GSpawnSec = GStatSec = GFolderSec = 0.0;
+	// one scan of the world up front instead of one per object
+	FCachedActorLabels BulkLabels;
+	if (UWorld* LW = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr) BulkLabels.Populate(LW);
+	GBulkLabels = &BulkLabels;
+	ON_SCOPE_EXIT { GBulkLabels = nullptr; };
 	if (Name.IsEmpty()) return;
 	const FString Path = BF6_SessionPathFor(Level, Name);
 	FString In;
@@ -1376,6 +1541,10 @@ static void LoadSession(const FString& Level, const FString& Name)
 		}
 	}
 	UE_LOG(LogBF6, Warning, TEXT("Loaded %d object(s) from %s"), n, *Path);
+	UE_LOG(LogBF6, Warning, TEXT("  load: %.2fs total - %.2fs reading models (%d of %d already cached), %.2fs building meshes"),
+		FPlatformTime::Seconds() - LoadT0, GMeshDecodeSec, GMeshCacheHits, GMeshCalls, GMeshBuildSec);
+	UE_LOG(LogBF6, Warning, TEXT("  load detail: %.2fs naming, %.2fs spawning, %.2fs file checks, %.2fs outliner"),
+		GLabelSec, GSpawnSec, GStatSec, GFolderSec);
 }
 
 // Carries a placeable while dragging from the list into the level viewport.
@@ -1625,7 +1794,7 @@ private:
 		CurrentSave = SaveName;
 		bEditing = !SaveName.IsEmpty();
 		Switcher->SetActiveWidgetIndex(1);
-		ClearActorsWithTag(kContextTag);
+		BF6_ClearContextFor(CurrentLevel);
 		ClearActorsWithTag(kPlacedTag);
 		ClearActorsWithTag(kBaseTag);
 		LoadLevel(); ApplyFilter();
@@ -1636,7 +1805,7 @@ private:
 		// the map recognizable (terrain alone is an anonymous green shape).
 		{
 			const FString AP = MeshPath(TEXT("_assets.bf6mesh"));
-			if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *CurrentLevel));
+			if (!GContextReused) if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *CurrentLevel));
 		}
 		LoadBaseSetup();   // the map's shipped HQs, spawns, combat area (from the SDK level scene)
 		if (!SaveName.IsEmpty()) LoadSession(CurrentLevel, SaveName);
@@ -1650,7 +1819,7 @@ private:
 	void LoadTerrainContext()
 	{
 		const FString P = MeshPath(TEXT("_terrain.bf6mesh"));
-		if (FPaths::FileExists(P)) SpawnContextMesh(P, FString::Printf(TEXT("%s_Terrain"), *CurrentLevel));
+		if (!GContextReused) if (FPaths::FileExists(P)) SpawnContextMesh(P, FString::Printf(TEXT("%s_Terrain"), *CurrentLevel));
 		else UE_LOG(LogBF6, Warning, TEXT("no low-poly terrain extracted for %s yet"), *CurrentLevel);
 	}
 
@@ -1756,7 +1925,7 @@ private:
 	FReply OnLoadAssets()
 	{
 		const FString P = MeshPath(TEXT("_assets.bf6mesh"));
-		if (FPaths::FileExists(P)) SpawnContextMesh(P, FString::Printf(TEXT("%s_Assets"), *CurrentLevel));
+		if (!GContextReused) if (FPaths::FileExists(P)) SpawnContextMesh(P, FString::Printf(TEXT("%s_Assets"), *CurrentLevel));
 		else UE_LOG(LogBF6, Warning, TEXT("no low-poly assets extracted for %s yet"), *CurrentLevel);
 		return FReply::Handled();
 	}
@@ -1958,7 +2127,7 @@ private:
 		CurrentSave  = FPaths::GetBaseFilename(File).Replace(TEXT(".spatial"), TEXT(""));
 		bEditing = true;
 		if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(1);
-		ClearActorsWithTag(kContextTag);
+		BF6_ClearContextFor(CurrentLevel);
 		ClearActorsWithTag(kPlacedTag);
 		ClearActorsWithTag(kBaseTag);
 		LoadLevel(); ApplyFilter(); LoadBudgetMax();
@@ -1966,7 +2135,7 @@ private:
 		LoadTerrainContext();
 		{
 			const FString AP = MeshPath(TEXT("_assets.bf6mesh"));
-			if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *CurrentLevel));
+			if (!GContextReused) if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *CurrentLevel));
 		}
 
 		UWorld* World = GEditor->GetEditorWorldContext().World();
@@ -2713,12 +2882,12 @@ static void BF6_OpenMapWorldImpl(const FString& Level, const FString& Save)
 	if (!GEditor) return;
 	BF6_EnsureBaseSetupFormat();
 	g_ss.CurrentLevel = Level; g_ss.CurrentSave = Save; g_ss.bEditing = !Save.IsEmpty();
-	ClearActorsWithTag(kContextTag); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
+	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
 	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh"));
-	if (FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
+	if (!GContextReused) if (FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
 	const FString AP = BF6_MapMeshPath(Level, TEXT("_assets.bf6mesh"));
-	if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
+	if (!GContextReused) if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
 	BF6_LoadBaseSetup(Level);
 	if (!Save.IsEmpty()) LoadSession(Level, Save);
 	BF6_RecomputeBudget();
@@ -3230,10 +3399,10 @@ static bool BF6_ImportTscnFile(const FString& File)
 	g_ss.CurrentLevel = Level;
 	g_ss.CurrentSave = FPaths::GetBaseFilename(File);
 	g_ss.bEditing = true;
-	ClearActorsWithTag(kContextTag); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
+	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
-	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh")); if (FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
-	const FString AP = BF6_MapMeshPath(Level, TEXT("_assets.bf6mesh"));  if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
+	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh")); if (!GContextReused && FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
+	const FString AP = BF6_MapMeshPath(Level, TEXT("_assets.bf6mesh")); if (!GContextReused && FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
 	UWorld* World = GEditor->GetEditorWorldContext().World(); if (!World) return false;
 
 	auto ToUnreal = [](double gx, double gy, double gz) { return FVector((float)gx, (float)gz, (float)gy) * 100.f; };
@@ -3458,10 +3627,10 @@ static bool BF6_ImportSpatialDialog()
 				if (o->TryGetStringField(TEXT("metadata/bf6_save"), SaveName) && !SaveName.IsEmpty()) break;
 	if (SaveName.IsEmpty()) SaveName = FPaths::GetBaseFilename(File).Replace(TEXT(".spatial"), TEXT(""));
 	g_ss.CurrentLevel = Level; g_ss.CurrentSave = SaveName; g_ss.bEditing = true;
-	ClearActorsWithTag(kContextTag); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
+	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
-	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh")); if (FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
-	const FString AP = BF6_MapMeshPath(Level, TEXT("_assets.bf6mesh"));  if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
+	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh")); if (!GContextReused && FPaths::FileExists(TP)) SpawnContextMesh(TP, FString::Printf(TEXT("%s_Terrain"), *Level));
+	const FString AP = BF6_MapMeshPath(Level, TEXT("_assets.bf6mesh")); if (!GContextReused && FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
 
 	UWorld* World = GEditor->GetEditorWorldContext().World(); if (!World) return false;
 	auto ToUnreal = [](double gx,double gy,double gz){ return FVector((float)gx,(float)gz,(float)gy)*100.f; };
@@ -6077,6 +6246,36 @@ namespace BF6Api
 
 	bool AnyCollisionOverlay() { return GColVis.Num() > 0; }
 
+	// Whether THIS selection is already showing collision. The pill toggles on
+	// the selection, not on the map: picking a different object should offer to
+	// show that one, not to hide the one you were looking at before.
+	bool SelectionHasCollisionOverlay()
+	{
+		if (!GEditor) return false;
+		USelection* S = GEditor->GetSelectedActors();
+		for (int32 i = 0; S && i < S->Num(); i++)
+			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
+				if (BF6_ColVisOf(A)) return true;
+		return false;
+	}
+
+	int32 HideCollisionForSelection()
+	{
+		if (!GEditor) return 0;
+		USelection* S = GEditor->GetSelectedActors();
+		int32 n = 0;
+		for (int32 i = 0; S && i < S->Num(); i++)
+			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i)))
+				if (BF6_ColVisOf(A))
+				{
+					BF6_ColVisRemove(A);
+					GColVis.RemoveAll([A](const TWeakObjectPtr<AActor>& P){ return P.Get() == A; });
+					n++;
+				}
+		BF6_Redraw();
+		return n;
+	}
+
 	// how many objects are stretched, i.e. where the overlay actually differs
 	// from what is drawn - the only places collision can surprise you
 	int32 CountStretched()
@@ -8373,6 +8572,12 @@ namespace BF6Api
 		}
 		for (AActor* S : Set) GDragMove.Movers.Add(S);
 		if (GDragMove.Movers.Num() == 0) { GDragMove = FBF6DragMove(); return false; }
+		// same rule while dragging: the moving objects are not the surface
+		{
+			TArray<AActor*> Moving;
+			for (const TWeakObjectPtr<AActor>& Wk : GDragMove.Movers) if (AActor* M = Wk.Get()) Moving.Add(M);
+			SetPlacementIgnore(Moving);
+		}
 		return true;
 	}
 
@@ -8410,6 +8615,7 @@ namespace BF6Api
 
 	void EndDragMove()
 	{
+		ClearPlacementIgnore();
 		if (GDragMove.bMoving && GEditor)
 		{
 			GEditor->EndTransaction();
@@ -8420,6 +8626,7 @@ namespace BF6Api
 
 	void CancelDragMove()
 	{
+		ClearPlacementIgnore();
 		if (GDragMove.bMoving && GEditor) GEditor->CancelTransaction(0);
 		GDragMove = FBF6DragMove();
 	}
@@ -8473,6 +8680,12 @@ namespace BF6Api
 		for (TWeakObjectPtr<AActor>& Wk : GPickPlace.Movers)
 			if (AActor* M = Wk.Get()) M->Modify();
 		GPickPlace.bActive = true;
+		// the carried objects must not act as the surface under themselves
+		{
+			TArray<AActor*> Carried;
+			for (const TWeakObjectPtr<AActor>& Wk : GPickPlace.Movers) if (AActor* M = Wk.Get()) Carried.Add(M);
+			SetPlacementIgnore(Carried);
+		}
 		return true;
 	}
 
@@ -8494,6 +8707,7 @@ namespace BF6Api
 
 	void FinishPickPlace()
 	{
+		ClearPlacementIgnore();
 		if (!GPickPlace.bActive) return;
 		GPickPlace.bActive = false;
 		if (GEditor)
@@ -8507,6 +8721,7 @@ namespace BF6Api
 
 	void CancelPickPlace()
 	{
+		ClearPlacementIgnore();
 		if (!GPickPlace.bActive) return;
 		GPickPlace.bActive = false;
 		if (GEditor) GEditor->CancelTransaction(0);   // everything returns home
@@ -9482,19 +9697,117 @@ namespace BF6Api
 		return TraceToSurface(O, D, OutWorld);
 	}
 
+	// What the ray must NOT hit: whatever is being placed right now. A carried
+	// object is a placed object like any other, so without this it lands on
+	// itself - the surface moves with the cursor, the object climbs its own
+	// face, and placement jitters. Set while carrying, cleared when it lands.
+	static TSet<TWeakObjectPtr<AActor>> GRayIgnore;
+
+	void SetPlacementIgnore(const TArray<AActor*>& Actors)
+	{
+		GRayIgnore.Reset();
+		for (AActor* A : Actors) if (A) GRayIgnore.Add(A);
+	}
+
+	void ClearPlacementIgnore() { GRayIgnore.Reset(); }
+
+	// Objects you placed yourself are hit too, so you can build upward - a crate
+	// on a rooftop you dropped in, a light on your own gantry. They carry no
+	// cooked collision (cooking 3,000 props would cost minutes at load, which is
+	// exactly the bill we just removed from map opens), so the ray is tested
+	// against their geometry directly: a cheap bounds check first, then real
+	// triangles from the mesh cache for the handful that survive it.
+	static bool BF6_RayHitsPlaced(const FVector& O, const FVector& D, double MaxDist, FVector& OutHit)
+	{
+		if (!GEditor) return false;
+		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return false;
+		const FVector End = O + D * MaxDist;
+
+		// Pass one is bounds only, which is cheap enough to run over the whole map.
+		// Testing triangles for every actor the ray brushes was what made placement
+		// stutter: a single prop can carry thousands, and a ray down a street can
+		// clip dozens of props. So candidates are collected with their entry
+		// distance, sorted, and only opened up nearest-first.
+		struct FCand { AActor* A; double Dist; FVector BoxHit; };
+		TArray<FCand> Cands;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			AActor* A = *It;
+			if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag)) continue;
+			if (A->Tags.Contains(kHandleTag) || A->Tags.Contains(kContextTag)) continue;
+			if (IsVolumeActor(A) || IsObbActor(A)) continue;   // zones are not surfaces
+			if (GRayIgnore.Contains(A)) continue;   // the thing being placed
+			FVector Org, Ext;
+			A->GetActorBounds(false, Org, Ext);
+			if (Ext.IsNearlyZero()) continue;
+			FVector BoxHit, BoxNorm;
+			float BoxDist = (float)MaxDist;
+			if (!FMath::LineExtentBoxIntersection(FBox(Org - Ext, Org + Ext), O, End, FVector::ZeroVector, BoxHit, BoxNorm, BoxDist))
+				continue;
+			Cands.Add({ A, (BoxHit - O).Size(), BoxHit });
+		}
+		if (Cands.Num() == 0) return false;
+		Cands.Sort([](const FCand& X, const FCand& Y){ return X.Dist < Y.Dist; });
+
+		double Best = MaxDist;
+		bool bAny = false;
+		for (const FCand& C : Cands)
+		{
+			// everything from here on starts further away than the hit we already
+			// have, so nothing left can win
+			if (C.Dist >= Best) break;
+
+			FString MeshName = TagValue(C.A, TEXT("mesh:"));
+			if (MeshName.IsEmpty()) MeshName = TagValue(C.A, TEXT("type:"));
+			const TArray<FBF6Surface>* Surfs = MeshName.IsEmpty() ? nullptr : GMeshCache.Find(ObjModelPath(MeshName));
+			if (!Surfs)
+			{
+				// not decoded yet: its box is a fair stand-in until it is
+				if (C.Dist < Best) { Best = C.Dist; OutHit = C.BoxHit; bAny = true; }
+				continue;
+			}
+
+			const FTransform Xf = C.A->GetActorTransform();
+			const FVector LO = Xf.InverseTransformPosition(O);
+			const FVector LE = Xf.InverseTransformPosition(End);
+			for (const FBF6Surface& S : *Surfs)
+			{
+				for (int32 t = 0; t + 2 < S.T.Num(); t += 3)
+				{
+					FVector Hit, Norm;
+					if (!FMath::SegmentTriangleIntersection(LO, LE, S.V[S.T[t]], S.V[S.T[t + 1]], S.V[S.T[t + 2]], Hit, Norm))
+						continue;
+					const FVector WHit = Xf.TransformPosition(Hit);
+					const double Dist = (WHit - O).Size();
+					if (Dist < Best) { Best = Dist; OutHit = WHit; bAny = true; }
+				}
+			}
+		}
+		return bAny;
+	}
+
 	static bool TraceToSurface(const FVector& O, const FVector& D, FVector& OutWorld)
 	{
 		// Trace the actual map surface (the context meshes carry collision), so
 		// placements land on the bridge deck / terrain under the crosshair instead
 		// of a flat z=0 plane below the map.
+		const double kReach = 500000.f;
+		bool bHitWorld = false;
+		double WorldDist = kReach;
 		if (GEditor)
 			if (UWorld* World = GEditor->GetEditorWorldContext().World())
 			{
 				FHitResult Hit;
 				FCollisionQueryParams QP(FName(TEXT("BF6PlaceTrace")), true);
-				if (World->LineTraceSingleByChannel(Hit, O, O + D * 500000.f, ECC_Visibility, QP))
-				{ OutWorld = Hit.Location; return true; }
+				if (World->LineTraceSingleByChannel(Hit, O, O + D * kReach, ECC_Visibility, QP))
+				{ OutWorld = Hit.Location; WorldDist = (Hit.Location - O).Size(); bHitWorld = true; }
 			}
+
+		// whichever comes first: the map, or something the creator placed on it
+		FVector PlacedHit;
+		if (BF6_RayHitsPlaced(O, D, WorldDist, PlacedHit)) { OutWorld = PlacedHit; return true; }
+		if (bHitWorld) return true;
+
 		// fallback: ground plane
 		if (FMath::Abs(D.Z) > 1e-4f) { const float t = -O.Z / D.Z; OutWorld = (t > 0.f && t < 200000.f) ? (O + D * t) : (O + D * 1000.f); }
 		else OutWorld = O + D * 1000.f;

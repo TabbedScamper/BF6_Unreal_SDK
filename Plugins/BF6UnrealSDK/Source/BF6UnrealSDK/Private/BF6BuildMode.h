@@ -326,6 +326,10 @@ namespace BF6Api
 	void CancelDragMove();
 	// PICK PLACE: the selection rides the cursor along the terrain, click
 	// sets it down (one undo reverts), Esc puts everything back
+	// Placement must not treat whatever is being carried as the ground under
+	// itself, or it lands on its own face and jitters with the cursor.
+	void SetPlacementIgnore(const TArray<class AActor*>& Actors);
+	void ClearPlacementIgnore();
 	bool BeginPickPlace();
 	bool IsPickPlacing();
 	void TickPickPlace(bool bSnap);
@@ -362,6 +366,8 @@ namespace BF6Api
 	// the rule that catches creators out: BF6 collision scales uniformly from
 	// the X axis, so a stretched object still collides as though it were square.
 	bool  AnyCollisionOverlay();
+	bool  SelectionHasCollisionOverlay();     // the pill toggles on the selection
+	int32 HideCollisionForSelection();
 	int32 CountStretched();                   // objects where it actually differs
 	int32 ShowCollisionOverlay(int32 Scope);  // 0 selection, 1 stretched, 2 all
 	int32 HideCollisionOverlay();

@@ -50,6 +50,8 @@
 #include "LevelEditor.h"
 #include "SLevelViewport.h"
 #include "Editor.h"
+#include "Engine/Selection.h"
+#include "MouseDeltaTracker.h"
 #include "EditorModeManager.h"
 #include "UnrealWidgetFwd.h"
 #include "Settings/LevelEditorViewportSettings.h"
@@ -430,6 +432,9 @@ bool FBF6LibDragOp::bActive = false;
 bool FBF6LibDragOp::bWarnedReadOnly = false;
 
 static bool BF6_GodotCameraOn();   // defined with the input handler below
+static void BF6_TickFlyBoost(float DeltaSeconds);   // Shift-to-go-faster, defined with it
+static bool BF6_ShiftFlying();                      // Shift held during a flight
+static void BF6_ShiftFlyLook(const FVector2D& Delta);
 
 // ---------------------------------------------------------------------------
 // The CONTROLS hint panel (top-left): persistent and Portal-styled, it slides
@@ -1604,17 +1609,31 @@ public:
 			SlideTarget = bPinned ? 1.f : 0.f;
 		}
 
-		// flying: holding the right mouse button is Unreal's WASD fly, and the
-		// strip sits right where you are looking. It drops out of the way for
-		// the flight and comes back the moment the button is released - up if
-		// pinned, hidden if it was on auto-hide, exactly like a drag-out.
+		// flying: right mouse alone is just looking around, so the strip only
+		// steps aside once they actually MOVE - otherwise spinning on the spot
+		// makes it flash in and out. Once hidden it stays hidden for the rest of
+		// the flight, however much they stop and start, and returns on release:
+		// up if pinned, hidden if it was on auto-hide.
 		const bool bFlying = FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::RightMouseButton);
-		if (bFlying && !bFlyHidden && Slide > 0.01f)
+		if (bFlying)
 		{
-			bFlyHidden = true;
-			SlideTarget = 0.f;
+			if (!bFlyHidden && Slide > 0.01f)
+			{
+				// the engine reads flight keys straight off the viewport, so we do too
+				bool bMoving = false;
+				if (FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient)
+					if (FViewport* VP = VC->Viewport)
+						for (const FKey& K : { EKeys::W, EKeys::A, EKeys::S, EKeys::D, EKeys::E, EKeys::Q,
+							EKeys::Up, EKeys::Down, EKeys::Left, EKeys::Right })
+							if (VP->KeyState(K)) { bMoving = true; break; }
+				if (bMoving)
+				{
+					bFlyHidden = true;
+					SlideTarget = 0.f;
+				}
+			}
 		}
-		else if (!bFlying && bFlyHidden)
+		else if (bFlyHidden)
 		{
 			bFlyHidden = false;
 			if (!FBF6LibDragOp::bActive) SlideTarget = bPinned ? 1.f : 0.f;
@@ -2993,6 +3012,7 @@ public:
 		BF6Api::TickScatter();        // scatter outline: project the corner dots
 		BF6Api::TickCameraPreview();  // camera selected: live picture-in-picture
 		BF6Api::TickCollisionOverlay();   // overlays follow objects as they move
+		BF6_TickFlyBoost(D);          // Shift while flying = faster, like Godot
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
 		// the tool's own autosave: closing the editor can never cost more than
 		// a minute of work (session files are tiny)
@@ -3609,9 +3629,10 @@ static void BF6Pie_Attach()
 		{ Items.Add(TEXT("SET CAMERA")); Subs.Add(TEXT("take the editor view")); }
 		if (GPieProps.Num() > 0)
 		{ Items.Add(TEXT("ATTRIBUTES")); Subs.Add(FString::Printf(TEXT("%d fields"), GPieProps.Num())); }
-		// collision is a per-object question, and the top ring is unreachable
-		// while anything is selected - so the selection scope lives here
-		if (BF6Api::AnyCollisionOverlay())
+		// colours and collision are both per-object questions, and the top ring
+		// is unreachable while anything is selected - so they live here too
+		Items.Add(TEXT("COLORIZE")); Subs.Add(TEXT("pick a colour"));
+		if (BF6Api::SelectionHasCollisionOverlay())
 		{ Items.Add(TEXT("HIDE COLLISION")); Subs.Add(TEXT("clear the red")); }
 		else
 		{ Items.Add(TEXT("COLLISION")); Subs.Add(TEXT("what you really hit")); }
@@ -4132,6 +4153,11 @@ static void BF6Pie_Confirm()
 				BF6_MiniToast(TEXT("Riding the cursor - click to place, Esc puts it back."));
 			return;
 		}
+		if (Pick == TEXT("COLORIZE"))
+		{
+			BF6_PushTransient(SNew(SBF6ColorizePanel), Center);
+			return;
+		}
 		if (Pick == TEXT("COLLISION"))
 		{
 			const int32 n = BF6Api::ShowCollisionOverlay(0);
@@ -4142,7 +4168,7 @@ static void BF6Pie_Confirm()
 		}
 		if (Pick == TEXT("HIDE COLLISION"))
 		{
-			const int32 n = BF6Api::HideCollisionOverlay();
+			const int32 n = BF6Api::HideCollisionForSelection();
 			BF6_MiniToast(FString::Printf(TEXT("Collision hidden on %d object%s."), n, n == 1 ? TEXT("") : TEXT("s")));
 			return;
 		}
@@ -4272,6 +4298,224 @@ static void BF6_SetGodotCamera(bool bOn)
 }
 
 // ---- Godot-style hold-Ctrl snapping ----
+// Shift while flying = go faster, the way Godot does it.
+//
+// This cannot be done by configuring Unreal, and the reason is worth writing
+// down. Movement keys are chords with NO modifiers, so Shift+W matches
+// nothing and no impulse reaches the camera. Withholding the Shift key from
+// the viewport does not help either: FSceneViewport::UpdateModifierKeys
+// re-stamps the modifier state from EVERY mouse event, so the moment the
+// mouse moves the viewport knows Shift is down again and stops. Mouse-look
+// is gated on Shift as well, so the engine will neither move nor steer.
+//
+// So while Shift is held during a flight, the tool flies the camera itself -
+// movement AND look - and hands control straight back on release. Realtime is
+// forced on for the duration, because a non-realtime viewport only redraws
+// when something invalidates it, which is what made an earlier attempt at
+// this look choppy.
+static const float kFlyBoost = 4.0f;
+static bool GFlyActive = false;
+static const TCHAR* kFlyOverride = TEXT("BF6 fast fly");
+
+// Viewport->ShowCursor only governs the viewport's own drawn cursor - the
+// Windows pointer stays on screen. The engine hides that through an editor
+// mode override we do not have, so we ask the platform directly.
+static void BF6_SetSystemCursorVisible(bool bVisible)
+{
+	if (TSharedPtr<GenericApplication> Plat = FSlateApplication::Get().GetPlatformApplication())
+		if (Plat->Cursor.IsValid())
+			Plat->Cursor->Show(bVisible);
+}
+
+static bool BF6_ShiftFlying()
+{
+	if (!BF6_GodotCameraOn()) return false;
+	FSlateApplication& App = FSlateApplication::Get();
+	return App.GetPressedMouseButtons().Contains(EKeys::RightMouseButton)
+		&& App.GetModifierKeys().IsShiftDown();
+}
+
+// the look half, fed by the mouse events the input handler already sees
+static void BF6_ShiftFlyLook(const FVector2D& Delta)
+{
+	FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+	if (!VC || Delta.IsNearlyZero()) return;
+	const float Sens = 0.35f;   // close to the editor's own feel
+	FRotator R = VC->GetViewRotation();
+	R.Yaw   += Delta.X * Sens;
+	R.Pitch = FMath::Clamp(R.Pitch - Delta.Y * Sens, -89.f, 89.f);
+	VC->SetViewRotation(R);
+}
+
+// Driven from the engine tick rather than a Slate tick: a widget ticks on
+// Slate's cadence, so the camera advanced out of step with the frames being
+// drawn and the motion looked stepped at speed. This runs once per engine
+// frame with the frame's own delta, and asks for a redraw after moving.
+static FTSTicker::FDelegateHandle GFlyTick;
+// Flying must never change what is selected. With Shift held the engine's own
+// mouse-look never runs, so its drag tracker sees a stationary right-click and
+// treats the release as a pick - landing on an object selects it. The
+// selection is therefore taken before the flight and put back after.
+static TArray<TWeakObjectPtr<AActor>> GFlySelection;
+
+static void BF6_RememberSelection()
+{
+	GFlySelection.Reset();
+	if (!GEditor) return;
+	if (USelection* S = GEditor->GetSelectedActors())
+		for (int32 i = 0; i < S->Num(); i++)
+			if (AActor* A = Cast<AActor>(S->GetSelectedObject(i))) GFlySelection.Add(A);
+}
+
+static void BF6_RestoreSelectionAfterFlight()
+{
+	if (!GEditor) return;
+	USelection* S = GEditor->GetSelectedActors();
+	if (!S) return;
+	// only step in if the flight actually changed something
+	bool bSame = (S->Num() == GFlySelection.Num());
+	if (bSame)
+		for (int32 i = 0; i < S->Num() && bSame; i++)
+			bSame = GFlySelection.Contains(Cast<AActor>(S->GetSelectedObject(i)));
+	if (bSame) return;
+	GEditor->SelectNone(false, true, false);
+	for (const TWeakObjectPtr<AActor>& Wk : GFlySelection)
+		if (AActor* A = Wk.Get()) GEditor->SelectActor(A, true, false);
+	GEditor->NoteSelectionChange();
+}
+
+
+static void BF6_ShiftFlyStep(float DeltaSeconds)
+{
+	FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+	if (!VC || !VC->Viewport) return;
+	FViewport* VP = VC->Viewport;
+	FVector Move = FVector::ZeroVector;
+	const FRotator Rot = VC->GetViewRotation();
+	const FVector Fwd = Rot.Vector();
+	const FVector Right = FRotationMatrix(Rot).GetScaledAxis(EAxis::Y);
+	if (VP->KeyState(EKeys::W)) Move += Fwd;
+	if (VP->KeyState(EKeys::S)) Move -= Fwd;
+	if (VP->KeyState(EKeys::D)) Move += Right;
+	if (VP->KeyState(EKeys::A)) Move -= Right;
+	if (VP->KeyState(EKeys::E)) Move += FVector::UpVector;   // world up, like the engine
+	if (VP->KeyState(EKeys::Q)) Move -= FVector::UpVector;
+	if (Move.IsNearlyZero()) return;
+
+	// scaled by the viewport's own speed, so the speed dropdown still counts
+	const float Speed = FMath::Max(VC->GetCameraSpeed(), 0.1f) * 1500.f * kFlyBoost;
+	VC->SetViewLocation(VC->GetViewLocation() + Move.GetSafeNormal() * Speed * FMath::Min(DeltaSeconds, 0.1f));
+	// The engine decides a right-click release is a CLICK when its tracker saw
+	// no movement - and with Shift held its mouse-look never ran, so releasing
+	// over an object picked it. This is the engine's own flag for 'movement
+	// happened elsewhere', which is exactly true here.
+	if (FMouseDeltaTracker* MDT = VC->GetMouseDeltaTracker()) MDT->SetExternalMovement(true);
+	VC->Invalidate(false, false);   // draw the frame we just moved into
+}
+
+// Shift only ever governs OUR movement. The cursor and the selection belong
+// to the right-click, not to Shift: releasing Shift mid-flight has to hand
+// the camera straight back to the engine, so we must not disturb its mouse
+// lock or its capture while the button is still down. (Releasing the lock on
+// Shift-up was exactly what stopped the camera.)
+// Handing back to the engine mid-flight needs the movement keys announced
+// again. Its newer navigation is event-driven: a W press made while Shift was
+// held never matched a binding, so it was dropped, and simply releasing Shift
+// does not make it notice a key that is still down - you would have to let go
+// of W and press it again. Re-sending a press for whatever is held, with no
+// modifiers, picks the flight up without the user touching anything.
+static void BF6_ReannounceFlightKeys()
+{
+	FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+	if (!VC || !VC->Viewport) return;
+	FViewport* VP = VC->Viewport;
+	const FModifierKeysState NoMods(false, false, false, false, false, false, false, false, false);
+	for (const FKey& K : { EKeys::W, EKeys::A, EKeys::S, EKeys::D, EKeys::E, EKeys::Q })
+	{
+		if (!VP->KeyState(K)) continue;
+		FKeyEvent KE(K, NoMods, FSlateApplication::Get().GetUserIndexForKeyboard(), false, 0, 0);
+		FSlateApplication::Get().ProcessKeyDownEvent(KE);
+	}
+
+	// ...and wake its mouse-look. Flight input only flows while the engine
+	// thinks you are looking around, and that starts on a mouse MOVE - so with
+	// the mouse held still after Shift comes off, nothing happened until you
+	// jiggled it. One pixel out and back is enough, and cancels itself out.
+	if (TSharedPtr<GenericApplication> Plat = FSlateApplication::Get().GetPlatformApplication())
+		if (Plat->Cursor.IsValid())
+		{
+			const FVector2D P = Plat->Cursor->GetPosition();
+			Plat->Cursor->SetPosition((int32)P.X + 1, (int32)P.Y);
+			Plat->Cursor->SetPosition((int32)P.X, (int32)P.Y);
+		}
+
+}
+static bool GFlyCursorHidden = false;
+static bool GFlyDidFly = false;
+
+static void BF6_TickFlyBoost(float /*SlateDelta*/)
+{
+	FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+	if (!VC || !VC->Viewport)
+	{
+		GFlyActive = false;
+		if (GFlyCursorHidden) { GFlyCursorHidden = false; BF6_SetSystemCursorVisible(true); }
+		return;
+	}
+
+	const bool bRMB = FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::RightMouseButton);
+	const bool bWant = BF6_ShiftFlying();
+
+	if (bWant != GFlyActive)
+	{
+		GFlyActive = bWant;
+		if (bWant)
+		{
+			// smooth: a non-realtime viewport only redraws when invalidated
+			VC->AddRealtimeOverride(true, FText::FromString(kFlyOverride));
+			if (!GFlyCursorHidden)
+			{
+				GFlyCursorHidden = true;
+				GFlyDidFly = true;
+				VC->Viewport->ShowCursor(false);
+				BF6_SetSystemCursorVisible(false);
+				BF6_RememberSelection();
+			}
+			GFlyTick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float Dt) -> bool
+			{
+				BF6_ShiftFlyStep(Dt);
+				return true;   // every frame until Shift comes off
+			}), 0.0f);
+		}
+		else
+		{
+			// Shift came off: stop driving and let the engine fly again. Nothing
+			// about the cursor or the capture is touched while the button is held.
+			if (GFlyTick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(GFlyTick); GFlyTick.Reset(); }
+			VC->RemoveRealtimeOverride(FText::FromString(kFlyOverride), false);
+			if (bRMB) BF6_ReannounceFlightKeys();   // keep flying without re-pressing
+		}
+	}
+
+	// the flight is over only when the button is released
+	if (!bRMB)
+	{
+		if (GFlyCursorHidden)
+		{
+			GFlyCursorHidden = false;
+			VC->Viewport->ShowCursor(true);
+			BF6_SetSystemCursorVisible(true);
+		}
+		if (GFlyDidFly)
+		{
+			GFlyDidFly = false;
+			// the engine's pick lands on the same release, so undo it next tick
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+			{ BF6_RestoreSelectionAfterFlight(); return false; }), 0.0f);
+		}
+	}
+}
+
 // While Ctrl is down, grid + angle snap turn on at Godot's default increments
 // (1 m / 15 degrees); releasing restores the user's own toolbar toggles.
 static bool  GSnapHeld = false;
@@ -4678,6 +4922,11 @@ public:
 
 	virtual bool HandleMouseMoveEvent(FSlateApplication& App, const FPointerEvent& E) override
 	{
+		// steering while Shift-flying: the engine refuses to look around with a
+		// modifier held, so the movement we supply gets its own mouse-look. Never
+		// consumed - everything else still sees the move.
+		if (BF6_ShiftFlying()) BF6_ShiftFlyLook(E.GetCursorDelta());
+
 		if (BF6Pie_Active()) BF6Pie_Update(E.GetScreenSpacePosition());
 		// pick place: the selection rides the cursor (never consumed, so the
 		// camera and everything else keep working while carrying)
