@@ -39,3 +39,8 @@ Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/sdkhistory/
 
 # SDK history harvester downloads (the script itself is tracked)
 tools/sdk_history/work/
+
+# The High Poly add-on lives in its own repository
+# (TabbedScamper/BF6_Unreal_SDK_High_Poly) and must never ship with the base
+# plugin - it is developed in this working tree but released separately.
+Plugins/Add-Ons/

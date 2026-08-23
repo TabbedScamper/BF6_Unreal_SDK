@@ -20,9 +20,13 @@
 #include "Framework/Docking/TabManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Containers/Ticker.h"   // the coalesced tree flush
+#include "Framework/Application/SlateApplication.h"
 #include "Misc/Paths.h"
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateStyleRegistry.h"
+#include "SSceneOutliner.h"
+#include "FolderTreeItem.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
@@ -455,6 +459,13 @@ namespace BF6Api
 							]
 						]
 						+ SVerticalBox::Slot().FillHeight(1.f)[ BuildOutliner() ]
+						// The selected object's Portal fields, under the tree
+						// rather than in a popup: a menu opened from a row in
+						// this dock is already at the screen edge, and a tall
+						// attribute list falls off it. Collapses to nothing
+						// when the selection has no fields to show.
+						+ SVerticalBox::Slot().AutoHeight().Padding(4.f, 2.f, 4.f, 4.f)
+						[ BF6Api::MakeAttributesPanel() ]
 					];
 			}))
 			.SetDisplayName(LOCTEXT("BF6OutlinerTitle", "Scene"))
@@ -485,10 +496,113 @@ namespace BF6Api
 	// and never comes back - which is why a map's own objects arrived headless:
 	// the node parents showed and everything hung under them did not. Anything
 	// that spawns a batch and then re-parents it calls this when it is done.
+	// SELECT WHAT IS IN THE SELECTED FOLDERS.
+	//
+	// A folder here is not a thing a creator owns. BF6_FileActor derives one per
+	// actor from its role and category on every spawn, and clears them entirely
+	// when the authored Godot tree is kept - they are a generated view, so
+	// "delete the folder" has no meaning: it would come back the moment
+	// anything was filed into that category again.
+	//
+	// What Delete on a folder can honestly mean is "delete what is in it", and
+	// that needs the contents turned into an actor selection first, because
+	// every delete path in this tool works on selected ACTORS.
+	//
+	// Sub-folders come too: a category row with children reads as containing
+	// everything beneath it, and deleting only the direct members would leave
+	// the row standing with its contents apparently untouched.
+	// The same scan, WITHOUT touching the selection.
+	//
+	// Split out because the menu's visibility test runs on every draw, and a
+	// visibility test that reselects actors as a side effect would fight the
+	// creator for the selection while the menu is merely open.
+	static int32 BF6_FolderContents(TArray<AActor*>* Out)
+	{
+		if (Out) Out->Reset();
+		TSharedPtr<ISceneOutliner> Live = GLiveOutliner.Pin();
+		if (!Live.IsValid() || !GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return 0;
+
+		TArray<FName> Paths;
+		for (const FSceneOutlinerTreeItemPtr& It :
+			 StaticCastSharedPtr<SSceneOutliner>(Live)->GetSelectedItems())
+			if (It.IsValid())
+				if (const FFolderTreeItem* F = It->CastTo<FFolderTreeItem>())
+					Paths.AddUnique(F->GetPath());
+		if (Paths.Num() == 0) return 0;
+
+		int32 n = 0;
+		for (TActorIterator<AActor> ActorIt(W); ActorIt; ++ActorIt)
+		{
+			const FString Have = ActorIt->GetFolderPath().ToString();
+			if (Have.IsEmpty()) continue;
+			for (const FName& P : Paths)
+			{
+				const FString Want = P.ToString();
+				// Sub-folders come too: a category row with children reads as
+				// containing everything beneath it.
+				if (Have == Want || Have.StartsWith(Want + TEXT("/")))
+				{ if (Out) Out->Add(*ActorIt); n++; break; }
+			}
+		}
+		return n;
+	}
+
+	int32 SelectFolderContentsCount() { return BF6_FolderContents(nullptr); }
+
+	int32 SelectFolderContents()
+	{
+		TArray<AActor*> Hit;
+		if (BF6_FolderContents(&Hit) == 0 || !GEditor) return 0;
+
+		GEditor->SelectNone(false, true, false);
+		for (AActor* A : Hit) GEditor->SelectActor(A, true, false);
+		GEditor->NoteSelectionChange();
+		return Hit.Num();
+	}
+
 	void RefreshSceneTree()
 	{
 		if (TSharedPtr<ISceneOutliner> Live = GLiveOutliner.Pin())
 			Live->FullRefresh();
+	}
+
+	// The same refresh, but ONCE at the end of the frame however many times it
+	// is asked for.
+	//
+	// Every new actor needs one: an outliner row whose folder row does not
+	// exist yet is dropped and never comes back, so the object lands in the
+	// world and nowhere in the tree. That used to be the caller's job to
+	// remember, and five batch spawners did not - objects went missing from the
+	// tree until each one was found and patched by hand.
+	//
+	// Now BF6_FileActor marks, and every path that files an actor into a folder
+	// goes through BF6_FileActor, so a new spawner cannot forget. Marking is
+	// idempotent and the flush is a one-shot ticker, so scattering five hundred
+	// objects costs exactly one FullRefresh rather than five hundred.
+	void MarkSceneTreeDirty()
+	{
+		static bool bPending = false;
+		static double LastAt = 0.0;
+		if (bPending) return;
+		bPending = true;
+
+		// Next tick normally, so placing one object feels instant. But a bulk
+		// spawn - an import, a session load - would otherwise pay a FullRefresh
+		// in every frame it spawns in, and a full refresh of a few thousand rows
+		// is not free. So refreshes are spaced at least a quarter second apart,
+		// which no hand is fast enough to notice and which turns a long import
+		// from hundreds of refreshes into a handful.
+		const double Now = FSlateApplication::IsInitialized() ? FSlateApplication::Get().GetCurrentTime() : 0.0;
+		const float Wait = (float)FMath::Max(0.0, 0.25 - (Now - LastAt));
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+		{
+			bPending = false;
+			LastAt = FSlateApplication::IsInitialized() ? FSlateApplication::Get().GetCurrentTime() : 0.0;
+			RefreshSceneTree();
+			return false;
+		}), Wait);
 	}
 
 	void OpenOutlinerTab()

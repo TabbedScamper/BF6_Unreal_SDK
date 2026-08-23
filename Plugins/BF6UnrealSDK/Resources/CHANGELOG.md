@@ -1,5 +1,57 @@
 # BF6 Unreal SDK version history
 
+## 0.7.0 (2026-08-23)
+
+**Two-way Godot**
+
+- Save as .tscn. The new button beside Save writes your whole map as a Godot scene the official Portal SDK opens: every object, your scene tree as real node parenting, zones with their shapes, heights and colours, waypoint paths as real curves, and every link between objects. Drop the file in the SDK's User_Created levels folder and keep working there.
+- The round trip is verified against a real 4,000-object creator map: all 3,926 placed objects, all 166 links, every zone shape and elevation came back identical, and the file opens clean in Godot.
+- Object references in the file point at the scenes your own SDK install really contains, scanned from disk rather than guessed, so nothing arrives as a missing dependency.
+
+**Waypoint paths**
+
+- The third thing you can draw, after the two volume types. Place an AI_WaypointPath and it comes with a patrol route: drag the points like a zone's, Ctrl+LMB adds one, Ctrl+RMB removes one, and the arrows on the ribbon show which way the AI walks.
+- LOOP / OPEN on the path's wheel joins the ends or opens them.
+- Paths import from .tscn and .spatial.json files, survive save and reload, and export both ways. Imported maps used to lose their patrol routes silently; they arrive whole now.
+
+**Objects that own other objects**
+
+- The HQ treatment now covers every type with links: capture points, sectors, combat areas, player spawners, ring of fire and the rest. Select one, press Space, and the wheel offers exactly what it needs - make and link its areas, place and link its spawns or flags or MCOMs - read from the SDK's own schema, so a type a future SDK adds gets the same treatment with no update.
+- Placing linked objects follows the layout finished Portal maps use: the created area or spawn is parented under its owner in the scene tree, so the tree reads as the assembly it is.
+- A capture point's spawn arrays name their team, so a spawn placed into the Team 2 list is a Team 2 spawn without you touching a field.
+- Q and E turn whatever you are carrying, before you set it down. Shift steps by 5 degrees, Ctrl snaps to 15. Works in spawn runs too, so spawns face the way you mean.
+- Escape cancels a spawn run and takes back everything the run placed. Enter keeps them. The highlight on already-linked spawns cleans up after itself instead of permanently recolouring them.
+
+**Mode setup**
+
+- Drop one finished piece without running a whole mode: HQ for either team, a flag with its capture area and both team spawn sets, a sector with its area, an MCOM. Fully linked, parented, numbered in the id ranges community scripts expect, and one Ctrl+Z removes the whole piece.
+- The wizard explains itself properly now: what each piece is for and what a good placement looks like, not just "aim and click". Esc and Ctrl+Z are spelled out on every step, and Esc was always available - now you can see it.
+
+**Zones look like the SDK**
+
+- A zone's colour renders at the same density it has in Godot. Imported colours looked nearly twice as dark here because our walls blend both faces; the display now compensates, and the stored colour stays exactly what the creator picked.
+- White edge lines on every zone - bottom, top and each vertical crease, the same three Godot draws - so the shape reads instead of fogging.
+- Zone transparency defaults match the SDK's collision colour.
+
+**The read-only base map**
+
+- Trying to edit a base map answers you now: the screen edge pulses amber and a shine runs around the controls panel, which lists what actually works there and how to start building. The object library hides its shelf, since nothing on it can be placed yet.
+- The controls panel stops claiming you can place objects on a map that refuses it.
+
+**Fixes**
+
+- Pressing Enter after typing a custom map name creates it. Both name boxes.
+- A map name the filesystem cannot take is refused with the reason, instead of reporting a save that never happened. Creating over an existing name asks before replacing it.
+- You can delete the map you have open. The confirm says what that means, and the view drops back to the base map.
+- Deleting objects cleans the links that pointed at them, in both delete paths, and one undo brings back objects and links together.
+- Reloading a save no longer breaks links when the editor renames objects to avoid name clashes with the base setup - the links follow the renames. This is why a re-exported map could lose its conquest HQ areas.
+- Ctrl+Z now removes placed bundles and wizard steps. It never could: the transaction recorded the property edits and none of the spawned actors.
+- Everything that spawns an object shows up in the scene tree, watched at the engine level rather than fixed site by site.
+- Letting go of right click after flying no longer opens a context menu over what you were lining up, and no longer leaves the camera stuck to the pointer.
+- The collision overlay sits a millimetre off the surface instead of ten centimetres.
+- Old community maps that built zones from collision shapes import as real volumes instead of disappearing.
+- Validate learned the SDK converter's own hard rules: an oversized combat volume and a ring of fire missing its shapes are called out here instead of at upload.
+
 ## 0.6.0 (2026-08-22)
 
 **The scene tree**

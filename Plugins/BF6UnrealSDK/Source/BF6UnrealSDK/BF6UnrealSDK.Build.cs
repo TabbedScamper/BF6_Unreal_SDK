@@ -33,6 +33,9 @@ public class BF6UnrealSDK : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[]
 			{
 				"UnrealEd",               // GEditor world
+				"MaterialEditor",         // the runtime-built volume colour material
+				"AppFramework",           // SColorPicker: the hue wheel, hex field and alpha
+				"ToolMenus",              // the actor context menu, in the tree and the viewport
 				"AdvancedPreviewScene",   // lit preview scene for the 3D model viewport
 				"MainFrame",              // auto-open the map picker once the editor is ready
 				"DesktopPlatform",        // native open-file dialog for importing .spatial.json

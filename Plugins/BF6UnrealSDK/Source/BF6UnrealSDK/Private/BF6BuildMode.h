@@ -1,6 +1,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/WeakObjectPtr.h"   // FObjIdRow holds a TWeakObjectPtr by value
+
+// Forward declarations belong at GLOBAL scope, above the namespace.
+//
+// Written as "AActor*" inside namespace BF6Api, an elaborated type
+// specifier declares BF6Api::AActor - a brand new type that merely happens to
+// resolve to the right one when a unity blob declared the real AActor first.
+// Compiled on its own the header invents phantom types and the seam collapses.
+class SWidget;
+class AActor;
+class UTexture;
+class UProceduralMeshComponent;
+struct FSlateBrush;
 
 // ============================================================================
 // Build Mode: the full-screen "building program" experience layered over
@@ -57,8 +70,11 @@ namespace BF6Api
 	int32           PlaceableTotal(const FString& Level);
 	TArray<FString> SavesFor(const FString& Level);
 	bool DeleteSave(const FString& Level, const FString& Name);   // both layouts; refuses the open session
+	// Signature of the save files on disk. The map menu watches it so saves
+	// deleted (or added) outside the tool show up without a reopen.
+	uint32 SavesFingerprint();
 	// Thumbnail brush for a level card (may be null if the PNG is missing).
-	const struct FSlateBrush* MapThumbnail(const FString& Level);
+	const FSlateBrush* MapThumbnail(const FString& Level);
 
 	// ---- actions ----
 	// Load a map's world context (terrain/assets/base setup) + set session state.
@@ -71,7 +87,7 @@ namespace BF6Api
 	AActor* QuickPlace(const FString& Type);
 	// The card image for a model: an isometric 256px render, generated on demand
 	// and cached under Saved/BF6UnrealSDK/thumbs. Null while it is still queued.
-	const struct FSlateBrush* GetModelThumb(const FString& Mesh);
+	const FSlateBrush* GetModelThumb(const FString& Mesh);
 	void    ExportSpatial();
 	// Opens a file dialog; detects the map from the file, loads it, and names the
 	// session after the file. Returns true when a map was actually imported.
@@ -79,6 +95,14 @@ namespace BF6Api
 	// Write the current custom map's session to disk. bSilent skips the toast
 	// (used by the tool's own periodic autosave).
 	void    SaveCurrent(bool bSilent = false);
+	// Write the whole map back out as a Godot scene the official SDK opens.
+	// Save picks the file; returns false on cancel or a failed write.
+	bool    SaveAsTscn();
+	// Periodic autosave. OFF by default and remembered per project: the common
+	// use of this tool on an existing map is heavy throwaway change, and an
+	// autosave turns "revert" into "the file already has it".
+	bool    GetAutosave();
+	void    SetAutosave(bool bOn);
 	// Turn the read-only base preview into an editable custom map named Name.
 	void    CreateCustom(const FString& Name);
 	// Deproject the current viewport cursor to the ground plane. False if no viewport.
@@ -111,6 +135,12 @@ namespace BF6Api
 	void HideBuildOverlay();
 	// Register the space-bar pie-menu input handler (once, at startup).
 	void InstallInputHandler();
+	// Right-click entries for the scene tree AND the viewport, on the level
+	// editor's own actor menu so the two can never drift apart.
+	void RegisterContextMenu();
+	// The attribute list as a DOCKED panel, for under the Scene tree. As a
+	// popup it opened at the screen edge the tree lives on and fell off it.
+	TSharedRef<SWidget> MakeAttributesPanel();
 	void RemoveInputHandler();
 	void HideTransientMenus();   // dismiss the category object popup
 	bool IsBuildOverlayActive();
@@ -123,7 +153,7 @@ namespace BF6Api
 	// combat-area timers, spawner vehicle types, the full suite).
 	TArray<FPropDef> PropsForType(const FString& Type);
 	// The currently selected base/placed gameplay actor, if any (else null).
-	class AActor* SelectedGameplayActor(FString& OutType);
+	AActor* SelectedGameplayActor(FString& OutType);
 	// Per-actor property values, stored as "p:Key=Value" actor tags. Seeded from
 	// the base setup; falls back to the type's schema default when unset.
 	FString GetActorProp(AActor* A, const FString& Key, const FString& Fallback = FString());
@@ -131,8 +161,58 @@ namespace BF6Api
 
 	// ---- zone (polygon volume) point editing, Godot-style ----
 	bool IsVolumeActor(AActor* A);          // does this actor carry an editable loop?
+	// ---- HQ, which owns an area and a set of spawns ----
+	// Drop links naming objects that no longer exist. Runs after a delete;
+	// safe to call at any time, and returns how many objects were corrected.
+	int32   PruneDeadLinks();
+
+	bool    IsHQActor(AActor* A);
+	// The volume linked into one of an owner's volume fields, or null.
+	AActor* HQVolume(AActor* Owner, const FString& Field);
+	// Make that volume (the right SHAPE for the field), link it, park it under
+	// the owner - or open the one already there for editing.
+	AActor* HQCreateOrEditVolume(AActor* Owner, const FString& Field);
+	// ---- ASSEMBLIES: objects that own other objects -----------------------
+	//
+	// Eleven shipped types have link fields, and every one of them is built the
+	// same way: make the thing the field wants, link it, and park it under its
+	// owner. HQ was only the first; Sector needs SEVEN of these done by hand.
+	//
+	// So the fields are read off the schema and never listed here. A linked
+	// object carries none of the meaning itself - a SpawnPoint has no
+	// properties at all - so which FIELD it went into is the whole story, and
+	// the schema is the only place that knows the fields.
+	struct FLinkField
+	{
+		FString Field;      // the owner's property, e.g. "InfantrySpawns"
+		FString Label;      // menu text, e.g. "INFANTRY"
+		FString ElemType;   // what to place: "SpawnPoint", "PolygonVolume", "MCOM"...
+		bool    bArray = false;
+		int32   Count = 0;  // how many are linked now
+	};
+	// Split because they are used differently: a volume is made once and shaped,
+	// an array is filled by a placement run.
+	TArray<FLinkField> LinkVolumeFields(AActor* A);
+	TArray<FLinkField> LinkArrayFields(AActor* A);
+
+	AActor* HQCreateSpawn(AActor* HQ, const FString& Field);   // makes one and links it
+	int32   HQSpawnCount(AActor* HQ, const FString& Field);
+	int32   HQHighlightSpawns(AActor* HQ, const FString& Field);   // paint the ones already wired up
+	// Laying a SET: each placement makes the next until Enter or Esc.
+	void    BeginHQSpawnRun(AActor* HQ, const FString& Field);
+	FString HQSpawnRunField();
+	bool    IsHQSpawnRun();
+	bool    HQSpawnRunNext();                // one placed - carry the next
+	// Enter keeps what is down (bKeep true); Escape cancels and the run leaves
+	// nothing behind. Returns how many were kept.
+	int32   EndHQSpawnRun(bool bKeep);
+	int32   HQSpawnRunPlaced();
 	bool IsVolumeEditing();
 	void BeginVolumeEdit(AActor* Volume);   // spawn a drag handle at every vertex
+	// WaypointPath: the zone tools edit a path too; these are the two things
+	// only a path has. Closed joins last point to first, like Godot's curve.
+	bool IsPathSelectedVolume();       // the volume being edited is a waypoint path
+	bool TogglePathClosed();           // flips isClosed, rebuilds the ribbon
 	void VolumeAddPoint();                  // insert after the selected handle
 	// insert a point on the loop edge nearest to WorldPos (Ctrl+LMB / right-click on an edge)
 	void VolumeAddPointAt(const FVector& WorldPos);
@@ -147,6 +227,9 @@ namespace BF6Api
 	// dot (computed in screen space so it hugs the cursor). False = not editing.
 	bool  GetZoneDots(TArray<FVector2D>& OutPx, int32& OutPointCount, int32& OutActive, int32& OutDrag, FVector2D& OutEdgePx, bool& bOutEdge);
 	int32 ZoneDotUnderMouse();            // grab test at the cursor, -1 = none
+	// Height 0 = infinite, and an infinite zone draws at 5 m like any other.
+	// The top handles say so instead.
+	bool  IsEditZoneInfinite();
 	bool  IsZoneDotDragging();
 	void  BeginZoneDotDrag(int32 Index);  // opens the undo transaction
 	void  DragZoneDotToCursor();          // slide on the handle's height plane
@@ -164,6 +247,8 @@ namespace BF6Api
 	// ---- selection tools + Blocks (user prefabs) ----
 	// Select every placed copy of the selected object's type.
 	void SelectSimilar();
+	bool FocusSelection();                 // fly the view onto the selection
+	bool FocusByLinkName(const FString& Name);   // fly there WITHOUT selecting it
 	// Native editor grouping: a group moves as one; ungroup any time. Placed
 	// blocks arrive grouped. Groups are TEMPORARY (not saved in the session).
 	void GroupSelection();
@@ -182,16 +267,53 @@ namespace BF6Api
 	void UnregisterOutlinerTab();
 	void OpenOutlinerTab();
 	void RefreshSceneTree();   // rebuild the tree after a batch spawn + re-parent
-	const struct FSlateBrush* NodeSymbolBrush(const FString& IconName);   // Godot node icon by name
+	// Ask for a refresh; it happens once at the end of the frame no matter how
+	// many times it is asked for. Filing an actor does this for you.
+	void MarkSceneTreeDirty();
+
+	// The read-only pulse. Fire it whenever an edit is refused because the map
+	// is a read-only base: the viewport edge swells amber and a shine runs
+	// round the top read-out, which is the thing that explains why. Cheap and
+	// self-throttling, so callers do not need to rate-limit it.
+	void FlashReadOnly();
+	// True while a pulse is playing, for anything that wants to ride it.
+	bool IsFlashing();
+
+	// ONE DOOR for "not on a base map". Flashes the pulse and says why, with
+	// the words throttled so a run of refused clicks is one message and one
+	// continuous pulse. Every refusal should come through here so they cannot
+	// drift into fourteen slightly different sentences again.
+	void RefuseReadOnly(const FString& What);
+	// Turn the selected FOLDERS into a selection of the actors inside them.
+	// Folders here are generated, not owned, so this is what acting on one can
+	// honestly mean. Returns how many actors it selected.
+	int32 SelectFolderContents();
+	// The same count with no side effects, for menu visibility.
+	int32 SelectFolderContentsCount();
+	const FSlateBrush* NodeSymbolBrush(const FString& IconName);   // Godot node icon by name
 
 	// Making nodes from the tree, the way Godot does.
 	AActor* AddTreeNode();
+	// Existing nodes, for "move to node" - the tool's answer to Unreal's
+	// "move to folder", which parents nothing Portal will ever see.
+	int32   TreeNodeCount();
+	FString TreeNodeName(int32 i);
+	int32   AttachSelectionToNode(int32 i);
 	int32   GroupSelectionUnderNode();
 	// Viewport-only quick hides for zone walls and node markers (both on).
 	bool  VolumesShown();
 	bool  NodesShown();
 	int32 SetVolumesShown(bool bShow);
 	int32 SetNodesShown(bool bShow);
+	// ---- what the add-on seam (Public/BF6SDKExtension.h) forwards to ----
+	// Kept here rather than in the public header so the seam stays a short,
+	// stable list and the tool's own API can keep moving underneath it.
+	FString GameInstallDir();                   // the resolved BF6 install ("" if none)
+	int32   SetContextHidden(bool bHidden);     // the low-poly terrain + asset mesh
+	bool    IsContextHidden();
+	void    Toast(const FString& Message);      // the tool's own notification
+	void    PushAddonPopup(TSharedRef<SWidget> Content, FVector2D ScreenPos);
+
 	// Walk the map at eye height, with gravity, without leaving the editor.
 	bool IsWalking();
 	void ToggleWalk();
@@ -233,8 +355,8 @@ namespace BF6Api
 	// docks a live picture-in-picture of what it sees; moving it updates the
 	// view in real time. Set-from-view gives the camera the editor's current
 	// view; look-through jumps the editor camera to the camera's view.
-	class AActor* CameraPreviewTarget();
-	class UTexture* CameraPreviewTexture();
+	AActor* CameraPreviewTarget();
+	UTexture* CameraPreviewTexture();
 	void TickCameraPreview();
 	void SetCameraFromView();
 	void LookThroughCamera();
@@ -244,6 +366,43 @@ namespace BF6Api
 	// sliders. Apply rebuilds the preview as ONE undoable action; cancel
 	// removes it all.
 	bool BeginScatterLive();
+	// Start a scatter with NOTHING selected: the pool is filled from the object
+	// library instead, which is how a mixed bed of vegetation is actually
+	// authored. The session is live at once so the panel can ask for objects.
+	bool BeginScatterFromLibrary();
+	int32   ScatterPoolCount();
+	bool    IsScatterFromLibrary();
+	FString ScatterPoolName(int32 i);
+	void    AddScatterObject(const FString& Mesh, const FString& Type, const FString& Label);
+	void    RemoveScatterObject(int32 i);
+	bool    GetScatterTerrainOnly();
+	void    SetScatterTerrainOnly(bool bOn);
+	void    SetScatterCenter(const FVector& W);
+	// Paint (shape 4): the brush deposits as it travels rather than filling a
+	// region, so nothing regenerates it and the stroke survives every slider.
+	void  BeginScatterPaint();
+	void  ScatterPaintTo(const FVector& W);
+	void  EndScatterPaint();
+	bool  IsScatterPainting();
+	int32 ScatterStrokeCount();
+	// One stroke back off the painting; the area and the copies rebuild from
+	// what is left.
+	bool  ScatterPaintUndo();
+	// The brush ring in viewport pixels, for the overlay.
+	bool  GetScatterBrush(FVector2D& OutCenterPx, float& OutRadiusPx);
+
+	// ---- display / sun ----
+	// A VIEW AID ONLY. Portal exports no lighting of any kind, so nothing here
+	// reaches an export or a save - it exists to read silhouettes, shadows and
+	// massing while building.
+	float GetSunTime();          void SetSunTime(float H);          // 0..24
+	float GetSunDirection();     void SetSunDirection(float D);     // compass degrees
+	float GetSunBrightness();    void SetSunBrightness(float B);
+	bool  GetSunShadows();       void SetSunShadows(bool b);
+	int32 GetDisplayViewMode();  void SetDisplayViewMode(int32 M);  // 0 lit, 1 unlit, 2 wireframe
+	float GetDisplayExposure();  void SetDisplayExposure(float E);  // EV, 0 = the map's own auto
+	bool  DisplaySunTouched();
+	void  ResetDisplaySun();
 	void UpdateScatterLive(int32 Count, float RadiusM, float RotDeg, float WobX, float WobY, float ElevM, float Vary, int32 Seed);
 	void ApplyScatterLive();
 	void CancelScatterLive();
@@ -290,6 +449,20 @@ namespace BF6Api
 	// Breakthrough. The controls panel shows "Step N of M" with an explanation;
 	// every click builds a fully linked bundle with convention ObjIds, and the
 	// finish wires the Sector and runs the checks.
+	// ---- BUNDLES: one click drops a finished, fully linked piece -----------
+	//
+	// The same builders the mode wizard uses, reachable without running a whole
+	// mode script. Most of the time a creator wants one more flag, not a fresh
+	// Conquest layout.
+	struct FBundleDef
+	{
+		FString Key;     // "FLAG", "HQ1", "SECTOR", "MCOM"...
+		FString Label;   // menu text
+		FString Sub;     // what it makes, in the creator's words
+	};
+	TArray<FBundleDef> Bundles();
+	bool PlaceBundle(const FString& Key, const FVector& World);
+
 	void StartModeWizard(const FString& Mode, int32 Count);
 	bool IsModeWizardActive();
 	int32 ModeWizardStep();
@@ -351,7 +524,7 @@ namespace BF6Api
 	// Moving with Unreal's own gizmo: empty the vertex payload before the
 	// engine's transaction snapshots it, and put it back once it has.
 	int32 StripSelectionForTransaction();
-	bool  EmptySectionsQuietly(class UProceduralMeshComponent* M);   // drop the payload, keep it drawn
+	bool  EmptySectionsQuietly(UProceduralMeshComponent* M);   // drop the payload, keep it drawn
 	bool  HasStrippedGeometry();
 	void  RestoreStrippedGeometry(bool bForce = false);   // bForce: give up waiting, put it back
 	bool BeginDragMoveOn(AActor* A);       // selects it if needed, preps the move set
@@ -362,11 +535,14 @@ namespace BF6Api
 	// sets it down (one undo reverts), Esc puts everything back
 	// Placement must not treat whatever is being carried as the ground under
 	// itself, or it lands on its own face and jitters with the cursor.
-	void SetPlacementIgnore(const TArray<class AActor*>& Actors);
+	void SetPlacementIgnore(const TArray<AActor*>& Actors);
 	void ClearPlacementIgnore();
 	bool BeginPickPlace();
 	bool IsPickPlacing();
 	void TickPickPlace(bool bSnap);
+	// Turn what is being carried. Q and E, before it is set down; bSnap lands
+	// the result on the nearest 15 degrees.
+	bool RotatePickPlace(float DeltaDeg, bool bSnap);
 	void FinishPickPlace();
 	void CancelPickPlace();
 	// One shareable JSON per block under Saved/BF6UnrealSDK/blocks. A block
@@ -378,12 +554,12 @@ namespace BF6Api
 	bool                PlaceBlock(const FString& Name, const FVector& WorldPos);
 	void                DeleteBlock(const FString& Name);
 	void                OpenBlocksFolder();          // sharing: send/receive the files
-	const struct FSlateBrush* GetBlockThumb(const FString& Name);   // composite iso render
+	const FSlateBrush* GetBlockThumb(const FString& Name);   // composite iso render
 
 	// ---- OBB (box) volume editing, Godot-style face handles ----
-	bool IsObbActor(class AActor* A);
+	bool IsObbActor(AActor* A);
 	bool IsObbEditing();
-	void BeginObbEdit(class AActor* Obb);   // six face handles; selecting one auto-starts
+	void BeginObbEdit(AActor* Obb);   // six face handles; selecting one auto-starts
 	void FinishObbEdit();
 	void TickObbEdit();                     // apply face drags (ALT = symmetric)
 
@@ -411,12 +587,16 @@ namespace BF6Api
 
 	bool  AnyRecolored();
 	int32 RecolorSelection(FLinearColor C);   // returns objects painted
+	// What the selection is currently wearing, so the picker opens on it
+	// rather than on white. Falls back to the volume default when nothing in
+	// the selection carries a colour.
+	FLinearColor SelectionColor();
 	int32 RecolorByType();                    // one hue per distinct type
 	int32 ClearRecolor();                     // puts every original back
 	int32 ClearRecolorSelection();            // ...or just the selected objects
 	// Colours persist: each painted object carries a tint tag that rides the
 	// session save, so reopening a map comes back painted.
-	void  ReapplyTint(class AActor* A);
+	void  ReapplyTint(AActor* A);
 	int32 ReapplyAllTints();
 
 	bool IsLinkPicking();
@@ -430,6 +610,12 @@ namespace BF6Api
 	bool GetLinkOverlay(TArray<FVector2D>& OutPx, TArray<uint8>& OutState, FVector2D& OutOwnerPx, bool& bOutOwner);
 	int32 LinkDotUnderMouse();              // marker grab test, -1 = none
 	void ToggleLinkCandidate(int32 Index);  // click a marker to (de)select it
+	// The same candidates, as a list: hunting markers around a map does not
+	// scale past a handful, and half of them are behind something.
+	int32   LinkCandidateCount();
+	FString LinkCandidateName(int32 i);
+	int32   LinkCandidateState(int32 i);    // 0 free, 1 assigned, 2 picked
+	void    FocusLinkCandidate(int32 i);    // snap the view onto one
 
 	// ---- SDK data import (first-run setup + re-sync) ----
 	// The tool generates its data packs from the user's own unzipped Portal SDK

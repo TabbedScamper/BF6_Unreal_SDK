@@ -133,8 +133,28 @@ typedef struct {
     float                    aabb_max[3];
 } bf6_mesh;
 
-/* Build one asset's geometry. lod 0 = full detail. NULL if unreadable. */
+/* Build one asset's geometry. lod 0 = full detail. NULL if unreadable.
+ *
+ * Materials resolve against the bundle the mesh RESOURCE lives in, which is the
+ * right answer for reading a mesh on its own - a browser, a preview - because
+ * there is no placement above it to ask. */
 BF6_API bf6_mesh* bf6_read_mesh(bf6_ctx*, const char* res_name, int lod);
+
+/* The same, for a mesh that is being PLACED.
+ *
+ * placing_bundle is the bundle whose placement pulled this mesh in (a walk row
+ * carries it). That is the exact scope for a material: a shader state key is
+ * unique only within a bundle, so resolving against any other one can bind a
+ * material that merely collides - which looks correct and is not.
+ *
+ * variation is the ObjectVariation asset path from the placement, or NULL. It
+ * derives a second key (state key + djb2 of the path, a genuine 64-bit add),
+ * and the base key is used when that derived key is absent.
+ *
+ * Passed rather than held on the context on purpose: the scope belongs to the
+ * INSTANCE, and hidden state would make two placements of one mesh race. */
+BF6_API bf6_mesh* bf6_read_mesh_scoped(bf6_ctx*, const char* res_name, int lod,
+                              const char* placing_bundle, const char* variation);
 
 /* ---------------------------------------------------------------- material */
 typedef enum {
@@ -159,14 +179,33 @@ struct bf6_material_desc {
     float                  roughness;
     float                  metallic;
     int32_t                two_sided;   /* 0/1 */
+    /* The shader's OWN alpha-test switch, not a guess from the textures. A
+     * depot record carries a bool that says whether it cuts out; a prop with no
+     * cutout of its own is sometimes handed another prop's mask in the alpha
+     * slot, and cutting by that shreds the surface. Checked before any test of
+     * the mask's content. */
     int32_t                alpha_test;  /* 0/1 */
+    /* Classified from the bindings, not from names: glass is the
+     * destruction-glass-volume slot or the glass-tint palette. */
+    int32_t                translucent; /* 0/1 */
+    /* Vegetation carries its cutout in its OWN base colour's alpha (the "_cu"
+     * sheet), not in a separate mask. Everything else that cuts out ships a
+     * single-channel "_a" sheet, because a normal "_cs" base colour's alpha is
+     * SMOOTHNESS. A consumer has to mask from a different place for the two,
+     * so the record says which. */
+    int32_t                alpha_from_albedo; /* 0/1 */
 };
 
 /* ---------------------------------------------------------------- textures */
 typedef enum {
     BF6_FMT_RGBA8 = 0,
     BF6_FMT_BC1,   BF6_FMT_BC3,   BF6_FMT_BC4,
-    BF6_FMT_BC5,   BF6_FMT_BC7
+    BF6_FMT_BC5,   BF6_FMT_BC7,
+    /* Added rather than reusing a slot: skies and light probes are BC6H, and a
+     * binding that quietly reported them as BC7 would upload garbage. */
+    BF6_FMT_BC6H_U, BF6_FMT_BC6H_S,
+    BF6_FMT_R8,     BF6_FMT_RGBA16F,
+    BF6_FMT_UNKNOWN = 255
 } bf6_fmt;
 
 typedef struct {
@@ -189,10 +228,46 @@ typedef struct {
     float       xform[12];     /* 3x4 row-major: basis columns then origin,  */
                                /* in the GAME's space - the binding converts */
     int32_t     material_scope;/* pre-resolved variation key, for caching    */
+    /* The bundle whose placement pulled this mesh in, and the ObjectVariation
+     * path if it has one. Pass BOTH to bf6_read_mesh_scoped: they are what
+     * makes a material resolve in the right scope, and they belong to the
+     * INSTANCE rather than to the mesh. Owned by the ctx, valid until the next
+     * bf6_open_level. */
+    const char* placing_bundle;
+    const char* variation;
 } bf6_instance;
 
+/* ---------------------------------------------------------------- progress */
+/* Called from inside the long calls so a caller can show something moving.
+ * `stage` is a short label ("mounting", "indexing partitions", "walking");
+ * done/total are that stage's own counts, and total may be 0 when it is not
+ * known yet.
+ *
+ * CALLED FROM WHATEVER THREAD IS DOING THE WORK, including several at once
+ * during indexing, so an implementation must be safe to call concurrently and
+ * must NOT touch a UI directly. Store the numbers and let the UI thread read
+ * them. Return 0 to ask the operation to stop.
+ */
+typedef int (*bf6_progress_fn)(void* user, const char* stage, int done, int total);
+
+BF6_API void bf6_set_progress(bf6_ctx*, bf6_progress_fn, void* user);
+
+/* Mount a level's archives and read the type schema, which every placement
+ * call needs. all_levels also mounts every OTHER level, which is what makes the
+ * whole placeable catalogue resolvable and is not free. Returns 0 on success,
+ * with a message in err.
+ *
+ * Expensive and cached on the context: mounting is a few seconds and indexing
+ * every partition's guid is a few more. Call it once per level. */
+BF6_API int bf6_open_level(bf6_ctx*, const char* level, const char* exe_path,
+                   int all_levels, char* err, int err_len);
+
 /* Every placement in a level. Returns the count; if it exceeds out_max, out[]
- * is filled to out_max and the return value tells you to call again bigger. */
+ * is filled to out_max and the return value tells you to call again bigger.
+ * bf6_open_level must have been called for this level first.
+ *
+ * res_name points into storage owned by the context and stays valid until the
+ * next bf6_open_level. */
 BF6_API int bf6_level_instances(bf6_ctx*, const char* level,
                         bf6_instance* out, int out_max);
 
@@ -215,16 +290,60 @@ BF6_API int bf6_level_lights(bf6_ctx*, const char* level,
 
 /* ------------------------------------------------------------------ terrain */
 typedef struct {
-    int32_t         width;         /* samples, e.g. 8193 */
+    int32_t         width;         /* samples per side, from the tree itself */
     int32_t         height;
     const uint16_t* heights;       /* row-major, width*height samples */
-    float           world_size;    /* metres across */
-    float           height_scale;  /* sample -> metres */
-    int32_t         splat_texture; /* index for bf6_texture_at(), or -1 */
+    float           world_min[3];  /* the AABB the grid spans, GAME space */
+    float           world_max[3];
+    float           height_scale;  /* the header's height scale             */
+    int32_t         splat_texture; /* index for bf6_texture_at(), or -1     */
     int32_t         color_texture;
 } bf6_terrain;
 
 BF6_API bf6_terrain* bf6_read_terrain(bf6_ctx*, const char* level);
+
+/* ------------------------------------------------------------ terraindecals */
+/* Roads and street markings.
+ *
+ * The street SURFACE is the terrain heightfield - block 7 paints it asphalt -
+ * so a reader without this still draws ground where a road is. What it does not
+ * draw is any of what makes a road read as one: lane markings, mud, wear, tyre
+ * tracks, kerb blending. That is what "the roads are giant empty spaces"
+ * describes.
+ *
+ * A decal vertex carries world X and Z and NO Y: decals are draped on the
+ * heightfield by the consumer, which must sample the terrain at (x, z).
+ *
+ * THE AABB IS A BAND, NOT A SURFACE. Its Y range is where the authored
+ * geometry sat, and it is worth exactly one thing: telling an ELEVATED record
+ * (a rooftop court, a loading deck) from a street-level one. Clamping every
+ * record into its band is a trap - where the rebuilt ground sits lower than
+ * the ground the decal was compiled against, a clamp cannot follow the terrain
+ * down and the marking hangs in the air. Clamp only where the authored floor
+ * stands well above the ground you actually built under that record. */
+typedef struct {
+    /* x, z, u, v, r, g, b, a per vertex - stride 8 floats. The list is NON
+     * INDEXED: vertex_count is exactly tri_count * 3, in triangle order. */
+    const float* verts;
+    int32_t      vertex_count;
+    float        aabb_min[3];
+    float        aabb_max[3];
+    /* World metres per tile. A planar fill stores u = world X and v = world Z
+     * verbatim and tiles by these; everything else authors u across the ribbon
+     * (0..1 over tiling1) and v as arc length along it, already divided by
+     * tiling0. */
+    float        tiling0, tiling1;
+    int32_t      planar;        /* 0/1 */
+    /* Texture ids for bf6_texture_at, or -1. THE MARKINGS LIVE IN opacity -
+     * a lane stripe is coverage, not colour, and a consumer that binds only
+     * the base colour draws the asphalt and none of the paint. */
+    int32_t      albedo, opacity, normal;
+} bf6_decal;
+
+/* Every decal record in a level. Same convention as bf6_level_instances:
+ * returns the count, fills out[] to out_max. The vert pointers are owned by the
+ * context and stay valid until the next bf6_open_level. */
+BF6_API int bf6_level_decals(bf6_ctx*, const char* level, bf6_decal* out, int out_max);
 
 /* -------------------------------------------------------------------- memory */
 /* Free anything this API returned (bf6_mesh*, bf6_terrain*, ...). The bf6_ctx*

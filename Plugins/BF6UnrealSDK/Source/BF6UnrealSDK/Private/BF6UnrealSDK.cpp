@@ -9,6 +9,15 @@
 #include "HAL/PlatformProcess.h"
 #include "HAL/IConsoleManager.h"
 #include "Serialization/MemoryReader.h"
+#include "Editor/UnrealEdEngine.h"
+#include "LevelEditorViewport.h"
+#include "SLevelViewport.h"
+#include "Engine/DirectionalLight.h"
+#include "Settings/LevelEditorViewportSettings.h"
+#include "Components/LightComponent.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "MaterialEditingLibrary.h"
 #include "Misc/Compression.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
@@ -77,8 +86,10 @@
 #include "Misc/MessageDialog.h"
 #include "Async/Async.h"
 
+#include "BF6Internal.h"
 #include "BF6MapManifest.h"
 #include "BF6BuildMode.h"
+#include "BF6ExtensionInternal.h"
 #include "BF6Theme.h"
 #include "BF6Bridge.h"
 #include "SBF6PreviewViewport.h"
@@ -86,10 +97,23 @@
 #include "IDesktopPlatform.h"
 
 THIRD_PARTY_INCLUDES_START
+// Kept in ONE block at the top. Three of these used to sit ~4900 lines down,
+// which meant everything above them compiled only because a unity blob had
+// already pulled them in - and a single-file compile check could never be
+// trusted. See docs/BUILDING.md for that check.
+#include "Internationalization/Regex.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Containers/Ticker.h"
+#include "Serialization/JsonWriter.h"
+#include "Serialization/JsonSerializer.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "MaterialDomain.h"
+#include "TextureResource.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "bf6_core.h"
 THIRD_PARTY_INCLUDES_END
 
-DEFINE_LOG_CATEGORY_STATIC(LogBF6, Log, All);
+DEFINE_LOG_CATEGORY(LogBF6);   // declared in BF6Internal.h
 
 typedef bf6_ctx*  (*bf6_open_fn)(const char*, char*, int);
 typedef void      (*bf6_close_fn)(bf6_ctx*);
@@ -113,10 +137,14 @@ static bf6_level_name_fn      g_lvlname= nullptr;
 static bf6_list_placeables_fn g_listp  = nullptr;
 static bf6_placeable_props_fn g_props  = nullptr;
 static bf6_ctx*               g_ctx    = nullptr;
-static FString                g_pluginDir;
+FString                       g_pluginDir;   // shared: BF6Internal.h
 
 static const char* kGameDir =
     "C:/Program Files (x86)/Steam/steamapps/common/Battlefield 6";
+// The install the core is actually reading, empty in catalogue-only mode.
+// Discovery is still the one Steam path; finding an install properly belongs
+// in the core (the Godot plugin's gamedir module), not in two bindings.
+static FString                g_gameDir;
 static const FName kTabName("BF6Objects");
 static const FName kPlacedTag("BF6Placed");
 static const FName kContextTag("BF6Context");
@@ -455,7 +483,7 @@ static void SpawnResourceAtCursor(const FString& ResName, const FString& Label)
 
 // forward decls (definitions live in the base-setup helpers below)
 static UProceduralMeshComponent* MakeProcMesh(AActor* A, const FName Name);
-static bool FillProcFromBf6Mesh(UProceduralMeshComponent* Mesh, const FString& FilePath, bool bCollision = false);
+static bool FillProcFromBf6Mesh(UProceduralMeshComponent* Mesh, const FString& FilePath, bool bCollision = false, float NormalPush = 0.f);
 static class UMaterialInterface* BF6_Material(const TCHAR* Name);   // plugin first, project fallback
 extern double GMeshDecodeSec, GMeshBuildSec;   // defined with the mesh cache below
 static void ApplyObjectWhite(UProceduralMeshComponent* Mesh);
@@ -779,6 +807,31 @@ static bool BF6_ContextRay(const FVector& O, const FVector& End, FVector& OutHit
 }
 
 
+// THE GROUND, AND ONLY THE GROUND.
+//
+// The ordinary context ray takes the nearest hit across every index, which
+// includes the map's low-poly ASSET mesh - so a scatter dropped over a street
+// lands bushes on car roofs, awnings and window ledges, all of which are
+// perfectly good hits. Scattering vegetation wants the terrain and nothing
+// else, and the terrain is identifiable: its index is owned by the context
+// actor the map spawns as "<Level>_Terrain".
+static bool BF6_TerrainRay(const FVector& O, const FVector& End, FVector& OutHit)
+{
+	bool bAny = false;
+	double BestU = 1.0;
+	for (int32 i = GRayIndexes.Num() - 1; i >= 0; i--)
+	{
+		TSharedPtr<FBF6RayIndex>& Ix = GRayIndexes[i];
+		if (!Ix.IsValid() || !Ix->Owner.IsValid()) { GRayIndexes.RemoveAt(i); continue; }
+		if (!Ix->Owner->GetActorLabel().EndsWith(TEXT("_Terrain"))) continue;
+		double U;
+		FVector P, N;
+		if (Ix->Trace(O, End, U, P, &N) && U < BestU) { BestU = U; OutHit = P; bAny = true; }
+	}
+	return bAny;
+}
+
+
 // The map's own terrain and low-poly assets sit under a 'Static' parent in the
 // SDK's tree, and creators expect to find them in the same place - not least to
 // switch one off with the eye and see inside a building. Tagged as context only,
@@ -1075,12 +1128,177 @@ static UProceduralMeshComponent* MakeProcMesh(AActor* A, const FName Name)
 // while working perfectly for anyone who had installed a full project zip.
 // The plugin copy is tried first; the old project path stays as a fallback so
 // existing installs keep working either way.
+// THE DEFAULT A VOLUME WEARS when nothing says otherwise.
+//
+// This is Godot's own collision-shape debug colour, which is what the SDK
+// hands a freshly created volume, so a volume made here and one made there
+// start life looking the same. It is also markedly more transparent than the
+// flat material this replaces - a creator working inside a combat area could
+// not see the map through its walls, and the first thing everyone did was go
+// looking for an opacity slider.
+// Godot's collision-shape colour, alpha included. The stored alpha means what
+// it means in Godot; the DISPLAY compensates for our double-sided walls (see
+// BF6_ApplyVolumeMaterial), so the same number produces the same look there
+// and here - an imported volume's custom colour needs no translation at all.
+static const FLinearColor kVolumeDefaultColor(0.0f, 0.6f, 0.7f, 0.42f);
+
 static UMaterialInterface* BF6_Material(const TCHAR* Name)
 {
 	const FString Plug = FString::Printf(TEXT("/BF6UnrealSDK/Materials/%s.%s"), Name, Name);
 	if (UMaterialInterface* M = LoadObject<UMaterialInterface>(nullptr, *Plug)) return M;
 	const FString Game = FString::Printf(TEXT("/Game/Materials/%s.%s"), Name, Name);
 	return LoadObject<UMaterialInterface>(nullptr, *Game);
+}
+
+// ---------------------------------------------------------------------------
+// PER-VOLUME COLOUR.
+//
+// A polygon volume in the Godot SDK carries an authored `color` - the type
+// declares it "(Editor only) Color to differentiate volumes from each other" -
+// and creators use it exactly that way: combat area one colour, capture zones
+// another, out-of-bounds a third. Every volume here drew in the same flat
+// shared material instead, so an imported map arrived as a wall of identical
+// boxes and the creator's organisation was gone.
+//
+// THE SHIPPED M_Volume HAS NO PARAMETERS. It is built from constants, so there
+// is nothing on it to drive per volume. Rather than depend on an asset edit,
+// the coloured material is built here at runtime and the shipped one stays the
+// fallback - the same approach the High Poly add-on takes, and it means an
+// older or missing asset degrades to the previous look rather than to nothing.
+static UMaterial* GVolumeColorParent = nullptr;
+
+static UMaterial* BF6_VolumeColorParent()
+{
+	if (GVolumeColorParent) return GVolumeColorParent;
+
+	// A real package, never saved: a material built in the transient package
+	// half-registers and then fails to compile, which presents as every volume
+	// turning into the engine's default checker.
+	UPackage* Pkg = CreatePackage(TEXT("/Temp/BF6VolumeColor"));
+	if (!Pkg) return nullptr;
+	Pkg->SetFlags(RF_Transient);
+	UMaterial* M = NewObject<UMaterial>(Pkg, TEXT("M_BF6VolumeColor"), RF_Transient);
+	if (!M) return nullptr;
+
+	M->MaterialDomain = MD_Surface;
+	M->BlendMode = BLEND_Translucent;
+	// UNLIT, on purpose. A zone is a diagram, not a surface: lit, the far wall
+	// of a volume goes dark and reads as a different colour from the near one,
+	// which defeats the whole point of colouring them to tell them apart.
+	M->SetShadingModel(MSM_Unlit);
+	M->TwoSided = true;
+
+	UMaterialExpressionVectorParameter* Col =
+		Cast<UMaterialExpressionVectorParameter>(
+			UMaterialEditingLibrary::CreateMaterialExpression(
+				M, UMaterialExpressionVectorParameter::StaticClass(), -400, 0));
+	if (Col)
+	{
+		Col->ParameterName = TEXT("Color");
+		Col->DefaultValue = kVolumeDefaultColor;
+		UMaterialEditingLibrary::ConnectMaterialProperty(Col, TEXT(""), MP_EmissiveColor);
+		// The ALPHA of the same parameter drives opacity, so one colour value
+		// carries both what the creator picked and how see-through they made
+		// it - which is how the Godot picker presents it too.
+		UMaterialEditingLibrary::ConnectMaterialProperty(Col, TEXT("A"), MP_Opacity);
+	}
+
+	M->PreEditChange(nullptr);
+	M->PostEditChange();
+	GVolumeColorParent = M;
+	return M;
+}
+
+// The colour a volume actor is wearing, from its own tag. Absent means the
+// creator never set one, which is not the same as black.
+static bool BF6_VolumeColorOf(AActor* A, FLinearColor& Out)
+{
+	if (!A) return false;
+	for (const FName& T : A->Tags)
+	{
+		const FString S = T.ToString();
+		if (!S.StartsWith(TEXT("vcol:"))) continue;
+		// Stored as RRGGBBAA hex: it survives the tag round-trip the save
+		// already does, reads the same way a creator types a hex colour, and
+		// does not drift through a float printer.
+		const FString Hex = S.Mid(5);
+		if (Hex.Len() < 8) return false;
+		Out = FLinearColor(FColor::FromHex(Hex.Left(8)));
+		return true;
+	}
+	return false;
+}
+
+static void BF6_SetVolumeColorTag(AActor* A, const FLinearColor& C)
+{
+	if (!A) return;
+	for (int32 i = A->Tags.Num() - 1; i >= 0; i--)
+		if (A->Tags[i].ToString().StartsWith(TEXT("vcol:"))) A->Tags.RemoveAt(i);
+	A->Tags.Add(FName(*FString::Printf(TEXT("vcol:%s"), *C.ToFColor(true).ToHex())));
+}
+
+// Give one volume's walls their colour. Called wherever walls are built or
+// rebuilt, so a reshaped zone keeps the colour it was wearing.
+static void BF6_ApplyVolumeMaterial(AActor* Owner, UProceduralMeshComponent* VM);
+
+// Every volume in the world, re-coloured from its own tag.
+static void BF6_ReapplyVolumeColors()
+{
+	if (!GEditor) return;
+	UWorld* W = GEditor->GetEditorWorldContext().World();
+	if (!W) return;
+	for (TActorIterator<AActor> It(W); It; ++It)
+	{
+		// A volume is exactly an actor carrying a colour tag: the walls may be
+		// on the root or on a named component depending on which path built it.
+		FLinearColor Ignored;
+		if (!BF6_VolumeColorOf(*It, Ignored)) continue;
+		TArray<UProceduralMeshComponent*> Meshes;
+		It->GetComponents<UProceduralMeshComponent>(Meshes);
+		for (UProceduralMeshComponent* M : Meshes)
+			if (M && (M->GetFName() == FName(TEXT("Volume")) || M == It->GetRootComponent()))
+				BF6_ApplyVolumeMaterial(*It, M);
+	}
+}
+
+static void BF6_ApplyVolumeMaterial(AActor* Owner, UProceduralMeshComponent* VM)
+{
+	if (!VM) return;
+	FLinearColor C = kVolumeDefaultColor;
+	const bool bHas = BF6_VolumeColorOf(Owner, C);
+
+	if (UMaterial* Parent = BF6_VolumeColorParent())
+	{
+		UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(Parent, VM);
+		if (Mid)
+		{
+			// GODOT DENSITY FROM A GODOT NUMBER. Their gizmo culls back faces,
+			// so a volume always blends exactly ONE layer of its alpha; our
+			// walls draw both windings and blend TWO, which made every
+			// imported colour look nearly twice as dense as it did in the SDK.
+			// Solving 1-(1-x)^2 = a gives the per-face alpha that lands on the
+			// same final density - and the STORED value stays Godot's, so the
+			// round trip carries the creator's number untouched.
+			FLinearColor Disp = C;
+			Disp.A = 1.f - FMath::Sqrt(FMath::Max(0.f, 1.f - FMath::Clamp(C.A, 0.f, 1.f)));
+			Mid->SetVectorParameterValue(TEXT("Color"), Disp);
+			VM->SetMaterial(0, Mid);
+			// the white edge lines, Godot's own zone furniture (section 1)
+			if (VM->GetNumSections() > 1)
+				if (UMaterialInstanceDynamic* EdgeMid = UMaterialInstanceDynamic::Create(Parent, VM))
+				{
+					EdgeMid->SetVectorParameterValue(TEXT("Color"), FLinearColor(1.f, 1.f, 1.f, 0.8f));
+					VM->SetMaterial(1, EdgeMid);
+				}
+			// Recorded even when it came from the default, so that a volume
+			// always round-trips the colour it is actually wearing rather than
+			// silently re-defaulting if the default ever changes.
+			if (!bHas && Owner) BF6_SetVolumeColorTag(Owner, C);
+			return;
+		}
+	}
+	// The shipped flat material, if the runtime one could not be built.
+	if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume"))) VM->SetMaterial(0, Mat);
 }
 
 static void ApplyObjectWhite(UProceduralMeshComponent* Mesh)
@@ -1122,7 +1340,7 @@ void BF6_ClearMeshCache()
 	GMeshCacheBytes = 0;
 }
 
-static bool FillProcFromBf6Mesh(UProceduralMeshComponent* Mesh, const FString& FilePath, bool bCollision)
+static bool FillProcFromBf6Mesh(UProceduralMeshComponent* Mesh, const FString& FilePath, bool bCollision, float NormalPush)
 {
 	if (!Mesh) return false;
 	if (bCollision) Mesh->bUseAsyncCooking = true;   // don't hitch the load
@@ -1189,6 +1407,32 @@ static bool FillProcFromBf6Mesh(UProceduralMeshComponent* Mesh, const FString& F
 
 	const TArray<FBF6Surface>& Src = Cached ? *Cached : Decoded;
 	const TArray<FLinearColor> NC; const TArray<FProcMeshTangent> NT;
+	if (NormalPush > 0.f)
+	{
+		// PUSHED OUT ALONG THE NORMAL, not scaled up.
+		//
+		// A shell that wraps another mesh z-fights with it, and the usual
+		// answer here was a 1.002 uniform scale. That is PROPORTIONAL: on a
+		// building it is centimetres and works, on a jerrycan it is under a
+		// millimetre and does not, so the overlay flickered on exactly the
+		// small props people were trying to inspect. A fixed distance along
+		// each vertex's own normal is scale-independent and also correct on
+		// vertical faces, which a lift in Z is not.
+		//
+		// The cache is SHARED and must not be touched: the push goes into a
+		// scratch copy, or every later draw of this asset inherits it and the
+		// prop itself grows.
+		TArray<FVector> Pushed;
+		for (int32 s = 0; s < Src.Num(); s++)
+		{
+			const FBF6Surface& Sf = Src[s];
+			Pushed = Sf.V;
+			if (Sf.N.Num() == Sf.V.Num())
+				for (int32 v = 0; v < Pushed.Num(); v++) Pushed[v] += Sf.N[v] * NormalPush;
+			Mesh->CreateMeshSection_LinearColor(s, Pushed, Sf.T, Sf.N, Sf.UV, NC, NT, bCollision);
+		}
+	}
+	else
 	for (int32 s = 0; s < Src.Num(); s++)
 		Mesh->CreateMeshSection_LinearColor(s, Src[s].V, Src[s].T, Src[s].N, Src[s].UV, NC, NT, bCollision);
 
@@ -1226,6 +1470,40 @@ static void BuildWalls(UProceduralMeshComponent* M, const TArray<FVector>& Loop,
 	}
 	const TArray<FVector> N; const TArray<FVector2D> UV; const TArray<FLinearColor> NC; const TArray<FProcMeshTangent> NT;
 	M->CreateMeshSection_LinearColor(0, V, T, N, UV, NC, NT, false);
+	// THE EDGES, white, the way Godot draws a zone: the bottom edge, the
+	// vertical crease at each point, and the top edge (their gizmo's exact
+	// three, PolygonVolumeGizmo.gd). The fill alone reads as fog; the lines
+	// are what make the SHAPE legible, and creators from the SDK look for
+	// them. Thin ribbons in the wall plane, nudged off it on both sides so
+	// they never z-fight the fill they sit on.
+	{
+		TArray<FVector> EV; TArray<int32> ET;
+		const float W = 5.f;   // ribbon width in cm
+		auto Rib = [&EV, &ET](const FVector& p0, const FVector& p1, const FVector& Across, const FVector& Push)
+		{
+			const int32 b2 = EV.Num();
+			EV.Add(p0 + Push); EV.Add(p1 + Push); EV.Add(p1 + Across + Push); EV.Add(p0 + Across + Push);
+			ET.Append({ b2, b2 + 1, b2 + 2,  b2, b2 + 2, b2 + 3 });
+			ET.Append({ b2, b2 + 2, b2 + 1,  b2, b2 + 3, b2 + 2 });
+		};
+		for (int32 k = 0; k < Loop.Num(); k++)
+		{
+			const FVector a = Loop[k], b = Loop[(k + 1) % Loop.Num()];
+			const FVector Dir = (b - a).GetSafeNormal2D();
+			if (Dir.IsNearlyZero()) continue;
+			const FVector Nrm = FVector::CrossProduct(Dir, FVector::UpVector);
+			const FVector Up(0, 0, Height);
+			for (const float Side : { 1.f, -1.f })
+			{
+				const FVector Push = Nrm * Side * 1.0f;
+				Rib(a, b, FVector(0, 0, W), Push);                                                  // bottom edge
+				Rib(a + Up - FVector(0, 0, W), b + Up - FVector(0, 0, W), FVector(0, 0, W), Push);  // top edge
+				Rib(a, a + Up, Dir * W, Push);                                                      // vertical crease
+			}
+		}
+		const TArray<FVector> EN; const TArray<FVector2D> EUV; const TArray<FLinearColor> ENC; const TArray<FProcMeshTangent> ENT;
+		M->CreateMeshSection_LinearColor(1, EV, ET, EN, EUV, ENC, ENT, false);
+	}
 }
 
 // ============================================================================
@@ -1326,9 +1604,46 @@ static void BF6_LinkApplyNeon(int32 i)
 	const uint8 St = FMath::Min<uint8>(GLinkPick.CandState[i], 2);
 	UMaterialInstanceDynamic* Mid = GLinkPick.Mid[St].Get();
 	AActor* C = GLinkPick.Candidates[i].Get();
-	if (!Mid || !C) return;
+	if (!C) return;
+
+	// A ZONE STAYS SEE-THROUGH.
+	//
+	// The neon is a SOLID material, which is right for a prop - it has to stand
+	// out against the map and it was never transparent to begin with. On a
+	// polygon volume it is wrong: a zone is a translucent shell you look at the
+	// map THROUGH, and painting it solid turns every candidate into an opaque
+	// wall. That was tolerable while candidates were distant glows and became
+	// the main complaint the moment the picker could fly you inside one.
+	//
+	// So a volume takes the state COLOUR through its own material instead of
+	// the neon: same three colours, same meaning, and you can still see what
+	// the zone is sitting on.
+	if (BF6Api::IsVolumeActor(C))
+	{
+		if (UMaterial* Parent = BF6_VolumeColorParent())
+		{
+			TArray<UProceduralMeshComponent*> Meshes;
+			C->GetComponents<UProceduralMeshComponent>(Meshes);
+			for (UProceduralMeshComponent* M : Meshes)
+			{
+				if (!M) continue;
+				if (UMaterialInstanceDynamic* VM = UMaterialInstanceDynamic::Create(Parent, M))
+				{
+					FLinearColor Col = kLinkNeon[St];
+					Col.A = 0.45f;   // readable as a state, still a window
+					VM->SetVectorParameterValue(TEXT("Color"), Col);
+					for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, VM);
+				}
+			}
+		}
+		if (GLinkPick.NeonApplied.IsValidIndex(i)) GLinkPick.NeonApplied[i] = St;
+		return;
+	}
+
+	UMaterialInstanceDynamic* Mid2 = GLinkPick.Mid[St].Get();
+	if (!Mid2) return;
 	if (UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(C->GetRootComponent()))
-		for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mid);
+		for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mid2);
 	if (GLinkPick.NeonApplied.IsValidIndex(i)) GLinkPick.NeonApplied[i] = St;
 }
 
@@ -1336,6 +1651,19 @@ static void BF6_LinkGhostRestore()
 {
 	BF6_GhostRestoreSet(GLinkPick.Ghosted);
 	BF6_GhostRestoreSet(GLinkPick.Neon);
+	// Volumes were never in the stored set - they kept their own material and
+	// only had its colour changed - so they are put back from the tag, which is
+	// where a zone's colour actually lives.
+	for (TWeakObjectPtr<AActor>& Wk : GLinkPick.Candidates)
+		if (AActor* C = Wk.Get())
+			if (BF6Api::IsVolumeActor(C))
+			{
+				TArray<UProceduralMeshComponent*> Meshes;
+				C->GetComponents<UProceduralMeshComponent>(Meshes);
+				for (UProceduralMeshComponent* M : Meshes)
+					if (M && (M->GetFName() == FName(TEXT("Volume")) || M == C->GetRootComponent()))
+						BF6_ApplyVolumeMaterial(C, M);
+			}
 	GLinkPick.NeonApplied.Reset();
 	for (int32 s = 0; s < 3; s++) GLinkPick.Mid[s].Reset();
 	GLinkPick.Candidates.Reset();
@@ -1400,10 +1728,116 @@ static TArray<FVector> BF6_LoopToLocal(AActor* Vol, const TArray<FVector>& World
 	return Out;
 }
 
+static FString TagValue(AActor* A, const FString& Prefix);   // fwd: defined with the session code
+
+// ---- WaypointPath: the third authorable geometry type -----------------------
+//
+// The SDK's schema has THREE creator-drawn shapes, not two: polygonvolume,
+// obbvolume, and waypointpath - a Curve3D the AI walks, linked from
+// AI_WaypointPath's `Waypoints` field and exported as world-space points plus
+// an isClosed flag (code/gdconverter, test_waypointpath.py pins the contract).
+// This tool shipped without it, so imported maps silently lost their patrol
+// routes and an AI_WaypointPath placed here was an empty shell.
+//
+// A path stores its points in GVolumeLoops like a zone does, which buys every
+// existing tool - drag dots, Ctrl+LMB add, Ctrl+RMB delete, loop tags, session
+// save, undo repair - and only the MESH differs: an open ribbon with direction
+// arrows instead of closed walls.
+
+// Does this type CARRY a path? Read from the schema, not a name list.
+static bool BF6_TypeHasWaypoints(const FString& Type)
+{
+	static TMap<FString, bool> Cache;
+	if (const bool* C = Cache.Find(Type)) return *C;
+	bool bHas = false;
+	for (const BF6Api::FPropDef& D : BF6Api::PropsForType(Type))
+		if (D.Type == TEXT("WaypointPath")) { bHas = true; break; }
+	Cache.Add(Type, bHas);
+	return bHas;
+}
+
+static bool BF6_IsPathActor(AActor* A)
+{
+	if (!A) return false;
+	FString Ty = TagValue(A, TEXT("label:"));
+	if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("type:"));
+	return !Ty.IsEmpty() && BF6_TypeHasWaypoints(Ty);
+}
+
+static bool BF6_PathIsClosed(AActor* A)
+{
+	return BF6Api::GetActorProp(A, TEXT("isClosed")).Equals(TEXT("true"), ESearchCase::IgnoreCase);
+}
+
+// An open ribbon: a knee-high wall per segment plus an arrowhead at each
+// midpoint, so the DIRECTION reads at a glance - a patrol route runs one way.
+static void BuildPathRibbon(UProceduralMeshComponent* M, const TArray<FVector>& Pts, bool bClosed)
+{
+	if (Pts.Num() < 2) return;
+	TArray<FVector> V; TArray<int32> T;
+	const float H = 100.f;   // 1 m tall: visible, never a wall
+	const int32 Segs = bClosed ? Pts.Num() : Pts.Num() - 1;
+	for (int32 i = 0; i < Segs; i++)
+	{
+		const FVector a = Pts[i], b = Pts[(i + 1) % Pts.Num()];
+		const int32 s = V.Num();
+		V.Add(a); V.Add(a + FVector(0, 0, H)); V.Add(b); V.Add(b + FVector(0, 0, H));
+		// both windings, so it reads from either side
+		T.Append({ s, s + 1, s + 2,  s + 2, s + 1, s + 3 });
+		T.Append({ s + 2, s + 1, s,  s + 3, s + 1, s + 2 });
+
+		// the arrow: a horizontal chevron at half height, pointing at b
+		const FVector Dir = (b - a).GetSafeNormal2D();
+		if (!Dir.IsNearlyZero())
+		{
+			const FVector Mid = (a + b) * 0.5f + FVector(0, 0, H * 0.5f);
+			const FVector Side = FVector::CrossProduct(Dir, FVector::UpVector) * 60.f;
+			const int32 t = V.Num();
+			V.Add(Mid + Dir * 90.f); V.Add(Mid - Dir * 30.f + Side); V.Add(Mid - Dir * 30.f - Side);
+			T.Append({ t, t + 1, t + 2,  t + 2, t + 1, t });
+		}
+	}
+	TArray<FVector> N; N.Init(FVector::UpVector, V.Num());
+	TArray<FVector2D> UV; UV.Init(FVector2D::ZeroVector, V.Num());
+	TArray<FLinearColor> C; C.Init(FLinearColor::White, V.Num());
+	TArray<FProcMeshTangent> Tan; Tan.Init(FProcMeshTangent(1, 0, 0), V.Num());
+	M->CreateMeshSection_LinearColor(0, V, T, N, UV, C, Tan, false);
+	M->SetCastShadow(false);
+}
+
 static void RebuildVolumeWalls(AActor* Vol, const TArray<FVector>& Loop)
 {
 	UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(Vol->GetRootComponent());
 	if (!M) return;
+	// A PATH rebuilds as a ribbon, not walls - same registry, different mesh.
+	// The ribbon gets its OWN component: unlike a zone, a path actor's root is
+	// its 3D model, and clearing sections there would eat the model itself.
+	if (BF6_IsPathActor(Vol))
+	{
+		UProceduralMeshComponent* R = nullptr;
+		TArray<UProceduralMeshComponent*> Comps;
+		Vol->GetComponents<UProceduralMeshComponent>(Comps);
+		for (UProceduralMeshComponent* C : Comps)
+			if (C->GetFName() == FName(TEXT("PathRibbon"))) { R = C; break; }
+		if (!R)
+		{
+			R = NewObject<UProceduralMeshComponent>(Vol, FName(TEXT("PathRibbon")));
+			R->SetFlags(RF_Transactional | RF_Transient);
+			R->SetupAttachment(Vol->GetRootComponent());
+			R->RegisterComponent();
+			Vol->AddInstanceComponent(R);
+			// world-space points go in raw, so the component must not inherit
+			// the actor's transform on top of them
+			R->SetUsingAbsoluteLocation(true);
+			R->SetUsingAbsoluteRotation(true);
+			R->SetUsingAbsoluteScale(true);
+			R->SetWorldTransform(FTransform::Identity);
+		}
+		R->ClearAllMeshSections();
+		BuildPathRibbon(R, Loop, BF6_PathIsClosed(Vol));
+		BF6_ApplyVolumeMaterial(Vol, R);
+		return;
+	}
 	// the zone's real height (Godot metres) when it carries one; 0 means
 	// INFINITE in the SDK, which Godot's gizmo draws at 5 m - match that
 	double H = 5.0;
@@ -1412,8 +1846,7 @@ static void RebuildVolumeWalls(AActor* Vol, const TArray<FVector>& Loop)
 	if (H <= 0.01) H = 5.0;
 	M->ClearAllMeshSections();
 	BuildWalls(M, Loop, (float)H * 100.f);
-	if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
-		M->SetMaterial(0, Mat);
+	BF6_ApplyVolumeMaterial(Vol, M);
 }
 
 // ---- OBBVolume: an oriented box with Godot-style face-handle editing ----
@@ -1460,8 +1893,7 @@ static void RebuildObbBox(AActor* A)
 	if (!M) return;
 	M->ClearAllMeshSections();
 	BuildBox(M, BF6_ObbSizeUE(BF6_ObbSizeGodot(A)));
-	if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
-		M->SetMaterial(0, Mat);
+	BF6_ApplyVolumeMaterial(A, M);
 }
 
 static AActor* SpawnObbActor(UWorld* W, const FTransform& Xf, const FVector& SizeGodot)
@@ -1503,6 +1935,48 @@ static FString BF6_SessionPathFor(const FString& Level, const FString& Name)   /
 	return FPaths::FileExists(N) ? N : BF6_SessionPathOld(Level, Name);
 }
 
+// A custom map's name becomes a FOLDER on disk, so the filesystem has a veto.
+// Without this a name like "M4/Sherman" wrote nothing, the session still
+// switched to editing, and the user was told it had been created - a save that
+// never existed and only announced itself much later.
+//
+// Reserved device names are in here because Windows rejects them anywhere in a
+// path, extension or not, which is the least guessable failure of the set.
+static bool BF6_ValidSaveName(const FString& Name, FString& OutWhy)
+{
+	if (Name.IsEmpty()) { OutWhy = TEXT("Give the custom map a name first."); return false; }
+	if (Name.Len() > 100) { OutWhy = TEXT("That name is too long - keep it under 100 characters."); return false; }
+
+	const FString Bad = TEXT("\\/:*?\"<>|");
+	for (const TCHAR C : Name)
+	{
+		int32 Ignore;
+		if (Bad.FindChar(C, Ignore) || C < 32)
+		{
+			OutWhy = TEXT("A name can't contain  \\ / : * ? \" < > |  because it becomes a folder on disk.");
+			return false;
+		}
+	}
+	if (Name.EndsWith(TEXT(".")) || Name.EndsWith(TEXT(" ")))
+	{
+		OutWhy = TEXT("A name can't end with a dot or a space - Windows drops them and the folder would not match.");
+		return false;
+	}
+	static const TCHAR* Reserved[] = { TEXT("CON"), TEXT("PRN"), TEXT("AUX"), TEXT("NUL"),
+		TEXT("COM1"), TEXT("COM2"), TEXT("COM3"), TEXT("COM4"), TEXT("COM5"), TEXT("COM6"), TEXT("COM7"), TEXT("COM8"), TEXT("COM9"),
+		TEXT("LPT1"), TEXT("LPT2"), TEXT("LPT3"), TEXT("LPT4"), TEXT("LPT5"), TEXT("LPT6"), TEXT("LPT7"), TEXT("LPT8"), TEXT("LPT9") };
+	FString Stem = Name;
+	int32 Dot;
+	if (Stem.FindChar(TEXT('.'), Dot)) Stem = Stem.Left(Dot);
+	for (const TCHAR* R : Reserved)
+		if (Stem.Equals(R, ESearchCase::IgnoreCase))
+		{
+			OutWhy = FString::Printf(TEXT("'%s' is a reserved name on Windows - pick another."), *Stem);
+			return false;
+		}
+	return true;
+}
+
 static TArray<FString> ListSaves(const FString& Level)
 {
 	TArray<FString> Out;
@@ -1517,6 +1991,51 @@ static TArray<FString> ListSaves(const FString& Level)
 	IFileManager::Get().FindFiles(Files, *(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), Level) / TEXT("*.json")), true, false);
 	for (FString& F : Files) Out.AddUnique(FPaths::GetBaseFilename(F));
 	return Out;
+}
+
+// A cheap signature of every save on disk.
+//
+// The map menu snapshots the save lists when it is built, so a creator who
+// deletes a save folder in Explorer with the menu open keeps looking at a
+// RESUME dropdown for a file that is gone - and clicking it opens nothing.
+// Polling this while the menu is up costs two directory reads plus one per
+// save folder, which is nothing at a second apart.
+//
+// Names only, because names are exactly what the menu lists: editing a save's
+// contents changes nothing the menu shows. Sorted so the fingerprint depends
+// on WHAT is there, not on the order the filesystem happened to hand it back.
+static uint32 BF6_SavesFingerprint()
+{
+	uint32 H = 2166136261u;   // FNV-1a
+	auto Fold = [&H](const FString& S)
+	{
+		for (const TCHAR C : S) { H ^= (uint32)FChar::ToLower(C); H *= 16777619u; }
+		H ^= 0xFFu; H *= 16777619u;   // separator, so "ab"+"c" cannot collide with "a"+"bc"
+	};
+	auto FoldDir = [&Fold](const FString& Dir)
+	{
+		TArray<FString> Files;
+		IFileManager::Get().FindFiles(Files, *(Dir / TEXT("*.json")), true, false);
+		Files.Sort();
+		for (const FString& F : Files) Fold(F);
+	};
+
+	// new layout: saves/<custom map>/<Level>.json
+	const FString Root = BF6_SavesRoot();
+	TArray<FString> Dirs;
+	IFileManager::Get().FindFiles(Dirs, *(Root / TEXT("*")), false, true);
+	Dirs.Sort();
+	for (const FString& D : Dirs) { Fold(D); FoldDir(Root / D); }
+
+	// old flat layout: <Level>/<Name>.json, a sibling of saves/. Matched on the
+	// level prefix so the tool's own churning folders (thumbs, export, sdk)
+	// cannot make this look like a change every second.
+	const FString Base = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"));
+	TArray<FString> Levels;
+	IFileManager::Get().FindFiles(Levels, *(Base / TEXT("MP_*")), false, true);
+	Levels.Sort();
+	for (const FString& L : Levels) { Fold(L); FoldDir(Base / L); }
+	return H;
 }
 
 static FString TagValue(AActor* A, const FString& Prefix)
@@ -1607,12 +2126,12 @@ static void BF6_SyncTreeTagsFromLive()
 	}
 }
 
-static void SaveSession(const FString& Level, const FString& Name)
+static bool SaveSession(const FString& Level, const FString& Name)
 {
 	BF6_SyncTreeTagsFromLive();
-	if (!GEditor || Name.IsEmpty()) return;
+	if (!GEditor || Name.IsEmpty()) return false;
 	UWorld* World = GEditor->GetEditorWorldContext().World();
-	if (!World) return;
+	if (!World) return false;
 	TArray<TSharedPtr<FJsonValue>> Objs;
 	TMap<AGroupActor*, int32> GroupIdx;   // group root -> stable save index
 	for (TActorIterator<AActor> It(World); It; ++It)
@@ -1647,7 +2166,8 @@ static void SaveSession(const FString& Level, const FString& Name)
 				if (TS.StartsWith(TEXT("blk:")) || TS.StartsWith(TEXT("blkid:")) || TS.StartsWith(TEXT("blkat:"))
 					|| TS.StartsWith(TEXT("gtree:")) || TS.StartsWith(TEXT("gpath:"))   // the authored tree
 					|| TS.StartsWith(TEXT("gord:"))                              // and its order
-					|| TS.StartsWith(TEXT("tint:")))                            // and its colour
+					|| TS.StartsWith(TEXT("tint:"))                             // and its colour
+					|| TS.StartsWith(TEXT("vcol:")))                            // a volume's own colour
 					RawTags.Add(MakeShared<FJsonValueString>(TS));
 			}
 			if (RawTags.Num()) O->SetArrayField(TEXT("tags"), RawTags);
@@ -1727,17 +2247,42 @@ static void SaveSession(const FString& Level, const FString& Name)
 	Root->SetStringField(TEXT("level"), Level);
 	Root->SetArrayField(TEXT("objects"), Objs);
 	Root->SetArrayField(TEXT("base"), BaseArr);
+	// THIS SAVE'S BASE LIST IS THE WHOLE TRUTH, and saying so is what lets a
+	// reload honour a DELETION.
+	//
+	// The map's shipped gameplay objects are respawned from the base setup file
+	// every time a map opens, and the save then edits them. That works for a
+	// moved or retuned object and silently fails for a removed one: nothing in
+	// the save says "this used to exist and does not any more", so the object
+	// came back on every resume. Worse, it came back BEFORE an export, so a
+	// creator who deleted the shipped objects still shipped them - which is what
+	// "the export seems to include the original map data" was.
+	//
+	// A flag rather than a list of removals, because the surviving set is
+	// already written above and a second list could disagree with it. Older
+	// saves have no flag and keep the old behaviour, which is the only safe
+	// reading of them: their base list was never guaranteed complete.
+	Root->SetBoolField(TEXT("base_complete"), true);
 	FString Out;
 	TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
 	FJsonSerializer::Serialize(Root.ToSharedRef(), W);
 	const FString Path = BF6_SessionPathNew(Level, Name);
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
-	FFileHelper::SaveStringToFile(Out, *Path);
+	// The RESULT matters. A name the filesystem will not take produced a silent
+	// no-write, and the caller then reported success for a file that was never
+	// created - worse than failing, because nothing looks wrong until the save
+	// is gone.
+	if (!FFileHelper::SaveStringToFile(Out, *Path))
+	{
+		UE_LOG(LogBF6, Error, TEXT("Could not write the session to %s"), *Path);
+		return false;
+	}
 	// the same save under the OLD flat layout is superseded - remove it so
 	// the resume list never shows doubles
 	const FString Old = BF6_SessionPathOld(Level, Name);
 	if (FPaths::FileExists(Old)) IFileManager::Get().Delete(*Old);
 	UE_LOG(LogBF6, Warning, TEXT("Saved %d object(s) to %s"), Objs.Num(), *Path);
+	return true;
 }
 
 static void LoadSession(const FString& Level, const FString& Name)
@@ -1763,6 +2308,8 @@ static void LoadSession(const FString& Level, const FString& Name)
 	if (!Root->TryGetArrayField(TEXT("objects"), Objs)) return;
 	int n = 0;
 	TMap<int32, TArray<AActor*>> PendingGroups;   // saved group index -> members
+	TMap<FString, FString> Renamed;   // requested label -> what the editor made of it
+	TArray<AActor*> LoadedActors;
 	for (const auto& V : *Objs)
 	{
 		const TSharedPtr<FJsonObject> O = V->AsObject();
@@ -1829,7 +2376,20 @@ static void LoadSession(const FString& Level, const FString& Name)
 			// restore identity: the saved NAME (links between placed objects
 			// point at it), block tags, and pending group membership
 			FString Nm;
-			if (O->TryGetStringField(TEXT("nm"), Nm) && !Nm.IsEmpty()) BF6_SetPrettyLabel(A, Nm);
+			if (O->TryGetStringField(TEXT("nm"), Nm) && !Nm.IsEmpty())
+			{
+				BF6_SetPrettyLabel(A, Nm);
+				// The editor may UNIQUIFY this label against actors that already
+				// exist - above all the base setup, whose objects often share
+				// names with a map imported from Godot (creators copy the base
+				// layout's names). Every saved link points at the REQUESTED
+				// name, so each rename here silently breaks the links aimed at
+				// this object. Record the rename; they are remapped below.
+				FString Got = A->GetActorLabel(); Got.RemoveFromStart(TEXT("BF6_"));
+				if (Got != Nm) Renamed.Add(Nm, Got);
+				LoadedActors.Add(A);
+			}
+			else LoadedActors.Add(A);
 			const TArray<TSharedPtr<FJsonValue>>* RawTags = nullptr;
 			if (O->TryGetArrayField(TEXT("tags"), RawTags))
 				for (const auto& TV : *RawTags)
@@ -1846,6 +2406,41 @@ static void LoadSession(const FString& Level, const FString& Name)
 			if (BF6Api::IsObbActor(A)) RebuildObbBox(A);
 			n++;
 		}
+	}
+
+	// FOLLOW THE RENAMES THROUGH THE LINKS.
+	//
+	// The save was internally consistent: its links point at the names its
+	// objects were saved under. If the editor renamed any of them on the way
+	// in, every link aimed at an old name now points at nothing - or worse, at
+	// a base-setup object that happens to wear it. The Conquest HQs of a real
+	// creator map lost their areas and spawn lists exactly this way. The links
+	// follow the session's OWN objects, never whatever else holds the name.
+	if (Renamed.Num())
+	{
+		int32 Fixed = 0;
+		for (AActor* A : LoadedActors)
+		{
+			if (!A) continue;
+			FString Ty = TagValue(A, TEXT("label:"));
+			if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("type:"));
+			if (Ty.IsEmpty()) continue;
+			for (const BF6Api::FPropDef& D : BF6Api::PropsForType(Ty))
+			{
+				if (!BF6Api::BF6_IsLinkProp(Ty, D.Name)) continue;
+				const FString V = BF6Api::GetActorProp(A, D.Name);
+				if (V.IsEmpty() || V.Contains(TEXT("NodePath"))) continue;
+				TArray<FString> Parts; V.ParseIntoArray(Parts, TEXT(","), true);
+				bool bChanged = false;
+				for (FString& Pt : Parts)
+				{
+					Pt.TrimStartAndEndInline();
+					if (const FString* New = Renamed.Find(Pt)) { Pt = *New; bChanged = true; }
+				}
+				if (bChanged) { BF6Api::SetActorProp(A, D.Name, FString::Join(Parts, TEXT(","))); Fixed++; }
+			}
+		}
+		if (Fixed > 0) UE_LOG(LogBF6, Warning, TEXT("reload renamed %d object(s); %d link field(s) re-pointed"), Renamed.Num(), Fixed);
 	}
 
 	// groups re-form exactly as saved (block instances included) and come
@@ -1871,6 +2466,45 @@ static void LoadSession(const FString& Level, const FString& Name)
 				Lb.RemoveFromStart(TEXT("BF6_"));
 				ByName.Add(Lb, *It);
 			}
+		// WHAT THE SAVE DOES NOT LIST, THE CREATOR DELETED - but only for a save
+		// that claims a complete list. Reading an older save this way would
+		// treat every object it happened not to record as a deletion and strip
+		// the map's gameplay setup on open, which is far worse than the bug it
+		// fixes.
+		bool bComplete = false;
+		Root->TryGetBoolField(TEXT("base_complete"), bComplete);
+		if (bComplete)
+		{
+			TSet<FString> Kept;
+			for (const auto& BV : *BaseArr)
+				if (const TSharedPtr<FJsonObject> B = BV->AsObject())
+					Kept.Add(B->GetStringField(TEXT("name")));
+
+			int32 Removed = 0;
+			for (const TPair<FString, AActor*>& Pair : ByName)
+				if (!Kept.Contains(Pair.Key) && Pair.Value)
+				{
+					GVolumeLoops.Remove(Pair.Value);
+					Pair.Value->Destroy();
+					Removed++;
+				}
+			if (Removed > 0)
+			{
+				UE_LOG(LogBF6, Warning,
+					TEXT("  base setup: %d object(s) stayed deleted"), Removed);
+				// The name map is now full of dangling pointers, and the loop
+				// below looks names up in it.
+				ByName.Reset();
+				for (TActorIterator<AActor> It(World); It; ++It)
+					if (It->Tags.Contains(kBaseTag))
+					{
+						FString Lb = It->GetActorLabel();
+						Lb.RemoveFromStart(TEXT("BF6_"));
+						ByName.Add(Lb, *It);
+					}
+			}
+		}
+
 		for (const auto& BV : *BaseArr)
 		{
 			const TSharedPtr<FJsonObject> B = BV->AsObject();
@@ -1947,7 +2581,7 @@ public:
 };
 
 // A brief on-screen toast (top-right of the editor).
-static void Notify(const FString& Msg)
+void Notify(const FString& Msg)
 {
 	FNotificationInfo Info(FText::FromString(Msg));
 	Info.ExpireDuration = 3.5f;
@@ -2093,7 +2727,12 @@ private:
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().FillWidth(1)
-				[ SAssignNew(SaveNameBox, SEditableTextBox).HintText(FText::FromString(TEXT("custom map name"))) ]
+				[
+					SAssignNew(SaveNameBox, SEditableTextBox).HintText(FText::FromString(TEXT("custom map name")))
+						// Enter creates it, same as the button beside it.
+						.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type How)
+							{ if (How == ETextCommit::OnEnter) OnCreateCustom(); })
+				]
 				+ SHorizontalBox::Slot().AutoWidth().Padding(6,0,0,0)
 				[ SNew(SButton).Text(FText::FromString(TEXT("Create Custom Map"))).OnClicked(this, &SBF6Browser::OnCreateCustom) ]
 				+ SHorizontalBox::Slot().AutoWidth().Padding(6,0,0,0)
@@ -2266,8 +2905,7 @@ private:
 				{
 					UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
 					BuildWalls(VM, Loop, 500.f);   // 5m, matching the SDK gizmo
-					if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
-						VM->SetMaterial(0, Mat);   // translucent teal, like Godot's PolygonVolume
+					BF6_ApplyVolumeMaterial(A, VM);
 				}
 			}
 			else
@@ -2312,10 +2950,29 @@ private:
 	FReply OnCreateCustom()
 	{
 		FString Name = SaveNameBox.IsValid() ? SaveNameBox->GetText().ToString().TrimStartAndEnd() : FString();
-		if (Name.IsEmpty()) { Notify(TEXT("Enter a name for your custom map first.")); return FReply::Handled(); }
+		FString Why;
+		if (!BF6_ValidSaveName(Name, Why)) { Notify(Why); return FReply::Handled(); }
+		// An existing name would be OVERWRITTEN, and creating happens from the
+		// read-only base, so the world being written is empty - the old save
+		// would not be merged into, it would be erased. Ask.
+		if (FPaths::FileExists(BF6_SessionPathFor(CurrentLevel, Name)))
+		{
+			const FString Q = FString::Printf(TEXT("A custom map called '%s' already exists for this level.\n\nCreating it again REPLACES it with an empty one. The objects in the old save are lost.\n\nReplace it?"), *Name);
+			if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(Q)) != EAppReturnType::Yes)
+			{
+				Notify(TEXT("Left the existing custom map alone."));
+				return FReply::Handled();
+			}
+		}
+		const FString Was = CurrentSave; const bool bWas = bEditing;
 		CurrentSave = Name;
 		bEditing = true;
-		SaveSession(CurrentLevel, CurrentSave);   // create the save file now
+		if (!SaveSession(CurrentLevel, CurrentSave))   // create the save file now
+		{
+			CurrentSave = Was; bEditing = bWas;
+			Notify(FString::Printf(TEXT("Could not create '%s' - the file could not be written. Try a simpler name."), *Name));
+			return FReply::Handled();
+		}
 		Notify(FString::Printf(TEXT("Custom map '%s' created - you can now place objects."), *CurrentSave));
 		return FReply::Handled();
 	}
@@ -2323,7 +2980,11 @@ private:
 	FReply OnSaveClicked()
 	{
 		if (!bEditing || CurrentSave.IsEmpty()) { Notify(TEXT("Create a custom map first.")); return FReply::Handled(); }
-		SaveSession(CurrentLevel, CurrentSave);
+		if (!SaveSession(CurrentLevel, CurrentSave))
+		{
+			Notify(FString::Printf(TEXT("Could not save '%s' - the file could not be written."), *CurrentSave));
+			return FReply::Handled();
+		}
 		Notify(FString::Printf(TEXT("Saved '%s'."), *CurrentSave));
 		return FReply::Handled();
 	}
@@ -2544,8 +3205,7 @@ private:
 				if (!A) continue;
 				UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
 				BuildWalls(VM, Loop, 500.f);
-				if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
-					VM->SetMaterial(0, Mat);
+				BF6_ApplyVolumeMaterial(A, VM);
 				BF6_SetPrettyLabel(A, Type);
 				A->Tags.Add(kPlacedTag);
 				A->Tags.Add(FName(*(FString(TEXT("label:")) + Type)));
@@ -2713,7 +3373,7 @@ private:
 	FReply StartRowDrag(TSharedPtr<FPlaceableRow> Item)
 	{
 		if (!Item.IsValid()) return FReply::Unhandled();
-		if (!bEditing) { Notify(TEXT("This is the read-only base map. Create a custom map first to place objects.")); return FReply::Unhandled(); }
+		if (!bEditing) { BF6Api::RefuseReadOnly(FString()); return FReply::Unhandled(); }
 		const FString MeshName = Item->Mesh.IsEmpty() ? Item->Type : Item->Mesh;
 		if (!FPaths::FileExists(ObjModelPath(MeshName))) return FReply::Unhandled();
 		return FReply::Handled().BeginDragDrop(FBF6PlaceableDragDropOp::New(MeshName, Item->Type));
@@ -2739,7 +3399,7 @@ private:
 	void OnActivate(TSharedPtr<FPlaceableRow> Item)
 	{
 		if (!Item.IsValid()) return;
-		if (!bEditing) { Notify(TEXT("This is the read-only base map. Create a custom map first to place objects.")); return; }
+		if (!bEditing) { BF6Api::RefuseReadOnly(FString()); return; }
 		const FString MeshName = Item->Mesh.IsEmpty() ? Item->Type : Item->Mesh;
 		AActor* A = SpawnSdkModel(MeshName, Item->Type, FTransform(FVector(0,0,100)));
 		if (!A) { Notify(FString::Printf(TEXT("No SDK model bundled for '%s'."), *Item->Type)); return; }
@@ -3237,6 +3897,10 @@ static void BF6_FileActor(AActor* A)
 	if (A->GetAttachParentActor()) return;
 	// Keeping the authored tree means the tree IS the organisation, as it is in
 	// the SDK. Folders alongside it would be a second, conflicting hierarchy.
+	// Whatever we decide below, this actor is new to the tree, so the tree needs
+	// rebuilding before the frame ends. Asking here rather than at the twelve
+	// call sites is the whole point: a spawner added tomorrow gets it free.
+	ON_SCOPE_EXIT{ BF6Api::MarkSceneTreeDirty(); };
 	if (BF6_KeepGodotTree()) { A->SetFolderPath(NAME_None); return; }
 	A->SetFolderPath(FName(*BF6_FolderForActor(A)));
 }
@@ -3451,7 +4115,7 @@ static void BF6_LoadBaseSetup(const FString& Level)
 			}
 			A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
 			if (VolH <= 0.01) VolH = 5.0;   // SDK: 0 = infinite, drawn at 5 m like Godot
-			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,(float)VolH*100.f); if(UMaterialInterface* Mat=BF6_Material(TEXT("M_Volume"))) VM->SetMaterial(0,Mat); GVolumeLoops.Add(A, Loop); BF6_WriteLoopTags(A); }
+			if (A){ UProceduralMeshComponent* VM=MakeProcMesh(A,TEXT("Volume")); BuildWalls(VM,Loop,(float)VolH*100.f); BF6_ApplyVolumeMaterial(A, VM); GVolumeLoops.Add(A, Loop); BF6_WriteLoopTags(A); }
 		}
 		else
 		{
@@ -3535,13 +4199,28 @@ static void BF6_LoadBaseSetup(const FString& Level)
 	UE_LOG(LogBF6, Warning, TEXT("Base setup loaded for %s: %d objects."), *Level, spawned);
 }
 
-static void BF6_EnsureBaseSetupFormat();   // regenerates stale base.json packs
 
-static void BF6_OpenMapWorldImpl(const FString& Level, const FString& Save)
+static void BF6_HookSpawnWatch();   // fwd: defined with the other editor hooks
+static void BF6_OpenMapWorldImpl(const FString& Level, const FString& SaveName)
 {
 	if (!GEditor) return;
+	// The save may have been deleted since the menu drew it - the menu watches
+	// the folder, but a click can still land in the gap. Opening it anyway
+	// would be the worse half of that: the session would take the missing
+	// save's NAME onto an empty base map, and the next save would write the
+	// deleted file straight back. Open the base map under no name instead.
+	FString Save = SaveName;
+	if (!Save.IsEmpty() && !FPaths::FileExists(BF6_SessionPathFor(Level, Save)))
+	{
+		Notify(FString::Printf(TEXT("The save '%s' is no longer on disk - opening the base map instead."), *Save));
+		Save.Empty();
+	}
+	// Tell the add-ons the old map is going before anything is torn down, so
+	// an overlay can drop its own actors while the world is still coherent.
+	if (!g_ss.CurrentLevel.IsEmpty()) BF6ExtInternal::BroadcastMapClosing(g_ss.CurrentLevel);
 	BF6_EnsureBaseSetupFormat();
 	g_ss.CurrentLevel = Level; g_ss.CurrentSave = Save; g_ss.bEditing = !Save.IsEmpty();
+	BF6_HookSpawnWatch();   // the world may have been replaced since last time
 	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag); ClearActorsWithTag(kGroupTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
 	const FString TP = BF6_MapMeshPath(Level, TEXT("_terrain.bf6mesh"));
@@ -3550,7 +4229,17 @@ static void BF6_OpenMapWorldImpl(const FString& Level, const FString& Save)
 	if (!GContextReused) if (FPaths::FileExists(AP)) SpawnContextMesh(AP, FString::Printf(TEXT("%s_Assets"), *Level));
 	BF6_LoadBaseSetup(Level);
 	if (!Save.IsEmpty()) LoadSession(Level, Save);
+	// COLOURS LAST, once every path has finished restoring tags.
+	//
+	// A volume's colour lives in a tag, and the several spawn paths do not
+	// agree on when tags land relative to the walls being built: the spatial
+	// importer restores properties after the material, the session loader
+	// restores raw tags after that again. Re-applying once here is one line
+	// against auditing four call orders, and it cannot be wrong - the tag is
+	// the only source either way.
+	BF6_ReapplyVolumeColors();
 	BF6_RecomputeBudget();
+	BF6ExtInternal::BroadcastMapOpened(Level, Save);
 }
 
 // Export the current session to <map>.spatial.json (Portal format). bMinify
@@ -3779,10 +4468,55 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 		// placed zone volumes: the spatial format wants global Godot points
 		if (const TArray<FVector>* Loop = GVolumeLoops.Find(*It))
 		{
-			TArray<TSharedPtr<FJsonValue>> PtsArr;
-			for (const FVector& Wv : BF6_LoopToWorld(*It, *Loop))
-				PtsArr.Add(MakeShared<FJsonValueObject>(Vec(Wv.X / 100.0, Wv.Z / 100.0, Wv.Y / 100.0)));
-			e->SetArrayField(TEXT("points"), PtsArr);
+			if (BF6_IsPathActor(*It))
+			{
+				// A PATH exports as TWO entities, the way gdconverter does it
+				// (test_waypointpath.py pins this): the owner keeps its
+				// transform and gains `Waypoints: <path id>` in its linked
+				// list, and a separate type:"WaypointPath" entity carries the
+				// world-space points and the isClosed flag - and no transform.
+				const FString PathNm = ShortName(Ln + TEXT("_Path"));
+				e->SetStringField(TEXT("Waypoints"), PathNm);
+				TArray<TSharedPtr<FJsonValue>> Lk;
+				const TArray<TSharedPtr<FJsonValue>>* HaveLk = nullptr;
+				if (e->TryGetArrayField(TEXT("linked"), HaveLk)) Lk = *HaveLk;
+				Lk.Add(MakeShared<FJsonValueString>(TEXT("Waypoints")));
+				e->SetArrayField(TEXT("linked"), Lk);
+
+				TSharedPtr<FJsonObject> pe = MakeShared<FJsonObject>();
+				pe->SetStringField(TEXT("name"), PathNm);
+				pe->SetStringField(TEXT("type"), TEXT("WaypointPath"));
+				pe->SetStringField(TEXT("id"), PathNm);
+				pe->SetBoolField(TEXT("isClosed"), BF6_PathIsClosed(*It));
+				TArray<TSharedPtr<FJsonValue>> PPts;
+				for (const FVector& Wv : BF6_LoopToWorld(*It, *Loop))
+					PPts.Add(MakeShared<FJsonValueObject>(Vec(Wv.X / 100.0, Wv.Z / 100.0, Wv.Y / 100.0)));
+				pe->SetArrayField(TEXT("points"), PPts);
+				Dynamic.Add(MakeShared<FJsonValueObject>(pe));
+			}
+			else
+			{
+				TArray<TSharedPtr<FJsonValue>> PtsArr;
+				for (const FVector& Wv : BF6_LoopToWorld(*It, *Loop))
+					PtsArr.Add(MakeShared<FJsonValueObject>(Vec(Wv.X / 100.0, Wv.Z / 100.0, Wv.Y / 100.0)));
+				e->SetArrayField(TEXT("points"), PtsArr);
+			}
+		}
+		// ObjId parity with gdconverter's compatibility shim. For these six
+		// types Godot's default is 0 and an unset id exports as 0; our internal
+		// "unset" is -1, which the shim would have stripped. So -1 becomes 0
+		// here, and everything else keeps whatever it carries.
+		{
+			static const TCHAR* Six[] = { TEXT("Bomb"), TEXT("CapturePoint"), TEXT("DeployCam"),
+				TEXT("RingOfFire"), TEXT("MCOM"), TEXT("Sector") };
+			for (const TCHAR* T : Six)
+				if (Type == T)
+				{
+					double Id = -1.0;
+					if (!e->TryGetNumberField(TEXT("ObjId"), Id) || FMath::IsNearlyEqual(Id, -1.0))
+						e->SetNumberField(TEXT("ObjId"), 0);
+					break;
+				}
 		}
 		Dynamic.Add(MakeShared<FJsonValueObject>(e)); pid++;
 	}
@@ -3966,7 +4700,24 @@ static bool BF6_ImportTscnFile(const FString& File)
 		double O[3] = { 0,0,0 };
 		TArray<double> Points;           // local x,z pairs (PolygonVolume)
 		double Height = 0.0;
+		// THE VOLUME'S AUTHORED COLOUR, and it is not editor leakage.
+		//
+		// This importer used to drop `color` alongside `visible` and
+		// `process_priority` as noise the Godot editor writes. It is not: both
+		// volume types declare it as an exported property whose whole purpose
+		// is to tell one volume from another, and creators use it that way. An
+		// imported map arrived as a wall of identical translucent boxes with
+		// the creator's organisation thrown away.
+		bool bHasColor = false;
+		FLinearColor Color = FLinearColor::White;
 		bool bHasSize = false; double Size[3] = { 10,10,10 };
+		// WaypointPath: the Curve3D sub-resource this node references, resolved
+		// after the parse into positions (Godot writes 9 numbers per point -
+		// in-handle, out-handle, position - and only the position matters here).
+		FString CurveId, ShapeId;
+		TArray<double> PathPts;          // x,y,z triples, node-local
+		bool bPathClosed = false;
+		bool bPathWorld = false;         // set when hoisted off a Path3D child
 		TArray<TPair<FString, FString>> Props;   // raw key -> raw value
 		FString ScriptExt;               // script = ExtResource("id")
 		FString InstExt;                 // instance= ext id
@@ -3979,6 +4730,12 @@ static bool BF6_ImportTscnFile(const FString& File)
 	TSet<FString> ExtStatic;            // ext ids that are res://static/ scenes
 	TMap<FString, FString> ExtScript;   // ext id -> script class name
 	TArray<TSharedPtr<FTNode>> Nodes;
+	// sub_resource collectors: Curve3D points for waypoint paths, BoxShape3D
+	// sizes for legacy volumes
+	FString CurSub, CurSubType;
+	TMap<FString, TArray<double>> SubCurvePts;
+	TMap<FString, bool> SubCurveClosed;
+	TMap<FString, FVector> SubBoxSize;
 	TSharedPtr<FTNode> Cur;
 	FString RootName;
 
@@ -4020,7 +4777,39 @@ static bool BF6_ImportTscnFile(const FString& File)
 			Nodes.Add(Cur);
 			continue;
 		}
-		if (Line.StartsWith(TEXT("[")) ) { Cur.Reset(); continue; }   // sub_resource / connection blocks
+		if (Line.StartsWith(TEXT("[sub_resource")))
+		{
+			// Curve3D carries a WaypointPath's points; BoxShape3D carries a
+			// LEGACY volume's size (old community maps built volumes from
+			// CollisionShape3D before the PolygonVolume type existed, and
+			// gdconverter still honours them - so do we).
+			Cur.Reset();
+			CurSub = BF6_TscnAttr(Line, TEXT("id=\""));
+			CurSubType = BF6_TscnAttr(Line, TEXT("type=\""));
+			continue;
+		}
+		if (Line.StartsWith(TEXT("[")) ) { Cur.Reset(); CurSub.Empty(); continue; }   // connection blocks etc.
+		if (!Cur.IsValid() && !CurSub.IsEmpty())
+		{
+			// inside a sub_resource block. Curve3D's payload sits in a
+			// multi-line _data dictionary, so keys arrive as "points": ... too.
+			if (CurSubType == TEXT("Curve3D"))
+			{
+				if (Line.Contains(TEXT("\"points\"")))
+				{
+					TArray<double> N;
+					if (BF6_TscnNums(Line, N)) SubCurvePts.Add(CurSub, N);
+				}
+				else if (Line.StartsWith(TEXT("closed")) && Line.Contains(TEXT("true")))
+					SubCurveClosed.Add(CurSub, true);
+			}
+			else if (CurSubType == TEXT("BoxShape3D") && Line.StartsWith(TEXT("size")))
+			{
+				TArray<double> N;
+				if (BF6_TscnNums(Line, N) && N.Num() >= 3) SubBoxSize.Add(CurSub, FVector(N[0], N[1], N[2]));
+			}
+			continue;
+		}
 		if (!Cur.IsValid() || Line.IsEmpty()) continue;
 		int32 Eq = Line.Find(TEXT(" = "));
 		if (Eq == INDEX_NONE) continue;
@@ -4037,6 +4826,12 @@ static bool BF6_ImportTscnFile(const FString& File)
 		}
 		else if (Key == TEXT("points"))  { BF6_TscnNums(Val, Cur->Points); }
 		else if (Key == TEXT("height"))  { Cur->Height = FCString::Atod(*Val); }
+		else if (Key == TEXT("curve"))   { Cur->CurveId = BF6_TscnAttr(Val, TEXT("SubResource(\"")); }
+		else if (Key == TEXT("shape"))   { Cur->ShapeId = BF6_TscnAttr(Val, TEXT("SubResource(\"")); }
+		// legacy CollisionPolygon3D volume: polygon + depth play the roles of
+		// points + height, with the converter's own half-depth ground offset
+		else if (Key == TEXT("polygon")) { BF6_TscnNums(Val, Cur->Points); }
+		else if (Key == TEXT("depth"))   { Cur->Height = FCString::Atod(*Val); }
 		else if (Key == TEXT("size"))
 		{
 			TArray<double> N;
@@ -4047,7 +4842,18 @@ static bool BF6_ImportTscnFile(const FString& File)
 			const FString Sid = BF6_TscnAttr(Val, TEXT("ExtResource(\""));
 			if (const FString* Sc = ExtScript.Find(Sid)) Cur->ScriptExt = *Sc;
 		}
-		else if (Key.StartsWith(TEXT("metadata/")) || Key == TEXT("visible") || Key == TEXT("color")
+		else if (Key == TEXT("color"))
+		{
+			// Godot writes it as Color(r, g, b, a) in linear floats.
+			TArray<double> C;
+			if (BF6_TscnNums(Val, C) && C.Num() >= 3)
+			{
+				Cur->bHasColor = true;
+				Cur->Color = FLinearColor((float)C[0], (float)C[1], (float)C[2],
+				                          C.Num() >= 4 ? (float)C[3] : 1.f);
+			}
+		}
+		else if (Key.StartsWith(TEXT("metadata/")) || Key == TEXT("visible")
 			|| Key == TEXT("process_priority") || Key == TEXT("top_level") || Key == TEXT("physics_interpolation_mode"))
 		{
 			// editor-only leakage, not gameplay data
@@ -4131,6 +4937,46 @@ static bool BF6_ImportTscnFile(const FString& File)
 			(float)(B[6] * x + B[7] * y + B[8] * z + O[2]));
 	};
 
+	// Resolve Curve3D references into node-local positions. Godot writes nine
+	// numbers per curve point (in-handle, out-handle, position); only the
+	// position matters to the exported path, exactly as gdconverter takes
+	// elements [6:9] of each nine.
+	for (const TSharedPtr<FTNode>& N : Nodes)
+	{
+		if (N->CurveId.IsEmpty()) continue;
+		if (const TArray<double>* Raw = SubCurvePts.Find(N->CurveId))
+			for (int32 i = 6; i + 2 < Raw->Num(); i += 9)
+			{
+				N->PathPts.Add((*Raw)[i]);
+				N->PathPts.Add((*Raw)[i + 1]);
+				N->PathPts.Add((*Raw)[i + 2]);
+			}
+		N->bPathClosed = SubCurveClosed.Contains(N->CurveId);
+	}
+
+	// A curve can also live on a Path3D CHILD of the owner (Godot lets either
+	// carry it). A Path3D never becomes an actor here - it is a tree pivot -
+	// so its points are hoisted onto the parent, converted to world space
+	// through the CHILD's accumulated transform first, because the parent's
+	// transform is not the child's.
+	for (const TSharedPtr<FTNode>& N : Nodes)
+	{
+		if (N->PathPts.Num() < 6 || !(N->Type == TEXT("Node3D") || N->Type.IsEmpty())) continue;
+		if (N->ParentPath.IsEmpty() || N->ParentPath == TEXT(".")) continue;
+		const TSharedPtr<FTNode>* Par = ByPath.Find(N->ParentPath);
+		if (!Par || !Par->IsValid() || (*Par)->PathPts.Num() > 0) continue;
+		for (int32 i = 0; i + 2 < N->PathPts.Num(); i += 3)
+		{
+			const double x = N->PathPts[i], y = N->PathPts[i + 1], z = N->PathPts[i + 2];
+			(*Par)->PathPts.Add(N->WM[0] * x + N->WM[1] * y + N->WM[2] * z + N->WO[0]);
+			(*Par)->PathPts.Add(N->WM[3] * x + N->WM[4] * y + N->WM[5] * z + N->WO[1]);
+			(*Par)->PathPts.Add(N->WM[6] * x + N->WM[7] * y + N->WM[8] * z + N->WO[2]);
+		}
+		(*Par)->bPathClosed = N->bPathClosed;
+		(*Par)->bPathWorld = true;
+		N->PathPts.Reset();
+	}
+
 	// pass A: spawn, assigning each actor a unique link name from its node name
 	TMap<FString, AActor*> ActorByPath;
 	TMap<FString, FString> LinkNameByPath;
@@ -4164,20 +5010,42 @@ static bool BF6_ImportTscnFile(const FString& File)
 		UsedNames.Add(Nm);
 
 		AActor* A = nullptr;
-		if (N->Type == TEXT("PolygonVolume") && N->Points.Num() >= 6)
+		// Legacy volumes: before PolygonVolume existed, community maps built
+		// zones from CollisionPolygon3D (polygon + depth) or CollisionShape3D
+		// with a BoxShape3D, each carrying the Volume script. gdconverter still
+		// converts both, so an import here must too or those maps lose their
+		// zones silently. The polygon flavour becomes a PolygonVolume with the
+		// converter's own half-depth ground offset; the box flavour becomes an
+		// OBBVolume of the shape's size.
+		const bool bLegacyPoly = N->Type == TEXT("Volume") && N->Points.Num() >= 6 && N->ShapeId.IsEmpty();
+		if (bLegacyPoly) N->Type = TEXT("PolygonVolume");   // one label downstream, one export path
+		if (N->Type == TEXT("Volume") && !N->ShapeId.IsEmpty())
 		{
+			if (const FVector* BS = SubBoxSize.Find(N->ShapeId))
+			{
+				N->Type = TEXT("OBBVolume");
+				N->bHasSize = true;
+				N->Size[0] = BS->X; N->Size[1] = BS->Y; N->Size[2] = BS->Z;
+			}
+		}
+		if ((N->Type == TEXT("PolygonVolume") && N->Points.Num() >= 6) || bLegacyPoly)
+		{
+			const double LegacyDrop = bLegacyPoly ? (N->Height > 0.01 ? N->Height : 1.0) * -0.5 : 0.0;
 			TArray<FVector> Loop;
 			for (int32 i = 0; i + 1 < N->Points.Num(); i += 2)
 			{
-				const FVector G = GodotXform(N->WM, N->WO, N->Points[i], 0.0, N->Points[i + 1]);
+				const FVector G = GodotXform(N->WM, N->WO, N->Points[i], LegacyDrop, N->Points[i + 1]);
 				Loop.Add(ToUnreal(G.X, G.Y, G.Z));
 			}
-			double H = N->Height; if (H <= 0.01) H = 5.0;   // 0 = infinite, drawn at 5 m
+			double H = N->Height; if (H <= 0.01) H = bLegacyPoly ? 1.0 : 5.0;   // 0 = infinite, drawn at 5 m
 			A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
 			if (!A) continue;
 			UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
+			// The colour goes on BEFORE the material is built, because the
+			// material reads it off the actor.
+			if (N->bHasColor) BF6_SetVolumeColorTag(A, N->Color);
 			BuildWalls(VM, Loop, (float)H * 100.f);
-			if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume"))) VM->SetMaterial(0, Mat);
+			BF6_ApplyVolumeMaterial(A, VM);
 			A->Tags.Add(kPlacedTag);
 			A->Tags.Add(FName(*(FString(TEXT("label:")) + N->Type)));
 			if (N->Height > 0.01) A->Tags.Add(FName(*FString::Printf(TEXT("p:height=%g"), N->Height)));
@@ -4218,6 +5086,25 @@ static bool BF6_ImportTscnFile(const FString& File)
 			}
 		}
 		if (!A) continue;
+		// A node that referenced a Curve3D carries a WaypointPath. The points
+		// are node-local, so they go through the node's accumulated transform
+		// like everything else, then into the loop registry - which makes the
+		// path editable with the same dots as a zone the moment it lands.
+		if (N->PathPts.Num() >= 6)
+		{
+			TArray<FVector> PPts;
+			for (int32 i = 0; i + 2 < N->PathPts.Num(); i += 3)
+			{
+				const FVector G = N->bPathWorld
+					? FVector(N->PathPts[i], N->PathPts[i + 1], N->PathPts[i + 2])
+					: GodotXform(N->WM, N->WO, N->PathPts[i], N->PathPts[i + 1], N->PathPts[i + 2]);
+				PPts.Add(ToUnreal(G.X, G.Y, G.Z));
+			}
+			GVolumeLoops.Add(A, PPts);
+			BF6_WriteLoopTags(A);
+			if (N->bPathClosed) A->Tags.Add(FName(TEXT("p:isClosed=true")));
+			RebuildVolumeWalls(A, PPts);
+		}
 		// Remember the tree the creator actually built. ParentPath is the Godot
 		// folder path ("FinalAssault/FinalArea1/.../Sidewalk"); "." means the
 		// scene root, which has no folder of its own.
@@ -4415,12 +5302,37 @@ static bool BF6_ImportSpatialDialog()
 		}
 	};
 
+	// Pass 0: WaypointPath entities. The format stores a path as its OWN entity
+	// (points + isClosed, no transform) that the owner references by id through
+	// its Waypoints field - so paths are collected first and attached when
+	// their owner spawns. Left in the main loop they would masquerade as
+	// volumes, because a volume is also "an entity with points".
+	struct FBF6ImpPath { TArray<FVector> Pts; bool bClosed = false; };
+	TMap<FString, FBF6ImpPath> ImpPaths;
+	for (const auto& dv : *Dyn)
+	{
+		const TSharedPtr<FJsonObject> o = dv->AsObject(); if (!o.IsValid()) continue;
+		FString Ty; o->TryGetStringField(TEXT("type"), Ty);
+		if (Ty != TEXT("WaypointPath")) continue;
+		FBF6ImpPath P;
+		o->TryGetBoolField(TEXT("isClosed"), P.bClosed);
+		const TArray<TSharedPtr<FJsonValue>>* pp = nullptr;
+		if (o->TryGetArrayField(TEXT("points"), pp))
+			for (const auto& pv : *pp)
+				if (const TSharedPtr<FJsonObject> po = pv->AsObject())
+					P.Pts.Add(ToUnreal(po->GetNumberField(TEXT("x")), po->GetNumberField(TEXT("y")), po->GetNumberField(TEXT("z"))));
+		FString Id; o->TryGetStringField(TEXT("id"), Id);
+		if (Id.IsEmpty()) o->TryGetStringField(TEXT("name"), Id);
+		if (!Id.IsEmpty() && P.Pts.Num() >= 2) ImpPaths.Add(Id, MoveTemp(P));
+	}
+
 	int32 spawned = 0;
 	for (const auto& dv : *Dyn)
 	{
 		const TSharedPtr<FJsonObject> o = dv->AsObject(); if (!o.IsValid()) continue;
 		FString Type; o->TryGetStringField(TEXT("type"), Type);
 		if (Type.IsEmpty() || Type.StartsWith(TEXT("MP_")) || BF6_IsEngineNodeType(Type)) continue;
+		if (Type == TEXT("WaypointPath")) continue;   // collected above, attached below
 		const FVector gpos = ReadVec(o, TEXT("position"), FVector::ZeroVector);
 		const TArray<TSharedPtr<FJsonValue>>* pts = nullptr;
 		if (o->TryGetArrayField(TEXT("points"), pts) && pts->Num() >= 3)
@@ -4448,7 +5360,7 @@ static bool BF6_ImportSpatialDialog()
 				AActor* A = World->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator); if (!A) continue;
 				UProceduralMeshComponent* VM = MakeProcMesh(A, TEXT("Volume"));
 				BuildWalls(VM, Loop, (float)FMath::Max(H, 0.5) * 100.f);
-				if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume"))) VM->SetMaterial(0, Mat);
+				BF6_ApplyVolumeMaterial(A, VM);
 				BF6_SetPrettyLabel(A, Type); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient);
 				RestoreProps(A, o);
 				GVolumeLoops.Add(A, Loop); BF6_WriteLoopTags(A);   // imported zones are point-editable too
@@ -4476,6 +5388,18 @@ static bool BF6_ImportSpatialDialog()
 		AActor* A = Mesh.IsEmpty() ? nullptr : SpawnSdkModel(Mesh, Type, Xf);
 		if (!A){ A=World->SpawnActor<AActor>(AActor::StaticClass(),FVector::ZeroVector,FRotator::ZeroRotator); if(!A)continue; UProceduralMeshComponent* MM=MakeProcMesh(A,TEXT("Model")); BuildMarker(MM); A->SetActorTransform(Xf); BF6_SetPrettyLabel(A, Type); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient); }
 		RestoreProps(A, o);   // ObjId, teams, links - everything editable again
+		// the path this entity owns, collected in pass 0
+		{
+			FString WId;
+			if (o->TryGetStringField(TEXT("Waypoints"), WId))
+				if (const FBF6ImpPath* P = ImpPaths.Find(WId))
+				{
+					GVolumeLoops.Add(A, P->Pts);
+					BF6_WriteLoopTags(A);
+					if (P->bClosed) A->Tags.Add(FName(TEXT("p:isClosed=true")));
+					RebuildVolumeWalls(A, P->Pts);
+				}
+		}
 		spawned++;
 	}
 	BF6_RecomputeBudget();
@@ -4485,505 +5409,6 @@ static bool BF6_ImportSpatialDialog()
 	return true;
 }
 
-// ============================================================================
-// SDK data import. The tool's data packs are generated from the user's own
-// unzipped Portal SDK download: catalogue jsons are copied, base setups are
-// parsed natively from levels/*.tscn, and the mesh packs are extracted by
-// driving the SDK's own bundled Godot headlessly with generated scripts
-// (skip-existing + capped batches + relaunch-on-crash, the proven recipe).
-// ============================================================================
-#include "Internationalization/Regex.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Containers/Ticker.h"
-
-static FString BF6_DataDir() { return FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data")); }
-
-struct FBF6Import
-{
-	enum class EPhase { Idle, Objects, Maps, Done, Failed };
-	EPhase  Phase = EPhase::Idle;
-	FString SdkRoot, GodotExe;
-	// PARALLEL workers: each converts a deterministic shard of the work
-	// (name.hash() % shards), so N headless Godots run at once - the
-	// conversion is CPU-bound per process and one worker took ~4x as long
-	TArray<FProcHandle> Procs;
-	TArray<void*> PipeReads;
-	TArray<void*> PipeWrites;
-	int32   ObjTotal = 0, MapTotal = 0, LastCount = 0, Stagnant = 0;
-	// StartCount = converted files when the phase began, so a phase that adds
-	// NOTHING can be told apart from one that legitimately skipped existing work
-	int32   StartCount = 0, ObjDone = 0;
-	FString Status;
-	float   Frac = 0.f;
-	FTSTicker::FDelegateHandle Tick;
-};
-// worker counts: objects are many small loads (4 wide); map meshes are huge
-// whole-map scenes, so 2 wide keeps peak memory sane
-static constexpr int32 kBF6ObjShards = 4;
-static constexpr int32 kBF6MapShards = 2;
-static FBF6Import g_imp;
-
-static int32 BF6_CountFiles(const FString& Dir, const TCHAR* Pattern)
-{
-	TArray<FString> Files;
-	IFileManager::Get().FindFiles(Files, *(Dir / Pattern), true, false);
-	return Files.Num();
-}
-
-static FString BF6_ReadSdkVersion(const FString& JsonPath)
-{
-	FString In, Ver;
-	if (!FFileHelper::LoadFileToString(In, *JsonPath)) return Ver;
-	TSharedPtr<FJsonObject> Root;
-	TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
-	if (FJsonSerializer::Deserialize(R, Root) && Root.IsValid()) Root->TryGetStringField(TEXT("version"), Ver);
-	return Ver;
-}
-
-// Find the Godot exe the SDK ships at its root (name carries the version).
-static FString BF6_FindSdkGodot(const FString& SdkRoot)
-{
-	TArray<FString> Found;
-	IFileManager::Get().FindFiles(Found, *(SdkRoot / TEXT("Godot*win64*.exe")), true, false);
-	// prefer the non-console build
-	for (const FString& F : Found) if (!F.Contains(TEXT("console"))) return SdkRoot / F;
-	return Found.Num() ? SdkRoot / Found[0] : FString();
-}
-
-// ---- base setups: parse levels/MP_*.tscn into <map>.base.json (native port of
-// the extraction script - plain text parsing, no Godot needed) ----
-static void BF6_ExtractBaseSetups(const FString& SdkRoot)
-{
-	const FString LevelsDir = SdkRoot / TEXT("GodotProject/levels");
-	const FString OutDir    = BF6_DataDir() / TEXT("basesetup");
-	IFileManager::Get().MakeDirectory(*OutDir, true);
-	TArray<FString> Files;
-	IFileManager::Get().FindFiles(Files, *(LevelsDir / TEXT("MP_*.tscn")), true, false);
-
-	const FRegexPattern ExtPat(TEXT("\\[ext_resource[^\\]]*path=\"res://([^\"]+)\"[^\\]]*id=\"([^\"]+)\""));
-
-	auto Nums = [](const FString& S)
-	{
-		TArray<FString> Parts; S.ParseIntoArray(Parts, TEXT(","));
-		TArray<double> Out; for (FString& P : Parts) Out.Add(FCString::Atod(*P.TrimStartAndEnd()));
-		return Out;
-	};
-	auto Between = [](const FString& S, const FString& A, const FString& B, int32 From = 0) -> FString
-	{
-		const int32 i = S.Find(A, ESearchCase::CaseSensitive, ESearchDir::FromStart, From);
-		if (i == INDEX_NONE) return FString();
-		const int32 j = S.Find(B, ESearchCase::CaseSensitive, ESearchDir::FromStart, i + A.Len());
-		if (j == INDEX_NONE) return FString();
-		return S.Mid(i + A.Len(), j - i - A.Len());
-	};
-
-	for (const FString& File : Files)
-	{
-		const FString Level = FPaths::GetBaseFilename(File);
-		FString Text;
-		if (!FFileHelper::LoadFileToString(Text, *(LevelsDir / File))) continue;
-
-		// ext_resource id -> type leaf (the placeable type the node instances)
-		TMap<FString, FString> Ext;
-		FRegexMatcher EM(ExtPat, Text);
-		while (EM.FindNext()) Ext.Add(EM.GetCaptureGroup(2), FPaths::GetBaseFilename(EM.GetCaptureGroup(1)));
-
-		// split into [node ...] blocks
-		TArray<FString> Lines; Text.ParseIntoArrayLines(Lines, false);
-		TArray<TSharedPtr<FJsonValue>> Objects;
-		for (int32 li = 0; li < Lines.Num(); li++)
-		{
-			if (!Lines[li].StartsWith(TEXT("[node "))) continue;
-			const FString Header = Lines[li];
-			FString Body;
-			for (int32 bj = li + 1; bj < Lines.Num() && !Lines[bj].StartsWith(TEXT("[node ")); bj++)
-				Body += Lines[bj] + TEXT("\n");
-
-			const FString Name   = Between(Header, TEXT("name=\""), TEXT("\""));
-			const FString Inst   = Between(Header, TEXT("instance=ExtResource(\""), TEXT("\")"));
-			const FString BType  = Between(Header, TEXT("type=\""), TEXT("\""));
-			const FString Parent = Between(Header, TEXT("parent=\""), TEXT("\""));
-			FString Type = !Inst.IsEmpty() && Ext.Contains(Inst) ? Ext[Inst] : (!BType.IsEmpty() ? BType : TEXT("Node3D"));
-			if (Name == TEXT("Static") || Name.EndsWith(TEXT("_Terrain")) || Name.EndsWith(TEXT("_Assets"))) continue;
-
-			TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
-			O->SetStringField(TEXT("name"), Name);
-			O->SetStringField(TEXT("type"), Type);
-			if (!Parent.IsEmpty()) O->SetStringField(TEXT("parent"), Parent);
-
-			const FString Xf = Between(Body, TEXT("transform = Transform3D("), TEXT(")"));
-			if (!Xf.IsEmpty())
-			{
-				const TArray<double> V = Nums(Xf);
-				if (V.Num() == 12)
-				{
-					TArray<TSharedPtr<FJsonValue>> B9, P3;
-					for (int32 k = 0; k < 9; k++)  B9.Add(MakeShared<FJsonValueNumber>(V[k]));
-					for (int32 k = 9; k < 12; k++) P3.Add(MakeShared<FJsonValueNumber>(V[k]));
-					O->SetArrayField(TEXT("basis"), B9);
-					O->SetArrayField(TEXT("pos"), P3);
-				}
-			}
-			const FString Pts = Between(Body, TEXT("points = PackedVector2Array("), TEXT(")"));
-			if (!Pts.IsEmpty())
-			{
-				TArray<TSharedPtr<FJsonValue>> PA;
-				for (double d : Nums(Pts)) PA.Add(MakeShared<FJsonValueNumber>(d));
-				O->SetArrayField(TEXT("points"), PA);
-			}
-			// scalar + link properties, parsed PER LINE. (The old anchored regex
-			// only ever matched the first body line, so HQ spawn lists, teams,
-			// and volume links silently went missing - base setups arrived
-			// placed but unwired.)
-			TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
-			TArray<FString> BodyLines;
-			Body.ParseIntoArrayLines(BodyLines, false);
-			for (const FString& BL : BodyLines)
-			{
-				const int32 Eq = BL.Find(TEXT(" = "));
-				if (Eq == INDEX_NONE) continue;
-				const FString K = BL.Left(Eq).TrimStartAndEnd();
-				if (K.IsEmpty() || K == TEXT("transform") || K == TEXT("points") || K == TEXT("script") || K.StartsWith(TEXT("metadata"))) continue;
-				bool bIdent = true;
-				for (const TCHAR C : K) if (!FChar::IsAlnum(C) && C != TEXT('_')) { bIdent = false; break; }
-				if (!bIdent) continue;
-				Props->SetStringField(K, BL.Mid(Eq + 3).TrimStartAndEnd());
-			}
-			O->SetObjectField(TEXT("props"), Props);
-			Objects.Add(MakeShared<FJsonValueObject>(O));
-		}
-
-		TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
-		Root->SetStringField(TEXT("level"), Level);
-		Root->SetArrayField(TEXT("objects"), Objects);
-		FString Out;
-		TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
-		FJsonSerializer::Serialize(Root.ToSharedRef(), W);
-		FFileHelper::SaveStringToFile(Out, *(OutDir / (Level + TEXT(".base.json"))));
-	}
-	UE_LOG(LogBF6, Warning, TEXT("Base setups extracted for %d levels."), Files.Num());
-}
-
-// base.json format 2 = per-line props with the full link/team data (format 1
-// only captured each object's first property, so base setups arrived
-// unwired). Existing installs regenerate once, silently, from their SDK.
-static void BF6_EnsureBaseSetupFormat()
-{
-	const FString Stamp = BF6_DataDir() / TEXT("basesetup") / TEXT(".format2");
-	if (FPaths::FileExists(Stamp)) return;
-	const FString Root = BF6Api::StoredSdkRoot();
-	FString Err;
-	if (Root.IsEmpty() || !BF6Api::ValidateSdkRoot(Root, Err)) return;   // the next SDK import regenerates anyway
-	BF6_ExtractBaseSetups(Root);
-	FFileHelper::SaveStringToFile(TEXT("2"), *Stamp);
-}
-
-// ---- the generated Godot extraction scripts (skip-existing, so re-sync after
-// an SDK update only converts what's new) ----
-static FString BF6_ObjectScript(const FString& OutDir, int32 Shard = 0, int32 Shards = 1)
-{
-	FString S = TEXT(
-		"extends SceneTree\n"
-		"func _initialize():\n"
-		"\tvar OUT := \"__OUT__\"\n"
-		"\tDirAccess.make_dir_recursive_absolute(OUT)\n"
-		"\tvar probe := FileAccess.open(OUT + \"/write_test.tmp\", FileAccess.WRITE)\n"
-		"\tif probe == null:\n"
-		"\t\tprint(\"WRITE BLOCKED to \", OUT, \" err=\", FileAccess.get_open_error(), \" - antivirus or Controlled Folder Access is likely blocking Godot\")\n"
-		"\t\tquit(); return\n"
-		"\tprobe.close()\n"
-		"\tDirAccess.remove_absolute(OUT + \"/write_test.tmp\")\n"
-		"\tvar d := DirAccess.open(\"res://raw/models\")\n"
-		"\tif d == null: print(\"no raw/models\"); quit(); return\n"
-		"\tvar names: Array[String] = []\n"
-		"\tfor f in d.get_files():\n"
-		"\t\tif f.ends_with(\".glb.import\"): names.append(f.substr(0, f.length() - 7))\n"
-		"\trandomize(); names.shuffle()\n"
-		"\tprint(\"engine \", Engine.get_version_info().string, \"  models found: \", names.size())\n"
-		"\tvar did := 0\n"
-		"\tvar skipped := 0\n"
-		"\tvar no_import := 0\n"
-		"\tvar load_fail := 0\n"
-		"\tvar write_fail := 0\n"
-		"\tfor gname in names:\n"
-		"\t\tif (gname.hash() % __SHARDS__) != __SHARD__: continue\n"
-		"\t\tvar outp := \"%s/%s.bf6mesh\" % [OUT, gname.get_basename()]\n"
-		"\t\tif FileAccess.file_exists(outp): skipped += 1; continue\n"
-		"\t\tvar path := \"res://raw/models/\" + gname\n"
-		"\t\tif not ResourceLoader.exists(path): no_import += 1; continue\n"
-		"\t\tvar ps: PackedScene = ResourceLoader.load(path, \"\", ResourceLoader.CACHE_MODE_IGNORE)\n"
-		"\t\tif ps == null: load_fail += 1; continue\n"
-		"\t\tvar root := ps.instantiate()\n"
-		"\t\tvar ok := _dump(root, outp, false)\n"
-		"\t\troot.free()\n"
-		"\t\tif not ok: write_fail += 1; continue\n"
-		"\t\tdid += 1\n"
-		"\t\tif did >= 1200: print(\"BATCH converted=\", did); quit(); return\n"
-		"\tprint(\"DONE converted=\", did, \" already_done=\", skipped, \" no_import_cache=\", no_import, \" load_failed=\", load_fail, \" write_failed=\", write_fail)\n"
-		"\tquit()\n");
-	S += TEXT(
-		"func _dump(root: Node, out_path: String, use_global: bool) -> bool:\n"
-		"\t# accumulate parent transforms manually: global_transform is wrong for\n"
-		"\t# nested nodes when the scene was never added to a tree (headless)\n"
-		"\tvar meshes: Array = []\n"
-		"\t_collect(root, Transform3D.IDENTITY, meshes)\n"
-		"\tvar surfaces: Array = []\n"
-		"\tfor pairm in meshes:\n"
-		"\t\tvar m: Mesh = pairm[0].mesh\n"
-		"\t\tif m == null: continue\n"
-		"\t\tvar xf: Transform3D = pairm[1]\n"
-		"\t\tfor si in m.get_surface_count(): surfaces.append([m.surface_get_arrays(si), xf])\n"
-		"\tif surfaces.is_empty(): return false\n"
-		"\tvar sp := StreamPeerBuffer.new()\n"
-		"\tsp.big_endian = false\n"
-		"\tsp.put_u32(0x42463653); sp.put_u32(1); sp.put_u32(surfaces.size())\n"
-		"\tfor pair in surfaces:\n"
-		"\t\tvar arr: Array = pair[0]\n"
-		"\t\tvar xf: Transform3D = pair[1]\n"
-		"\t\tvar verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]\n"
-		"\t\tvar norms = arr[Mesh.ARRAY_NORMAL]\n"
-		"\t\tvar uvs = arr[Mesh.ARRAY_TEX_UV]\n"
-		"\t\tvar idx = arr[Mesh.ARRAY_INDEX]\n"
-		"\t\tvar vc := verts.size()\n"
-		"\t\tvar indices: PackedInt32Array\n"
-		"\t\tif idx == null:\n"
-		"\t\t\tindices = PackedInt32Array(); indices.resize(vc)\n"
-		"\t\t\tfor k in vc: indices[k] = k\n"
-		"\t\telse: indices = idx\n"
-		"\t\tsp.put_u32(vc); sp.put_u32(indices.size())\n"
-		"\t\tfor k in vc:\n"
-		"\t\t\tvar p: Vector3 = xf * verts[k]\n"
-		"\t\t\tsp.put_float(p.x); sp.put_float(p.y); sp.put_float(p.z)\n"
-		"\t\tvar hasN = norms != null and norms.size() == vc\n"
-		"\t\tvar hasU = uvs != null and uvs.size() == vc\n"
-		"\t\tsp.put_u8(1 if hasN else 0); sp.put_u8(1 if hasU else 0)\n"
-		"\t\tif hasN:\n"
-		"\t\t\tvar b: Basis = xf.basis\n"
-		"\t\t\tfor k in vc:\n"
-		"\t\t\t\tvar n: Vector3 = (b * norms[k]).normalized()\n"
-		"\t\t\t\tsp.put_float(n.x); sp.put_float(n.y); sp.put_float(n.z)\n"
-		"\t\tif hasU:\n"
-		"\t\t\tfor k in vc:\n"
-		"\t\t\t\tsp.put_float(uvs[k].x); sp.put_float(uvs[k].y)\n"
-		"\t\tfor k in indices.size(): sp.put_32(indices[k])\n"
-		"\tvar raw: PackedByteArray = sp.data_array\n"
-		"\tvar comp: PackedByteArray = raw.compress(FileAccess.COMPRESSION_GZIP)\n"
-		"\tvar fa := FileAccess.open(out_path, FileAccess.WRITE)\n"
-		"\tif fa == null: return false\n"
-		"\tfa.store_32(0x5A364642)\n"
-		"\tfa.store_32(raw.size())\n"
-		"\tfa.store_buffer(comp)\n"
-		"\tfa.close()\n"
-		"\treturn true\n"
-		"func _collect(node: Node, xf: Transform3D, out: Array) -> void:\n"
-		"\tvar acc := xf\n"
-		"\tif node is Node3D: acc = xf * (node as Node3D).transform\n"
-		"\tif node is MeshInstance3D and node.mesh != null: out.append([node, acc])\n"
-		"\tfor c in node.get_children(): _collect(c, acc, out)\n");
-	S = S.Replace(TEXT("__SHARD__"), *FString::FromInt(Shard))
-	     .Replace(TEXT("__SHARDS__"), *FString::FromInt(FMath::Max(Shards, 1)));
-	return S.Replace(TEXT("__OUT__"), *OutDir.Replace(TEXT("\\"), TEXT("/")));
-}
-
-static FString BF6_MapScript(const FString& OutDir, int32 Shard = 0, int32 Shards = 1)
-{
-	FString S = TEXT(
-		"extends SceneTree\n"
-		"func _initialize():\n"
-		"\tvar OUT := \"__OUT__\"\n"
-		"\tDirAccess.make_dir_recursive_absolute(OUT)\n"
-		"\tvar d := DirAccess.open(\"res://static\")\n"
-		"\tif d == null: print(\"no static\"); quit(); return\n"
-		"\tvar levels := {}\n"
-		"\tfor f in d.get_files():\n"
-		"\t\tif f.ends_with(\"_Terrain.tscn\"): levels[f.replace(\"_Terrain.tscn\", \"\")] = true\n"
-		"\tfor lvl in levels.keys():\n"
-		"\t\tif (String(lvl).hash() % __SHARDS__) != __SHARD__: continue\n"
-		"\t\t_do(OUT, lvl, \"Terrain\")\n"
-		"\t\t_do(OUT, lvl, \"Assets\")\n"
-		"\tprint(\"DONE\"); quit()\n"
-		"func _do(OUT: String, level: String, kind: String) -> void:\n"
-		"\tvar outp := \"%s/%s_%s.bf6mesh\" % [OUT, level, kind.to_lower()]\n"
-		"\tif FileAccess.file_exists(outp): return\n"
-		"\tvar path := \"res://static/%s_%s.tscn\" % [level, kind]\n"
-		"\tif not ResourceLoader.exists(path): return\n"
-		"\tvar ps: PackedScene = load(path)\n"
-		"\tif ps == null: return\n"
-		"\tvar root := ps.instantiate()\n"
-		"\t_dump(root, outp, true)\n"
-		"\troot.free()\n"
-		"\tprint(level, \" \", kind, \" done\")\n");
-	// same _dump/_collect as the object script
-	FString Obj = BF6_ObjectScript(OutDir);
-	const int32 At = Obj.Find(TEXT("func _dump"));
-	S += Obj.Mid(At);
-	S = S.Replace(TEXT("__SHARD__"), *FString::FromInt(Shard))
-	     .Replace(TEXT("__SHARDS__"), *FString::FromInt(FMath::Max(Shards, 1)));
-	return S.Replace(TEXT("__OUT__"), *OutDir.Replace(TEXT("\\"), TEXT("/")));
-}
-
-static void BF6_CloseGodotPipe();   // fwd (defined with the launch helpers below)
-namespace BF6Api { static void BF6_SnapshotSdkHistory(const FString& SdkRoot); }   // fwd (history section)
-
-static void BF6_ImportFail(const FString& Why)
-{
-	BF6_CloseGodotPipe();
-	g_imp.Phase = FBF6Import::EPhase::Failed;
-	g_imp.Status = FString::Printf(TEXT("Import failed: %s"), *Why);
-	if (g_imp.Tick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(g_imp.Tick); g_imp.Tick.Reset(); }
-	Notify(FString::Printf(TEXT("SDK import failed: %s"), *Why));
-}
-
-// Everything the headless Godot prints lands here, so a machine where the
-// conversion produces nothing is diagnosable from a tester's report.
-static FString BF6_ImportLogPath()
-{
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("import"), TEXT("godot_run.log"));
-}
-static void BF6_ImportLog(const FString& Line)
-{
-	FFileHelper::SaveStringToFile(Line + LINE_TERMINATOR, *BF6_ImportLogPath(),
-		FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), FILEWRITE_Append);
-}
-static void BF6_DrainGodotPipe()
-{
-	for (void* RP : g_imp.PipeReads)
-		if (RP)
-		{
-			const FString Out = FPlatformProcess::ReadPipe(RP);
-			if (!Out.IsEmpty()) BF6_ImportLog(Out.TrimEnd());
-		}
-}
-static void BF6_CloseGodotPipe()
-{
-	BF6_DrainGodotPipe();
-	for (int32 i = 0; i < g_imp.PipeReads.Num(); i++)
-		if (g_imp.PipeReads[i] || g_imp.PipeWrites[i])
-			FPlatformProcess::ClosePipe(g_imp.PipeReads[i], g_imp.PipeWrites[i]);
-	g_imp.PipeReads.Reset();
-	g_imp.PipeWrites.Reset();
-}
-
-// Launch every worker for the phase: extract_objects_0..N.gd (or maps).
-// ABSOLUTE paths only: Godot 4.6 resolves a relative --script against
-// res:// (the SDK project), not the working directory. Managed SDK
-// downloads live under the project's Saved dir, whose UE paths are
-// relative ("../../../Users/...") - every fresh-install user hit
-// "Can't load script" on the object conversion because of this.
-static bool BF6_LaunchGodotWorkers(bool bObjects)
-{
-	const FString ScriptDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("import"));
-	const int32 Shards = bObjects ? kBF6ObjShards : kBF6MapShards;
-	for (int32 s = 0; s < Shards; s++)
-	{
-		const FString Script = ScriptDir / FString::Printf(TEXT("extract_%s_%d.gd"), bObjects ? TEXT("objects") : TEXT("maps"), s);
-		const FString Args = FString::Printf(TEXT("--headless --path \"%s\" --script \"%s\""),
-			*FPaths::ConvertRelativePathToFull(g_imp.SdkRoot / TEXT("GodotProject")),
-			*FPaths::ConvertRelativePathToFull(Script));
-		void* RP = nullptr; void* WP = nullptr;
-		FPlatformProcess::CreatePipe(RP, WP);
-		BF6_ImportLog(FString::Printf(TEXT("--- launching worker %d: \"%s\" %s"), s, *g_imp.GodotExe, *Args));
-		FProcHandle H = FPlatformProcess::CreateProc(*FPaths::ConvertRelativePathToFull(g_imp.GodotExe), *Args, false, true, true, nullptr, 0, nullptr, WP);
-		if (!H.IsValid())
-		{
-			BF6_ImportLog(FString::Printf(TEXT("--- worker %d launch FAILED (CreateProc)"), s));
-			FPlatformProcess::ClosePipe(RP, WP);
-			continue;
-		}
-		g_imp.Procs.Add(H);
-		g_imp.PipeReads.Add(RP);
-		g_imp.PipeWrites.Add(WP);
-	}
-	return g_imp.Procs.Num() > 0;
-}
-
-static void BF6_ImportTickPhase()
-{
-	const FString ObjDir = BF6_DataDir() / TEXT("objmodels");
-	const FString MapDir = BF6_DataDir() / TEXT("mapmesh");
-	const bool bObjects = g_imp.Phase == FBF6Import::EPhase::Objects;
-	const FString OutDir = bObjects ? ObjDir : MapDir;
-	const int32 Target = bObjects ? g_imp.ObjTotal : g_imp.MapTotal;
-	const int32 Count = BF6_CountFiles(OutDir, TEXT("*.bf6mesh"));
-
-	// any worker still running: stream output to the log + report progress
-	bool bAnyRunning = false;
-	for (FProcHandle& H : g_imp.Procs)
-		if (H.IsValid() && FPlatformProcess::IsProcRunning(H)) { bAnyRunning = true; break; }
-	if (bAnyRunning)
-	{
-		BF6_DrainGodotPipe();
-		g_imp.Status = FString::Printf(TEXT("%s  %d / %d"), bObjects ? TEXT("Converting object models") : TEXT("Converting map meshes"), Count, Target);
-		// objects are ~90%% of the work
-		const float PhaseFrac = Target > 0 ? (float)Count / (float)Target : 0.f;
-		g_imp.Frac = bObjects ? 0.05f + 0.80f * PhaseFrac : 0.85f + 0.15f * PhaseFrac;
-		return;
-	}
-	if (g_imp.Procs.Num())
-	{
-		// exit codes separate "antivirus killed it instantly" (non-zero /
-		// access violation right away) from "ran fine but converted nothing"
-		FString Codes;
-		for (FProcHandle& H : g_imp.Procs)
-		{
-			int32 Code = -1;
-			if (H.IsValid()) FPlatformProcess::GetProcReturnCode(H, &Code);
-			Codes += FString::Printf(TEXT("%d "), Code);
-			if (H.IsValid()) FPlatformProcess::CloseProc(H);
-		}
-		BF6_ImportLog(FString::Printf(TEXT("--- godot workers exited, codes: %s- %d files so far"), *Codes, Count));
-		g_imp.Procs.Reset();
-	}
-	BF6_CloseGodotPipe();
-
-	// the batch/crash-resume loop: relaunch while progress is being made
-	const bool bComplete = Count >= Target || (Count == g_imp.LastCount && ++g_imp.Stagnant >= 2);
-	if (Count > g_imp.LastCount) g_imp.Stagnant = 0;
-	g_imp.LastCount = Count;
-	if (!bComplete)
-	{
-		if (!BF6_LaunchGodotWorkers(bObjects)) { BF6_ImportFail(TEXT("could not relaunch the SDK's Godot")); }
-		return;
-	}
-
-	// a phase that converted NOTHING new and is short of its target is a
-	// failure, not a completion - say so instead of pretending success
-	// (the classic cause: the SDK project was opened in the user's own newer
-	// Godot, which rebuilt the model cache in a format the SDK's bundled
-	// Godot cannot read)
-	if (Count == g_imp.StartCount && Count < Target && Target > 0)
-	{
-		BF6_ImportFail(FString::Printf(
-			TEXT("the SDK's Godot converted nothing new (%d of %d %s). If this SDK was ever opened in your own Godot, its model cache no longer matches the SDK's bundled Godot: open GodotProject once with the Godot exe in the SDK folder, let the import finish, close it, then use Full re-sync here. Please report this with Saved/BF6UnrealSDK/import/godot_run.log attached."),
-			Count, Target, bObjects ? TEXT("models") : TEXT("map meshes")));
-		return;
-	}
-
-	if (bObjects)
-	{
-		// objects finished (or gave all they can) - move to the map meshes
-		UE_LOG(LogBF6, Warning, TEXT("Object models: %d of %d converted."), Count, Target);
-		g_imp.ObjDone = Count;
-		g_imp.Phase = FBF6Import::EPhase::Maps;
-		g_imp.LastCount = BF6_CountFiles(MapDir, TEXT("*.bf6mesh"));
-		g_imp.StartCount = g_imp.LastCount;
-		g_imp.Stagnant = 0;
-		if (!BF6_LaunchGodotWorkers(false)) BF6_ImportFail(TEXT("could not launch the SDK's Godot"));
-		return;
-	}
-
-	// all done - stamp the SDK version only now, so a failed import is offered
-	// a re-sync next launch instead of being recorded as current
-	UE_LOG(LogBF6, Warning, TEXT("Map meshes: %d of %d converted."), Count, Target);
-	IFileManager::Get().Copy(*(BF6_DataDir() / TEXT("sdk.version.json")), *(g_imp.SdkRoot / TEXT("sdk.version.json")));
-	// snapshot for the NEXT update's version-history diff
-	BF6Api::BF6_SnapshotSdkHistory(g_imp.SdkRoot);
-	g_imp.Phase = FBF6Import::EPhase::Done;
-	g_imp.Status = FString::Printf(TEXT("Import complete - %d of %d models, %d of %d map meshes"), g_imp.ObjDone, g_imp.ObjTotal, Count, Target);
-	g_imp.Frac = 1.f;
-	if (g_imp.Tick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(g_imp.Tick); g_imp.Tick.Reset(); }
-	Notify(FString::Printf(TEXT("SDK import complete - %d models and %d map meshes ready."), g_imp.ObjDone, Count));
-}
 // plugin can't hot-swap its own DLL, so the flow is the Godot staged-lane one:
 // check -> download to Saved/ -> restart, and a script applies it while the
 // editor is closed, then relaunches the project.
@@ -5256,7 +5681,8 @@ namespace BF6Api
 	}
 
 	static void BF6_GenerateSdkChanges(const FString& NewRoot);   // defined with the history section below
-	static void BF6_SnapshotSdkHistory(const FString& SdkRoot);
+	// non-static: BF6SdkImport.cpp calls it at the end of an import
+	void BF6_SnapshotSdkHistory(const FString& SdkRoot);
 
 	void StartSdkImport(const FString& SdkRoot, bool bFullResync)
 	{
@@ -5725,7 +6151,7 @@ namespace BF6Api
 		for (const FString& L : Lines) if (!L.IsEmpty()) Out.Add(L);
 	}
 
-	static void BF6_SnapshotSdkHistory(const FString& SdkRoot)
+	void BF6_SnapshotSdkHistory(const FString& SdkRoot)
 	{
 		const FString Ver = BF6_SdkVersionOf(SdkRoot);
 		if (Ver.IsEmpty()) return;
@@ -6064,6 +6490,32 @@ namespace BF6Api
 		Req->ProcessRequest();
 	}
 
+	FString  GameInstallDir() { return g_gameDir; }
+	// The low-poly map, out of the way. Hidden rather than destroyed: it is the
+	// tool's own preview of where you are, and an add-on drawing the real thing
+	// over it should be able to hand it straight back.
+	static bool g_contextHidden = false;
+
+	int32 SetContextHidden(bool bHidden)
+	{
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return 0;
+		int32 n = 0;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!It->Tags.Contains(kContextTag)) continue;
+			It->SetIsTemporarilyHiddenInEditor(bHidden);
+			n++;
+		}
+		g_contextHidden = bHidden;
+		BF6_Redraw();
+		return n;
+	}
+
+	bool IsContextHidden() { return g_contextHidden; }
+
+	void     Toast(const FString& Message) { Notify(Message); }
 	bool     IsEditing()      { return g_ss.bEditing; }
 	FString  CurrentLevel()   { return g_ss.CurrentLevel; }
 	FString  CurrentSave()    { return g_ss.CurrentSave; }
@@ -6172,6 +6624,7 @@ namespace BF6Api
 	}
 	int32 PlaceableTotal(const FString& Level) { return PlaceableCount(Level); }
 	TArray<FString> SavesFor(const FString& Level) { return ListSaves(Level); }
+	uint32 SavesFingerprint() { return BF6_SavesFingerprint(); }
 
 	// Delete a save from BOTH layouts (the old flat file would otherwise
 	// resurface as a zombie in the resume list). Refuses the OPEN session:
@@ -6179,11 +6632,22 @@ namespace BF6Api
 	bool DeleteSave(const FString& Level, const FString& Name)
 	{
 		if (Name.IsEmpty()) return false;
-		if (g_ss.bEditing && g_ss.CurrentLevel == Level && g_ss.CurrentSave == Name)
+
+		// Deleting the save you have OPEN is allowed. It used to be refused,
+		// because an autosave would write the file straight back a minute
+		// later - but the answer to that is to close the session first, not to
+		// send the creator off to open some other map before they are allowed
+		// to tidy up.
+		//
+		// Closing happens BEFORE the file goes, so there is no window in which
+		// a save could land on the path we are about to delete.
+		const bool bWasOpen = g_ss.CurrentLevel == Level && g_ss.CurrentSave == Name;
+		if (bWasOpen)
 		{
-			Notify(TEXT("That save is open right now - its autosave would just recreate the file. Open another map first, then delete it."));
-			return false;
+			g_ss.CurrentSave.Empty();
+			g_ss.bEditing = false;
 		}
+
 		bool bAny = false;
 		const FString N = BF6_SessionPathNew(Level, Name);
 		const FString O = BF6_SessionPathOld(Level, Name);
@@ -6194,6 +6658,16 @@ namespace BF6Api
 		TArray<FString> Left;
 		IFileManager::Get().FindFiles(Left, *(Dir / TEXT("*")), true, true);
 		if (Left.Num() == 0) IFileManager::Get().DeleteDirectory(*Dir, false, false);
+
+		// The world still holds the objects that save described, and they now
+		// belong to nothing. Reopening the base puts the map back in a state
+		// that matches the files, which is the honest outcome of deleting the
+		// only record of that work.
+		if (bWasOpen)
+		{
+			BF6_OpenMapWorldImpl(Level, FString());
+			Notify(FString::Printf(TEXT("Deleted '%s'. This map is back to its read-only base."), *Name));
+		}
 		return bAny;
 	}
 
@@ -6235,20 +6709,425 @@ namespace BF6Api
 	}
 	bool ImportSpatial() { return BF6_ImportSpatialDialog(); }
 
+	// ---- autosave, OFF by default -----------------------------------------
+	//
+	// A minute of lost work is cheap; an hour of deliberate experiment written
+	// over the top of a map somebody wanted to keep is not. The common way this
+	// tool gets used on an existing map is heavy, throwaway change - try
+	// something, look at it, revert - and an autosave turns "revert" into "the
+	// file already has it".
+	//
+	// So it is a choice, remembered per project, and it starts off. Saving is
+	// one button and one keystroke away; nobody loses work they meant to keep
+	// without being asked to press it.
+	static bool GAutosaveLoaded = false;
+	static bool GAutosave = false;
+
+	bool GetAutosave()
+	{
+		if (!GAutosaveLoaded)
+		{
+			GAutosaveLoaded = true;
+			GConfig->GetBool(TEXT("BF6UnrealSDK"), TEXT("Autosave"), GAutosave, GEditorPerProjectIni);
+		}
+		return GAutosave;
+	}
+
+	void SetAutosave(bool bOn)
+	{
+		GetAutosave();            // load first, so the write is not against a stale default
+		GAutosave = bOn;
+		GConfig->SetBool(TEXT("BF6UnrealSDK"), TEXT("Autosave"), GAutosave, GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
+
+	// ---- Save As -> Godot .tscn -------------------------------------------
+	//
+	// The way BACK. Import has read Godot scenes since the start; this writes
+	// one, so a map built here can be opened in the official SDK - for the
+	// creator who wants Godot's exporter, a collaborator on the other tool, or
+	// just an exit that is not a one-way door. Format verified against the
+	// shipped MP_Battery.tscn and the SDK's own user maps.
+	//
+	// Layout notes that cost verification time, so they are recorded here:
+	// - instances point at res://objects/<directory>/<Type>.tscn, with the two
+	//   volume types living under the portal_tools addon instead
+	// - Godot serialises Transform3D as basis ROWS; we hold columns, so the
+	//   nine numbers go out R.x U.x F.x  R.y U.y F.y  R.z U.z F.z
+	// - node transforms are LOCAL to their parent, names unique per parent
+	// - selections are written as the enum INDEX (the inverse of our import)
+	// - links need BOTH halves: node_paths=PackedStringArray(...) in the node
+	//   header and relative NodePath(...) values in the body
+	// - a WaypointPath rides its owner as a Curve3D sub_resource, nine numbers
+	//   per point (zero in/out handles + position), exactly what our importer
+	//   and gdconverter read back
+	FString BF6_BuildTscn()
+	{
+		UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!W || g_ss.CurrentLevel.IsEmpty()) return FString();
+		const FString Level = g_ss.CurrentLevel;
+
+		auto GD = [](double v) { return FString::SanitizeFloat(v); };
+		auto SanitizeName = [](FString N)
+		{
+			for (TCHAR& C : N)
+				if (C == TEXT('.') || C == TEXT('/') || C == TEXT(':') || C == TEXT('@') || C == TEXT('"') || C == TEXT('%'))
+					C = TEXT('_');
+			return N;
+		};
+
+		// WHERE each object scene really lives, read off the user's own SDK.
+		//
+		// The schema's `directory` field is NOT the repo layout: a prop whose
+		// directory says "Generic/Industrial/LightFixtures" actually lives at
+		// res://objects/lightfixtures/<Type>.tscn - flat lowercase category
+		// folders that only the SDK's disk knows. The first cut trusted the
+		// schema and Godot opened the file to a wall of missing dependencies.
+		// So the SDK's objects tree is scanned ONCE and the real relative paths
+		// win; the schema guess is only the fallback for a machine with no SDK
+		// on it (the file still opens there via Open Anyway).
+		static TMap<FString, FString> RealPath;   // Type -> res:// path
+		static FString ScannedRoot;
+		const FString SdkRoot = StoredSdkRoot();
+		if (!SdkRoot.IsEmpty() && SdkRoot != ScannedRoot)
+		{
+			ScannedRoot = SdkRoot;
+			RealPath.Reset();
+			const FString ObjRoot = SdkRoot / TEXT("GodotProject/objects");
+			TArray<FString> Found;
+			IFileManager::Get().FindFilesRecursive(Found, *ObjRoot, TEXT("*.tscn"), true, false);
+			for (FString& F : Found)
+			{
+				FString Rel = F;
+				FPaths::MakePathRelativeTo(Rel, *(ObjRoot + TEXT("/")));
+				RealPath.Add(FPaths::GetBaseFilename(F), TEXT("res://objects/") + Rel);
+			}
+		}
+
+		TMap<FString, FString> DirOf;
+		for (const TSharedPtr<FPlaceableRow>& R : g_allGlobal)
+			if (R.IsValid()) DirOf.Add(R->Type, R->Directory);
+
+		auto ScenePathFor = [&DirOf](const FString& Type) -> FString
+		{
+			if (Type == TEXT("PolygonVolume")) return TEXT("res://addons/bf_portal/portal_tools/types/PolygonVolume/PolygonVolume.tscn");
+			if (Type == TEXT("OBBVolume"))     return TEXT("res://addons/bf_portal/portal_tools/types/OBBVolume/OBBVolume.tscn");
+			if (const FString* Real = RealPath.Find(Type)) return *Real;
+			// a guess now - say so, because Godot will report it as missing
+			UE_LOG(LogBF6, Warning, TEXT("tscn save: no scene found in the SDK for '%s', writing a schema guess"), *Type);
+			const FString* D = DirOf.Find(Type);
+			if (!D || D->IsEmpty()) return FString::Printf(TEXT("res://objects/%s.tscn"), *Type);
+			return FString::Printf(TEXT("res://objects/%s/%s.tscn"), **D, *Type);
+		};
+
+		// ---- gather ours, tree order: parents before children ----
+		TArray<AActor*> All;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			AActor* A = *It;
+			if (A->Tags.Contains(kHandleTag) || A->Tags.Contains(kContextTag)) continue;
+			if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kGroupTag)) continue;
+			All.Add(A);
+		}
+		auto Depth = [](AActor* A)
+		{
+			int32 d = 0;
+			for (AActor* P = A->GetAttachParentActor(); P; P = P->GetAttachParentActor()) d++;
+			return d;
+		};
+		All.StableSort([&Depth](AActor& A, AActor& B){ return Depth((AActor*)&A) < Depth((AActor*)&B); });
+
+		// names: unique per PARENT, the Godot rule
+		TMap<AActor*, FString> NodeName, NodePathOf, ParentPath;
+		TMap<FString, int32> Taken;   // "<parentpath>|<name>" -> count
+		TSet<AActor*> Exported(All);
+		for (AActor* A : All)
+		{
+			AActor* P = A->GetAttachParentActor();
+			const FString PPath = (P && Exported.Contains(P)) ? NodePathOf[P] : FString(TEXT("."));
+			FString Nm = A->GetActorLabel(); Nm.RemoveFromStart(TEXT("BF6_"));
+			Nm = SanitizeName(Nm);
+			const FString Key0 = PPath + TEXT("|") + Nm;
+			if (int32* C = Taken.Find(Key0)) { Nm = FString::Printf(TEXT("%s_%d"), *Nm, ++(*C)); }
+			else Taken.Add(Key0, 1);
+			NodeName.Add(A, Nm);
+			ParentPath.Add(A, PPath);
+			NodePathOf.Add(A, PPath == TEXT(".") ? Nm : PPath + TEXT("/") + Nm);
+		}
+
+		// relative NodePath from node A to target B (Godot resolves against A)
+		auto RelPath = [&NodePathOf](AActor* A, AActor* B) -> FString
+		{
+			TArray<FString> Pa, Pb;
+			NodePathOf[A].ParseIntoArray(Pa, TEXT("/"));
+			NodePathOf[B].ParseIntoArray(Pb, TEXT("/"));
+			int32 Common = 0;
+			while (Common < Pa.Num() && Common < Pb.Num() && Pa[Common] == Pb[Common]) Common++;
+			FString R;
+			for (int32 i = Common; i < Pa.Num(); i++) R += TEXT("../");
+			for (int32 i = Common; i < Pb.Num(); i++) { R += Pb[i]; if (i + 1 < Pb.Num()) R += TEXT("/"); }
+			return R.IsEmpty() ? FString(TEXT(".")) : R;
+		};
+		TMap<FString, AActor*> ByLink;
+		for (AActor* A : All) { FString L = A->GetActorLabel(); L.RemoveFromStart(TEXT("BF6_")); ByLink.Add(L, A); }
+
+		auto Swap = [](const FVector& v){ return FVector(v.X, v.Z, v.Y); };
+		auto XfLine = [&GD, &Swap](const FTransform& Xf) -> FString
+		{
+			const FVector S3 = Xf.GetScale3D();
+			const FVector R = Swap(Xf.GetUnitAxis(EAxis::X) * S3.X);
+			const FVector U = Swap(Xf.GetUnitAxis(EAxis::Z) * S3.Z);
+			const FVector F = Swap(Xf.GetUnitAxis(EAxis::Y) * S3.Y);
+			const FVector L = Xf.GetLocation();
+			return FString::Printf(TEXT("transform = Transform3D(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"),
+				*GD(R.X), *GD(U.X), *GD(F.X), *GD(R.Y), *GD(U.Y), *GD(F.Y), *GD(R.Z), *GD(U.Z), *GD(F.Z),
+				*GD(L.X / 100.0), *GD(L.Z / 100.0), *GD(L.Y / 100.0));
+		};
+
+		// ---- ext resources: one per distinct type, plus the two static scenes ----
+		TArray<FString> ExtLines; TMap<FString, FString> ExtIdOf;
+		auto ExtId = [&ExtLines, &ExtIdOf, &ScenePathFor](const FString& Type) -> FString
+		{
+			if (const FString* Have = ExtIdOf.Find(Type)) return *Have;
+			const FString Id = FString::Printf(TEXT("%d_bf6%c%c"), ExtIdOf.Num() + 1,
+				(TCHAR)(TEXT('a') + (ExtIdOf.Num() % 26)), (TCHAR)(TEXT('a') + ((ExtIdOf.Num() / 26) % 26)));
+			ExtIdOf.Add(Type, Id);
+			const FString Path = Type.StartsWith(TEXT("static://"))
+				? Type.RightChop(9) : ScenePathFor(Type);
+			ExtLines.Add(FString::Printf(TEXT("[ext_resource type=\"PackedScene\" path=\"%s\" id=\"%s\"]"), *Path, *Id));
+			return Id;
+		};
+		const FString TerrainId = ExtId(TEXT("static://res://static/") + Level + TEXT("_Terrain.tscn"));
+		const FString AssetsId  = ExtId(TEXT("static://res://static/") + Level + TEXT("_Assets.tscn"));
+
+		// ---- nodes ----
+		TArray<FString> SubLines, NodeLines;
+		int32 UniqueId = 1, SubN = 0;
+		NodeLines.Add(FString::Printf(TEXT("[node name=\"%s\" type=\"Node3D\" unique_id=%d]"), *Level, UniqueId++));
+		NodeLines.Add(FString());
+		NodeLines.Add(FString::Printf(TEXT("[node name=\"Static\" type=\"Node3D\" parent=\".\" unique_id=%d]"), UniqueId++));
+		NodeLines.Add(FString());
+		NodeLines.Add(FString::Printf(TEXT("[node name=\"%s_Terrain\" parent=\"Static\" unique_id=%d instance=ExtResource(\"%s\")]"), *Level, UniqueId++, *TerrainId));
+		NodeLines.Add(FString());
+		NodeLines.Add(FString::Printf(TEXT("[node name=\"%s_Assets\" parent=\"Static\" unique_id=%d instance=ExtResource(\"%s\")]"), *Level, UniqueId++, *AssetsId));
+
+		for (AActor* A : All)
+		{
+			FString Type = TagValue(A, TEXT("label:"));
+			if (Type.IsEmpty()) Type = TagValue(A, TEXT("type:"));
+			const bool bGroup = A->Tags.Contains(kGroupTag);
+			const bool bPath = !Type.IsEmpty() && BF6_TypeHasWaypoints(Type);
+			AActor* P = A->GetAttachParentActor();
+			const FTransform Local = (P && Exported.Contains(P))
+				? A->GetActorTransform().GetRelativeTransform(P->GetActorTransform())
+				: A->GetActorTransform();
+
+			TArray<FString> Body;
+			Body.Add(XfLine(Local));
+
+			// the curve, when this node carries a path
+			FString CurveRef;
+			if (bPath)
+				if (const TArray<FVector>* Loop = GVolumeLoops.Find(A))
+				{
+					const TArray<FVector> Lp = BF6_LoopToLocal(A, BF6_LoopToWorld(A, *Loop));
+					FString Pts;
+					for (const FVector& v : Lp)
+						Pts += FString::Printf(TEXT("0, 0, 0, 0, 0, 0, %s, %s, %s, "), *GD(v.X / 100.0), *GD(v.Z / 100.0), *GD(v.Y / 100.0));
+					Pts.RemoveFromEnd(TEXT(", "));
+					const FString Sid = FString::Printf(TEXT("Curve3D_bf6%02d"), ++SubN);
+					SubLines.Add(FString::Printf(TEXT("[sub_resource type=\"Curve3D\" id=\"%s\"]"), *Sid));
+					SubLines.Add(TEXT("_data = {"));
+					SubLines.Add(FString::Printf(TEXT("\"points\": PackedVector3Array(%s),"), *Pts));
+					FString Tilts; for (int32 i = 0; i < Lp.Num(); i++) Tilts += (i ? TEXT(", 0") : TEXT("0"));
+					SubLines.Add(FString::Printf(TEXT("\"tilts\": PackedFloat32Array(%s)"), *Tilts));
+					SubLines.Add(TEXT("}"));
+					SubLines.Add(FString::Printf(TEXT("point_count = %d"), Lp.Num()));
+					if (BF6_PathIsClosed(A)) SubLines.Add(TEXT("closed = true"));
+					SubLines.Add(FString());
+					CurveRef = Sid;
+				}
+
+			// zone shape (not for paths - their points are the curve)
+			//
+			// ELEVATION LIVES IN THE POINTS HERE, AND ON THE NODE IN GODOT.
+			// Our volume actors mostly sit at the origin with world-space loop
+			// points that carry the ground height per vertex; Godot's
+			// PolygonVolume is the exact opposite - flat 2D points on the
+			// node's XZ plane, elevation solely from the node's translation.
+			// The first cut wrote the actor transform and dropped the loop's Z,
+			// which landed every zone at sea level. So the node transform is
+			// DERIVED from the loop: translation at the loop's centre at its
+			// lowest vertex (walls start at the floor), identity rotation, and
+			// the points made relative to that - the world shape is identical
+			// from either side.
+			if (!bPath && Type == TEXT("PolygonVolume"))
+				if (const TArray<FVector>* Loop = GVolumeLoops.Find(A))
+				{
+					const TArray<FVector> Wp = BF6_LoopToWorld(A, *Loop);
+					FVector C = FVector::ZeroVector;
+					double BaseZ = TNumericLimits<double>::Max();
+					for (const FVector& v : Wp) { C += v; BaseZ = FMath::Min(BaseZ, (double)v.Z); }
+					if (Wp.Num()) C /= (double)Wp.Num();
+					const FTransform TW(FQuat::Identity, FVector(C.X, C.Y, BaseZ));
+					Body[0] = XfLine((P && Exported.Contains(P))
+						? TW.GetRelativeTransform(P->GetActorTransform()) : TW);
+					FString Pts;
+					for (const FVector& v : Wp)
+						Pts += FString::Printf(TEXT("%s, %s, "), *GD((v.X - C.X) / 100.0), *GD((v.Y - C.Y) / 100.0));
+					Pts.RemoveFromEnd(TEXT(", "));
+					Body.Add(FString::Printf(TEXT("points = PackedVector2Array(%s)"), *Pts));
+					const FString H = GetActorProp(A, TEXT("height"));
+					Body.Add(FString::Printf(TEXT("height = %s"), H.IsNumeric() ? *H : TEXT("0.0")));
+					FLinearColor VC;
+					if (BF6_VolumeColorOf(A, VC))
+						Body.Add(FString::Printf(TEXT("color = Color(%s, %s, %s, %s)"), *GD(VC.R), *GD(VC.G), *GD(VC.B), *GD(VC.A)));
+				}
+			if (Type == TEXT("OBBVolume"))
+			{
+				const FVector Sz = BF6_ObbSizeGodot(A);
+				Body.Add(FString::Printf(TEXT("size = Vector3(%s, %s, %s)"), *GD(Sz.X), *GD(Sz.Y), *GD(Sz.Z)));
+				FLinearColor VC;
+				if (BF6_VolumeColorOf(A, VC))
+					Body.Add(FString::Printf(TEXT("color = Color(%s, %s, %s, %s)"), *GD(VC.R), *GD(VC.G), *GD(VC.B), *GD(VC.A)));
+			}
+			if (!CurveRef.IsEmpty())
+				Body.Add(FString::Printf(TEXT("curve = SubResource(\"%s\")"), *CurveRef));
+
+			// fields: only what the creator set, links split into node_paths
+			TArray<FString> LinkNames;
+			if (!bGroup && !Type.IsEmpty())
+				for (const BF6Api::FPropDef& D : PropsForType(Type))
+				{
+					if (D.Name == TEXT("Waypoints")) continue;   // the curve IS the waypoints here
+					FString V = GetActorProp(A, D.Name);
+					if (V.IsEmpty() || V.Contains(TEXT("NodePath")) || V.Contains(TEXT("ExtResource"))) continue;
+					const bool bLink = D.Type.Contains(TEXT("Volume")) || D.Type.Contains(TEXT("Array["))
+						|| D.Type.Contains(TEXT("Path")) || D.Type.Contains(TEXT("SpawnPoint"));
+					if (bLink)
+					{
+						TArray<FString> Parts; V.ParseIntoArray(Parts, TEXT(","));
+						TArray<FString> Rels;
+						for (FString& Pt : Parts)
+							if (AActor* const* T = ByLink.Find(Pt.TrimStartAndEnd()))
+								Rels.Add(FString::Printf(TEXT("NodePath(\"%s\")"), *RelPath(A, *T)));
+						if (Rels.Num() == 0) continue;
+						LinkNames.Add(D.Name);
+						if (D.Type.Contains(TEXT("Array[")))
+							Body.Add(FString::Printf(TEXT("%s = [%s]"), *D.Name, *FString::Join(Rels, TEXT(", "))));
+						else
+							Body.Add(FString::Printf(TEXT("%s = %s"), *D.Name, *Rels[0]));
+						continue;
+					}
+					if (D.Type == TEXT("selection"))
+					{
+						const int32 Idx = D.Options.IndexOfByKey(V);
+						if (Idx >= 0) Body.Add(FString::Printf(TEXT("%s = %d"), *D.Name, Idx));
+					}
+					else if (D.Type == TEXT("bool"))
+						Body.Add(FString::Printf(TEXT("%s = %s"), *D.Name, V.Equals(TEXT("true"), ESearchCase::IgnoreCase) ? TEXT("true") : TEXT("false")));
+					else if (D.Type == TEXT("int") || D.Type == TEXT("float"))
+					{
+						if (V.IsNumeric()) Body.Add(FString::Printf(TEXT("%s = %s"), *D.Name, *V));
+					}
+					else if (D.Type == TEXT("vector"))
+					{
+						TArray<FString> Pt; V.ParseIntoArray(Pt, TEXT(","));
+						if (Pt.Num() == 3) Body.Add(FString::Printf(TEXT("%s = Vector3(%s, %s, %s)"), *D.Name, *Pt[0].TrimStartAndEnd(), *Pt[1].TrimStartAndEnd(), *Pt[2].TrimStartAndEnd()));
+					}
+					else
+						Body.Add(FString::Printf(TEXT("%s = \"%s\""), *D.Name, *V));
+				}
+
+			FString Head;
+			if (bGroup || Type.IsEmpty())
+				Head = FString::Printf(TEXT("[node name=\"%s\" type=\"Node3D\" parent=\"%s\" unique_id=%d]"),
+					*NodeName[A], *ParentPath[A], UniqueId++);
+			else
+			{
+				FString NP;
+				if (LinkNames.Num())
+				{
+					TArray<FString> Q; for (const FString& L : LinkNames) Q.Add(FString::Printf(TEXT("\"%s\""), *L));
+					NP = FString::Printf(TEXT(" node_paths=PackedStringArray(%s)"), *FString::Join(Q, TEXT(", ")));
+				}
+				Head = FString::Printf(TEXT("[node name=\"%s\" parent=\"%s\"%s unique_id=%d instance=ExtResource(\"%s\")]"),
+					*NodeName[A], *ParentPath[A], *NP, UniqueId++, *ExtId(Type));
+			}
+			NodeLines.Add(FString());
+			NodeLines.Add(Head);
+			NodeLines.Append(Body);
+		}
+
+		FString Out = FString::Printf(TEXT("[gd_scene load_steps=%d format=3]\n\n"), ExtLines.Num() + SubN + 1);
+		Out += FString::Join(ExtLines, TEXT("\n")) + TEXT("\n\n");
+		if (SubLines.Num()) Out += FString::Join(SubLines, TEXT("\n")) + TEXT("\n");
+		Out += FString::Join(NodeLines, TEXT("\n")) + TEXT("\n");
+		return Out;
+	}
+
+	bool SaveAsTscn()
+	{
+		if (!g_ss.bEditing) { Notify(TEXT("Open a custom map first - the base map already ships as a Godot scene.")); return false; }
+		const FString Text = BF6_BuildTscn();
+		if (Text.IsEmpty()) { Notify(TEXT("Nothing to write.")); return false; }
+		IDesktopPlatform* DP = FDesktopPlatformModule::Get(); if (!DP) return false;
+		const void* Parent = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
+		TArray<FString> Files;
+		const FString DefaultName = g_ss.CurrentSave + TEXT(".tscn");
+		if (!DP->SaveFileDialog(Parent, TEXT("Save as Godot scene (.tscn)"), FPaths::ProjectSavedDir(), DefaultName,
+			TEXT("Godot scene|*.tscn"), EFileDialogFlags::None, Files) || Files.Num() == 0) return false;
+		if (!FFileHelper::SaveStringToFile(Text, *Files[0]))
+		{
+			Notify(FString::Printf(TEXT("Could not write %s."), *Files[0]));
+			return false;
+		}
+		Notify(FString::Printf(TEXT("Saved '%s' as a Godot scene. Drop it in the SDK's User_Created levels folder and it opens in Godot."), *FPaths::GetCleanFilename(Files[0])));
+		return true;
+	}
+
 	void SaveCurrent(bool bSilent)
 	{
 		if (g_ss.CurrentSave.IsEmpty()) { if (!bSilent) Notify(TEXT("Name and create your custom map first.")); return; }
-		SaveSession(g_ss.CurrentLevel, g_ss.CurrentSave);
+		if (!SaveSession(g_ss.CurrentLevel, g_ss.CurrentSave))
+		{
+			// Always spoken, even on the silent autosave path: a save that is
+			// not happening is exactly what a creator must not find out later.
+			Notify(FString::Printf(TEXT("Could not save '%s' - the file could not be written."), *g_ss.CurrentSave));
+			return;
+		}
 		if (!bSilent) Notify(FString::Printf(TEXT("Saved '%s'."), *g_ss.CurrentSave));
 	}
 
 	void CreateCustom(const FString& Name)
 	{
 		const FString Clean = Name.TrimStartAndEnd();
-		if (Clean.IsEmpty()) { Notify(TEXT("Enter a name for your custom map first.")); return; }
+		FString Why;
+		if (!BF6_ValidSaveName(Clean, Why)) { Notify(Why); return; }
+		// An existing name would be OVERWRITTEN, and creating happens from the
+		// read-only base, so the world being written is empty - the old save
+		// would not be merged into, it would be erased. Ask.
+		if (FPaths::FileExists(BF6_SessionPathFor(g_ss.CurrentLevel, Clean)))
+		{
+			const FString Q = FString::Printf(TEXT("A custom map called '%s' already exists for this level.\n\nCreating it again REPLACES it with an empty one. The objects in the old save are lost.\n\nReplace it?"), *Clean);
+			if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(Q)) != EAppReturnType::Yes)
+			{
+				Notify(TEXT("Left the existing custom map alone."));
+				return;
+			}
+		}
+		// Session state changes only once the file is really there. Adopting the
+		// name first meant a failed write left the tool "editing" a save that
+		// did not exist, and the next save would look like it had worked too.
+		const FString Was = g_ss.CurrentSave; const bool bWas = g_ss.bEditing;
 		g_ss.CurrentSave = Clean;
 		g_ss.bEditing = true;
-		SaveSession(g_ss.CurrentLevel, g_ss.CurrentSave);
+		if (!SaveSession(g_ss.CurrentLevel, g_ss.CurrentSave))
+		{
+			g_ss.CurrentSave = Was; g_ss.bEditing = bWas;
+			Notify(FString::Printf(TEXT("Could not create '%s' - the file could not be written. Try a simpler name."), *Clean));
+			return;
+		}
 		Notify(FString::Printf(TEXT("Custom map '%s' created - aim and press SPACE to place objects."), *Clean));
 	}
 
@@ -6335,6 +7214,23 @@ namespace BF6Api
 	bool IsVolumeEditing() { return GVolEdit.Volume.IsValid(); }
 	static void BF6_ProjectZoneDots();   // defined with the dots section below
 
+	bool IsPathSelectedVolume()
+	{
+		return GVolEdit.Volume.IsValid() && BF6_IsPathActor(GVolEdit.Volume.Get());
+	}
+
+	bool TogglePathClosed()
+	{
+		AActor* A = GVolEdit.Volume.Get();
+		if (!A || !BF6_IsPathActor(A)) return false;
+		const bool bNow = !BF6_PathIsClosed(A);
+		A->Modify();
+		SetActorProp(A, TEXT("isClosed"), bNow ? TEXT("true") : TEXT("false"));
+		if (const TArray<FVector>* Loop = GVolumeLoops.Find(A)) RebuildVolumeWalls(A, *Loop);
+		BF6_Redraw();
+		return bNow;
+	}
+
 	void BeginVolumeEdit(AActor* Volume)
 	{
 		if (!GEditor || !Volume) return;
@@ -6392,6 +7288,9 @@ namespace BF6Api
 		}
 	}
 
+	// fwd: defined with the zone-centre helpers below, used by the point edits
+	static bool BF6_VolumeRecenter(AActor* Vol, bool bOwnTransaction);
+
 	void VolumeAddPoint()
 	{
 		AActor* Vol = GVolEdit.Volume.Get();
@@ -6404,6 +7303,9 @@ namespace BF6Api
 		World.Insert(Mid, Sel + 1);
 		BF6_ApplyLoop(Vol, BF6_LoopToLocal(Vol, World));
 		GVolEdit.Active = Sel + 1;
+	
+		// The shape changed, so the origin is stale - see BF6_VolumeRecenter.
+		BF6_VolumeRecenter(GVolEdit.Volume.Get(), true);
 	}
 
 	void VolumeAddPointAt(const FVector& WorldPos)
@@ -6479,6 +7381,9 @@ namespace BF6Api
 		World.RemoveAt(Sel);
 		BF6_ApplyLoop(Vol, BF6_LoopToLocal(Vol, World));
 		GVolEdit.Active = FMath::Clamp(Sel, 0, World.Num() - 1);
+	
+		// The shape changed, so the origin is stale - see BF6_VolumeRecenter.
+		BF6_VolumeRecenter(GVolEdit.Volume.Get(), true);
 	}
 
 	// ---- OBB face-handle editing (Godot's OBBVolumeGizmo behavior) ----
@@ -6720,9 +7625,31 @@ namespace BF6Api
 	// and offset the points so the shape stays put in the world. Fixes a
 	// pivot that sits far from the zone (the gizmo and rotation act around
 	// empty space otherwise).
-	bool ResetVolumeCenter()
+	// PUT THE ORIGIN BACK IN THE MIDDLE OF THE SHAPE.
+	//
+	// Geometrically neutral: the actor moves and the loop is rewritten to
+	// compensate, so the zone does not shift by a millimetre. What changes is
+	// where the gizmo sits, and an origin left behind by an edit is a gizmo
+	// floating somewhere off the shape it is supposed to move.
+	//
+	// bOwnTransaction is false while a drag is still open - the recentre then
+	// folds into the drag's own transaction, so one Ctrl+Z reverts the whole
+	// gesture instead of leaving the shape moved and the origin not.
+	// THE GIZMO DOES NOT FOLLOW AN ACTOR THAT MOVES UNDERNEATH IT.
+	//
+	// The editor caches a pivot for the selection and only recomputes it when
+	// the selection changes - which is exactly why the recentred origin looked
+	// like it was waiting for a reselect. It was: the actor had already moved,
+	// and the thing drawn on screen had not been told.
+	static void BF6_NotePivotMoved()
 	{
-		AActor* Vol = GVolEdit.Volume.Get();
+		// Through the editor engine, which is what owns the cached pivot.
+		if (UUnrealEdEngine* Ed = Cast<UUnrealEdEngine>(GEditor))
+			Ed->UpdatePivotLocationForSelection();
+	}
+
+	static bool BF6_VolumeRecenter(AActor* Vol, bool bOwnTransaction)
+	{
 		const TArray<FVector>* L = Vol ? GVolumeLoops.Find(Vol) : nullptr;
 		if (!L || L->Num() < 2) return false;
 		const TArray<FVector> World = BF6_LoopToWorld(Vol, *L);
@@ -6730,12 +7657,23 @@ namespace BF6Api
 		for (const FVector& P : World) C += P;
 		C /= (double)World.Num();
 		if (FVector::Dist(C, Vol->GetActorLocation()) < 1.0) return false;   // already centred
-		FScopedTransaction Tx(FText::FromString(TEXT("Reset Zone Center")));
+		if (bOwnTransaction)
+		{
+			FScopedTransaction Tx(FText::FromString(TEXT("Reset Zone Center")));
+			Vol->Modify();
+			Vol->SetActorLocation(C);
+			BF6_ApplyLoop(Vol, BF6_LoopToLocal(Vol, World));
+			BF6_NotePivotMoved();
+			return true;
+		}
 		Vol->Modify();
 		Vol->SetActorLocation(C);
 		BF6_ApplyLoop(Vol, BF6_LoopToLocal(Vol, World));
+		BF6_NotePivotMoved();
 		return true;
 	}
+
+	bool ResetVolumeCenter() { return BF6_VolumeRecenter(GVolEdit.Volume.Get(), true); }
 
 	// Ctrl+RMB on a dot: delete that point (index straight from the hit test)
 	void VolumeDeletePointByIndex(int32 RawIndex)
@@ -6751,6 +7689,20 @@ namespace BF6Api
 		World.RemoveAt(Point);
 		BF6_ApplyLoop(Vol, BF6_LoopToLocal(Vol, World));
 		GVolEdit.Active = FMath::Clamp(Point, 0, World.Num() - 1);
+	}
+
+	// IS THE ZONE BEING EDITED UNBOUNDED?
+	//
+	// Height 0 means infinite, and an infinite zone is DRAWN at 5 m - which
+	// makes it pixel-identical to a genuine 5 m zone. The only thing that ever
+	// said otherwise was a one-off toast when you dragged through zero, gone a
+	// second later and never shown at all for a zone somebody else authored.
+	bool IsEditZoneInfinite()
+	{
+		AActor* Vol = GVolEdit.Volume.Get();
+		if (!Vol) return false;
+		const FString HS = GetActorProp(Vol, TEXT("height"));
+		return !HS.IsNumeric() || FCString::Atod(*HS) <= 0.01;
 	}
 
 	int32 ZoneDotUnderMouse()
@@ -6863,6 +7815,17 @@ namespace BF6Api
 		const TArray<FVector> Local = BF6_LoopToLocal(Vol, World);
 		GVolumeLoops.Add(Vol, Local);
 		RebuildVolumeWalls(Vol, Local);
+
+		// AND RECENTRED EVERY FRAME, not at the end of the drag.
+		//
+		// Deferring it to drag end was over-caution on my part: I expected the
+		// origin sliding under a moving corner to make the drag chase itself.
+		// It cannot - the drag puts the point where the CURSOR is, in world
+		// space, and recentring only moves the origin and rewrites the loop to
+		// compensate, so not one world position changes. What deferring it
+		// actually did was leave the origin visibly stale until the zone was
+		// reselected.
+		BF6_VolumeRecenter(Vol, false);   // folds into the drag's transaction
 	}
 
 	void ClearSelection()
@@ -6874,7 +7837,19 @@ namespace BF6Api
 	{
 		if (GVolEdit.Drag != INDEX_NONE)
 			if (AActor* Vol = GVolEdit.Volume.Get())
-				BF6_WriteLoopTags(Vol);   // mirror the final shape for undo
+			{
+				// RECENTRED ON EVERY SHAPE CHANGE, rather than on a button
+				// nobody remembers to press. Dragging a corner moves the shape
+				// and leaves the origin where it was, so the gizmo drifts
+				// further off the zone with every edit until it is nowhere near
+				// the thing it moves.
+				//
+				// At drag END, not per frame: recentring while the corner is
+				// still moving slides the origin under the cursor and the drag
+				// chases itself.
+				BF6_VolumeRecenter(Vol, false);   // folds into the drag's transaction
+				BF6_WriteLoopTags(Vol);           // mirror the final shape for undo
+			}
 		GVolEdit.Drag = INDEX_NONE;
 		if (GVolEdit.bTx && GEditor) { GEditor->EndTransaction(); GVolEdit.bTx = false; }
 	}
@@ -6917,7 +7892,19 @@ namespace BF6Api
 	// uniform-X scale, so the gap between what you see and what you hit becomes
 	// visible. Transient, unselectable, never saved and never exported.
 	static const TCHAR* kColVisName = TEXT("BF6CollisionVis");
-	static const float  kColVisEps  = 1.002f;   // hairline inflate, kills z-fighting
+	// A HAIR off the surface, straight out along each vertex's normal.
+	//
+	// The job is beating depth precision and nothing else: the shell is meant to
+	// read as the object's own skin, so any offset you can SEE is already wrong.
+	// 1 mm clears z-fighting at every distance the editor flies at while staying
+	// invisible as a gap. The first cut used 10 cm, which floated the shell off
+	// the prop and made small objects look wrapped rather than skinned.
+	//
+	// Still along the NORMAL rather than a scale inflate: a proportional offset
+	// is a different physical distance on every prop, so it is invisible on a
+	// jerrycan and centimetres on a building.
+	static const float  kColVisPush = 0.1f;   // centimetres
+	static const float  kColVisEps  = 1.0f;
 	static TArray<TWeakObjectPtr<AActor>> GColVis;   // actors carrying an overlay
 	static FLinearColor GColVisColor = FLinearColor(1.0f, 0.08f, 0.08f);
 	static float GColVisAlpha = 0.45f;
@@ -6963,7 +7950,7 @@ namespace BF6Api
 		Vis->SetFlags(RF_Transient);
 		Vis->SetupAttachment(A->GetRootComponent());
 		Vis->RegisterComponent();
-		if (!FillProcFromBf6Mesh(Vis, ObjModelPath(Mesh)))
+		if (!FillProcFromBf6Mesh(Vis, ObjModelPath(Mesh), false, kColVisPush))
 		{
 			Vis->DestroyComponent();
 			return false;
@@ -7164,6 +8151,37 @@ namespace BF6Api
 			for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mid);
 	}
 
+	// ---- a TEMPORARY highlight, for the length of one placement run --------
+	//
+	// NOT BF6_RecolorOne. That writes a "tint:" tag, which is the creator's own
+	// deliberate colour: it survives a save, a reload and a mesh rebuild, by
+	// design. Lighting up existing spawns for the length of a run and then
+	// leaving them green forever is not a highlight, it is repainting somebody
+	// else's map.
+	//
+	// So the original materials are stored and put straight back, and no tag is
+	// ever written.
+	static TArray<FBF6Ghosted> GHQLit;
+
+	static void BF6_HQUnlight()
+	{
+		if (GHQLit.Num() > 0) BF6_GhostRestoreSet(GHQLit);
+	}
+
+	static void BF6_HQLightOne(AActor* A, const FLinearColor& C)
+	{
+		if (!A) return;
+		UProceduralMeshComponent* M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
+		if (!M || M->GetNumSections() == 0) return;
+		FBF6Ghosted G;
+		G.Comp = M;
+		G.bWasSelectable = M->bSelectable;
+		for (int32 s = 0; s < M->GetNumSections(); s++) G.Mats.Add(M->GetMaterial(s));
+		GHQLit.Add(MoveTemp(G));
+		if (UMaterialInstanceDynamic* Mid = BF6_RecolorMID(C))
+			for (int32 s = 0; s < M->GetNumSections(); s++) M->SetMaterial(s, Mid);
+	}
+
 	static bool BF6_RecolorTarget(AActor* A)
 	{
 		return A && (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag))
@@ -7194,13 +8212,430 @@ namespace BF6Api
 
 	bool AnyRecolored() { return GRecolored.Num() > 0; }
 
+	FLinearColor SelectionColor()
+	{
+		if (!GEditor) return kVolumeDefaultColor;
+		TArray<AActor*> Targets; SelectionTargets(Targets);
+		for (AActor* A : Targets)
+		{
+			FLinearColor C;
+			if (BF6_VolumeColorOf(A, C)) return C;
+		}
+		// A mesh's paint-over tint, if it has one.
+		for (AActor* A : Targets)
+			for (const FName& T : A->Tags)
+			{
+				const FString S2 = T.ToString();
+				if (S2.StartsWith(TEXT("tint:")) && S2.Len() >= 13)
+					return FLinearColor(FColor::FromHex(S2.Mid(5)));
+			}
+		return kVolumeDefaultColor;
+	}
+
+	// fwd: both are declared again further down beside their own sections; an
+	// HQ needs the ground under it and the name a link refers to it by.
+	bool GroundRay(const FVector& From, const FVector& To, const TArray<AActor*>* Placed,
+	               FVector& OutHit, FVector* OutNormal = nullptr);
+	static FString BF6_LinkName(AActor* A);
+
+	// ---- HQ: the one object that owns others ------------------------------
+	//
+	// An HQ_PlayerSpawner is not a prop, it is a small assembly: it needs an
+	// area to spawn inside and a set of spawn points to spawn on, and its own
+	// schema says so - HQArea is a PolygonVolume, InfantrySpawns and
+	// ForwardSpawns are Array[SpawnPoint].
+	//
+	// Building that by hand means placing a volume somewhere, remembering to
+	// come back, opening the HQ's attributes, finding HQArea, entering the
+	// picker, and finding the volume again in the world. Every one of those
+	// steps is a chance to end up with an HQ that looks finished and spawns
+	// nobody, because the link is the only part that matters and it is the
+	// part with no visual.
+	//
+	// So the two things an HQ always needs get made FROM the HQ, and linked on
+	// the way out.
+	bool IsHQActor(AActor* A)
+	{
+		if (!A) return false;
+		FString Ty = TagValue(A, TEXT("label:"));
+		if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("type:"));
+		return Ty == TEXT("HQ_PlayerSpawner");
+	}
+
+	// The volume this HQ spawns inside, if it has one.
+	// fwd: both are defined further down this file, and the assembly helpers
+	// below are the first things that need them.
+	static FString BF6_TypeOf(AActor* A);
+	static void BF6_ParentUnder(AActor* Child, AActor* Owner);
+
+	AActor* HQVolume(AActor* Owner, const FString& Field)
+	{
+		if (!Owner || !GEditor || Field.IsEmpty()) return nullptr;
+		const FString Want = GetActorProp(Owner, Field).TrimStartAndEnd();
+		if (Want.IsEmpty()) return nullptr;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return nullptr;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)) continue;
+			FString Nm = It->GetActorLabel();
+			Nm.RemoveFromStart(TEXT("BF6_"));
+			if (Nm == Want) return *It;
+		}
+		return nullptr;
+	}
+
+	// Make the HQ's area, or open the one it already has.
+	//
+	// The volume lands AROUND the HQ rather than under the cursor: an HQ area
+	// that does not contain its own HQ is never what anybody meant, and it is a
+	// mistake that only shows up in play.
+	AActor* HQCreateOrEditVolume(AActor* Owner, const FString& Field)
+	{
+		if (!Owner || Field.IsEmpty()) return nullptr;
+		if (AActor* Have = HQVolume(Owner, Field))
+		{
+			if (GEditor)
+			{
+				GEditor->SelectNone(false, true, false);
+				GEditor->SelectActor(Have, true, true);
+			}
+			BeginVolumeEdit(Have);   // selecting one starts its edit anyway; be explicit
+			return Have;
+		}
+		UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!W) return nullptr;
+
+		// Ground level under the owner, so the walls start where the floor is
+		// rather than at whatever height the marker happens to sit.
+		FVector At = Owner->GetActorLocation();
+		FVector Gnd;
+		if (GroundRay(At + FVector(0, 0, 2000), At - FVector(0, 0, 50000), nullptr, Gnd)) At.Z = Gnd.Z;
+
+		// The field decides the SHAPE: RingOfFire wants an OBBVolume for one of
+		// its two, and placing a polygon there would link something the game
+		// cannot read.
+		FString Want = TEXT("PolygonVolume");
+		for (const FLinkField& F : LinkVolumeFields(Owner))
+			if (F.Field == Field) { Want = F.ElemType; break; }
+
+		AActor* Vol = PlaceType(Want, At);
+		if (!Vol) return nullptr;
+		BF6_SetPrettyLabel(Vol, FString::Printf(TEXT("%s_%s"), *BF6_LinkName(Owner), *Field));
+
+		// THE LINK, which is the whole point. Written straight onto the owner so
+		// the creator never has to know the field exists.
+		SetActorProp(Owner, Field, BF6_LinkName(Vol));
+		// ...and parked under it, the way finished Portal maps are built.
+		BF6_ParentUnder(Vol, Owner);
+		return Vol;
+	}
+
+	// The spawns already wired into ONE of this HQ's spawn arrays, by name.
+	static void BF6_HQSpawnNames(AActor* HQ, const FString& Field, TArray<FString>& Out)
+	{
+		Out.Reset();
+		if (!HQ || Field.IsEmpty()) return;
+		GetActorProp(HQ, Field).ParseIntoArray(Out, TEXT(","), true);
+		for (FString& S : Out) S.TrimStartAndEndInline();
+	}
+
+	int32 HQSpawnCount(AActor* HQ, const FString& Field)
+	{
+		TArray<FString> N; BF6_HQSpawnNames(HQ, Field, N); return N.Num();
+	}
+
+	// A field's menu label. "InfantrySpawns" -> "INFANTRY",
+	// "RetreatFromArea" -> "RETREAT FROM", "InfantrySpawnPoints_Team1" ->
+	// "INFANTRY TEAM1". The trailing noun is the same across a group and says
+	// nothing the menu does not already say.
+	static FString BF6_FieldLabel(const FString& Field)
+	{
+		FString L = Field;
+		for (const TCHAR* Suf : { TEXT("SpawnPoints"), TEXT("Spawns"), TEXT("Volume"), TEXT("Area") })
+			if (L.EndsWith(Suf) && L.Len() > FCString::Strlen(Suf)) { L.RemoveFromEnd(Suf); break; }
+		FString Out;
+		for (int32 i = 0; i < L.Len(); i++)
+		{
+			const TCHAR C = L[i];
+			if (C == TEXT('_')) { Out.AppendChar(TEXT(' ')); continue; }
+			if (i > 0 && FChar::IsUpper(C) && !FChar::IsUpper(L[i - 1])) Out.AppendChar(TEXT(' '));
+			Out.AppendChar(C);
+		}
+		return Out.TrimStartAndEnd().ToUpper();
+	}
+
+	// Every link field on this object's type, read off the schema.
+	//
+	// Never a hardcoded list: eleven shipped types have these, and a field the
+	// next SDK adds has to appear on its own or the tool quietly stops being
+	// able to build part of a mode.
+	static void BF6_LinkFieldsOf(AActor* A, TArray<FLinkField>* OutVolumes, TArray<FLinkField>* OutArrays)
+	{
+		if (OutVolumes) OutVolumes->Reset();
+		if (OutArrays)  OutArrays->Reset();
+		if (!A) return;
+		const FString Ty = BF6_TypeOf(A);
+		if (Ty.IsEmpty()) return;
+		for (const FPropDef& D : PropsForType(Ty))
+		{
+			FLinkField F;
+			F.Field = D.Name;
+			F.Label = BF6_FieldLabel(D.Name);
+			if (D.Type == TEXT("PolygonVolume") || D.Type == TEXT("OBBVolume"))
+			{
+				if (!OutVolumes) continue;
+				F.ElemType = D.Type;
+				F.bArray = false;
+				F.Count = GetActorProp(A, D.Name).TrimStartAndEnd().IsEmpty() ? 0 : 1;
+				OutVolumes->Add(F);
+			}
+			else if (D.Type.StartsWith(TEXT("Array[")) && D.Type.EndsWith(TEXT("]")))
+			{
+				if (!OutArrays) continue;
+				F.ElemType = D.Type.Mid(6, D.Type.Len() - 7);
+				F.bArray = true;
+				F.Count = HQSpawnCount(A, D.Name);
+				OutArrays->Add(F);
+			}
+		}
+	}
+
+	TArray<FLinkField> LinkVolumeFields(AActor* A)
+	{
+		TArray<FLinkField> V; BF6_LinkFieldsOf(A, &V, nullptr); return V;
+	}
+	TArray<FLinkField> LinkArrayFields(AActor* A)
+	{
+		TArray<FLinkField> R; BF6_LinkFieldsOf(A, nullptr, &R); return R;
+	}
+
+	// Make one more spawn point for this HQ and hand it to the cursor.
+	//
+	// APPENDED to the chosen array rather than replacing it: the array is the
+	// point, and a creator laying out a spawn line expects the previous ones to
+	// still be there.
+	// PARENT A LINKED OBJECT UNDER ITS OWNER.
+	//
+	// Read off two finished Portal maps by a creator who builds these for real:
+	// every PolygonVolume sits under the CapturePoint, HQ or Sector that links
+	// it, and every SpawnPoint sits under its HQ. Not one is left at the root.
+	// The link and the tree say the same thing, and a reader of either can see
+	// the assembly.
+	//
+	// Only the attachment is set - BF6_SyncTreeTagsFromLive turns real Unreal
+	// attachment into the Godot tree on save, so this is all that is needed for
+	// it to survive an export.
+	static void BF6_ParentUnder(AActor* Child, AActor* Owner)
+	{
+		if (!Child || !Owner || Child == Owner) return;
+		if (Child->GetAttachParentActor()) return;   // never steal one already placed in a tree
+		Child->Modify();
+		Child->AttachToActor(Owner, FAttachmentTransformRules::KeepWorldTransform);
+	}
+
+	AActor* HQCreateSpawn(AActor* HQ, const FString& Field)
+	{
+		if (Field.IsEmpty() || !HQ) return nullptr;
+		FVector At = HQ->GetActorLocation();
+		FVector Gnd;
+		if (GroundRay(At + FVector(0, 0, 2000), At - FVector(0, 0, 50000), nullptr, Gnd)) At.Z = Gnd.Z;
+
+		// What the field ASKS for. Array[SpawnPoint] wants a SpawnPoint,
+		// Array[CapturePoint] wants a CapturePoint - hardcoding SpawnPoint here
+		// is what kept this working for HQs only.
+		FString Elem = TEXT("SpawnPoint");
+		for (const FLinkField& F : LinkArrayFields(HQ))
+			if (F.Field == Field) { Elem = F.ElemType; break; }
+
+		AActor* Sp = PlaceType(Elem, At);
+		if (!Sp) return nullptr;
+		BF6_ParentUnder(Sp, HQ);
+
+		TArray<FString> Names;
+		BF6_HQSpawnNames(HQ, Field, Names);
+		Names.Add(BF6_LinkName(Sp));
+		SetActorProp(HQ, Field, FString::Join(Names, TEXT(",")));
+
+		// The team, so a spawn belongs to its owner in the way that matters as
+		// well as in the link.
+		//
+		// The FIELD wins where it names one: CapturePoint holds
+		// InfantrySpawnPoints_Team1 and _Team2, so the array a spawn went into
+		// is what decides its team, not whatever team the capture point is.
+		FString Team;
+		int32 Us;
+		if (Field.FindLastChar(TEXT('_'), Us) && Field.Mid(Us + 1).StartsWith(TEXT("Team")))
+			Team = Field.Mid(Us + 1);
+		if (Team.IsEmpty()) Team = GetActorProp(HQ, TEXT("Team"));
+		if (!Team.IsEmpty()) SetActorProp(Sp, TEXT("Team"), Team);
+
+		return Sp;
+	}
+
+	// ---- laying a SET of spawns, not one -----------------------------------
+	//
+	// Spawns come in groups: an HQ with one is not a thing anybody builds. The
+	// first cut placed a single spawn and stopped, so laying eight meant going
+	// back to the radial eight times, and the ring is two clicks away from the
+	// place the creator is looking.
+	//
+	// So it is a RUN: each placement immediately makes the next and hands it to
+	// the cursor, until the creator says they are done.
+	struct FBF6HQSpawnRun
+	{
+		TWeakObjectPtr<AActor> HQ;
+		FString Field;                    // WHICH of the HQ's spawn arrays this run fills
+		TWeakObjectPtr<AActor> Carried;   // made, linked, NOT yet set down
+		TArray<TWeakObjectPtr<AActor>> Down;   // set down BY THIS RUN, so Esc can take them back
+		bool  bActive = false;
+		int32 Placed = 0;
+	};
+	static FBF6HQSpawnRun GHQRun;
+
+	bool IsHQSpawnRun() { return GHQRun.bActive && GHQRun.HQ.IsValid(); }
+	int32 HQSpawnRunPlaced() { return GHQRun.Placed; }
+
+	AActor* HQCreateSpawn(AActor* HQ, const FString& Field);   // fwd: the run makes them one at a time
+
+	void BeginHQSpawnRun(AActor* HQ, const FString& Field)
+	{
+		GHQRun = FBF6HQSpawnRun();
+		if (!IsHQActor(HQ) || Field.IsEmpty()) return;
+		GHQRun.HQ = HQ;
+		GHQRun.Field = Field;
+		GHQRun.bActive = true;
+	}
+
+	FString HQSpawnRunField() { return GHQRun.Field; }
+
+	// One placed: make the next one and carry it.
+	// Returns false when the run is over or could not continue.
+	bool HQSpawnRunNext()
+	{
+		if (!IsHQSpawnRun()) return false;
+		// Whatever was in the hand a moment ago has just been set down.
+		if (AActor* JustPlaced = GHQRun.Carried.Get()) GHQRun.Down.Add(JustPlaced);
+		AActor* Next = HQCreateSpawn(GHQRun.HQ.Get(), GHQRun.Field);
+		if (!Next) { BF6_HQUnlight(); GHQRun = FBF6HQSpawnRun(); return false; }
+		GHQRun.Carried = Next;   // so ending the run can take it back out again
+		GHQRun.Placed++;
+		BeginPickPlace();
+		return true;
+	}
+
+	// Finish the run. The spawn still riding the cursor was never placed, so it
+	// goes - but everything already set down STAYS, which is the convention the
+	// rest of this tool uses (the mode wizard says the same: Esc stops, placed
+	// steps stay, Ctrl+Z removes them). Destroying a creator's last ten
+	// placements because they pressed Escape would be a far worse surprise than
+	// leaving them.
+	// bKeep: ENTER finishes and keeps what is down. ESCAPE cancels, and cancel
+	// means the run leaves no trace - which is what anybody pressing Escape
+	// expects, and the reason the old "Escape stops but keeps them" behaviour
+	// read as broken.
+	int32 EndHQSpawnRun(bool bKeep)
+	{
+		const int32 n = bKeep ? GHQRun.Down.Num() : 0;
+		if (IsPickPlacing()) CancelPickPlace();
+
+		if (!bKeep)
+			for (const TWeakObjectPtr<AActor>& Wk : GHQRun.Down)
+				if (AActor* A = Wk.Get())
+					if (UWorld* DW = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
+						DW->EditorDestroyActor(A, true);
+		GHQRun.Down.Reset();
+
+		// DESTROY the one still being carried.
+		//
+		// Cancelling the pick-place only rolls back the MOVE - the spawn was
+		// created before that transaction opened, so it survived, and Escape
+		// left an orphan sitting at the HQ's feet still listed in the link.
+		if (AActor* Carried = GHQRun.Carried.Get())
+		{
+			if (UWorld* CW = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
+				CW->EditorDestroyActor(Carried, true);
+		}
+		GHQRun.Carried = nullptr;
+		BF6_HQUnlight();   // the green was borrowed, not given
+		// The carried spawn was linked when it was made, so the link has to come
+		// off with it or the HQ points at something that no longer exists.
+		if (AActor* HQ = GHQRun.HQ.Get())
+		{
+			TArray<FString> Names;
+			BF6_HQSpawnNames(HQ, GHQRun.Field, Names);
+			if (Names.Num() > 0)
+			{
+				UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+				TSet<FString> Alive;
+				if (W)
+					for (TActorIterator<AActor> It(W); It; ++It)
+					{
+						FString Nm = It->GetActorLabel();
+						Nm.RemoveFromStart(TEXT("BF6_"));
+						Alive.Add(Nm);
+					}
+				Names.RemoveAll([&Alive](const FString& N){ return !Alive.Contains(N); });
+				SetActorProp(HQ, GHQRun.Field, FString::Join(Names, TEXT(",")));
+			}
+		}
+		GHQRun = FBF6HQSpawnRun();
+		return n;
+	}
+
+	// Light up what this HQ already spawns on, so a new one is placed in
+	// relation to them rather than blind. Uses the link picker's own "assigned"
+	// green, because that is what these already are.
+	int32 HQHighlightSpawns(AActor* HQ, const FString& Field)
+	{
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return 0;
+		BF6_HQUnlight();   // a run that never ended cleanly must not stack
+		TArray<FString> Names;
+		BF6_HQSpawnNames(HQ, Field, Names);
+		if (Names.Num() == 0) return 0;
+		int32 n = 0;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			FString Nm = It->GetActorLabel();
+			Nm.RemoveFromStart(TEXT("BF6_"));
+			if (!Names.Contains(Nm)) continue;
+			BF6_HQLightOne(*It, FLinearColor(0.13f, 1.f, 0.27f));
+			n++;
+		}
+		BF6_Redraw();
+		return n;
+	}
+
 	int32 RecolorSelection(FLinearColor C)
 	{
 		if (!GEditor) return 0;
 		TArray<AActor*> Targets; SelectionTargets(Targets);
 		int32 n = 0;
 		for (AActor* A : Targets)
+		{
+			// A VOLUME TAKES THE COLOUR ITSELF rather than a paint-over tint.
+			//
+			// The recolorizer swaps a mesh's material for a flat one and is a
+			// pure view aid. A volume has no mesh to swap - its colour IS the
+			// authored property the SDK round-trips, and it carries the alpha
+			// that decides how see-through the zone is. Painting one through
+			// the mesh path did nothing at all, which is why volumes appeared
+			// to ignore the colorizer.
+			if (IsVolumeActor(A))
+			{
+				BF6_SetVolumeColorTag(A, C);
+				TArray<UProceduralMeshComponent*> Meshes;
+				A->GetComponents<UProceduralMeshComponent>(Meshes);
+				for (UProceduralMeshComponent* M : Meshes)
+					if (M && (M->GetFName() == FName(TEXT("Volume")) || M == A->GetRootComponent()))
+						BF6_ApplyVolumeMaterial(A, M);
+				n++;
+				continue;
+			}
 			if (BF6_RecolorTarget(A)) { BF6_RecolorOne(A, C); n++; }
+		}
 		BF6_Redraw();
 		return n;
 	}
@@ -7503,6 +8938,132 @@ namespace BF6Api
 		return Best;
 	}
 
+	// ---- the candidate LIST -----------------------------------------------
+	//
+	// Hunting glowing markers around a map is fine when there are three of them
+	// and hopeless when there are thirty, half of them behind a building. The
+	// same candidates the overlay is already tracking, named and listed, so a
+	// creator can see what is assignable at all - and what they have actually
+	// assigned - without flying the map to find out.
+	int32 LinkCandidateCount() { return GLinkPick.bActive ? GLinkPick.Candidates.Num() : 0; }
+
+	FString LinkCandidateName(int32 i)
+	{
+		if (!GLinkPick.bActive || !GLinkPick.Candidates.IsValidIndex(i)) return FString();
+		AActor* A = GLinkPick.Candidates[i].Get();
+		if (!A) return FString();
+		FString Nm = A->GetActorLabel();
+		Nm.RemoveFromStart(TEXT("BF6_"));
+		return Nm;
+	}
+
+	// 0 free, 1 already assigned to this owner, 2 picked in this session.
+	int32 LinkCandidateState(int32 i)
+	{
+		if (!GLinkPick.bActive || !GLinkPick.CandState.IsValidIndex(i)) return 0;
+		return GLinkPick.CandState[i];
+	}
+
+	// SNAP THE VIEW TO ONE. Framed from the map's own overview angle and backed
+	// off by the object's size, so a lamp post and a capture zone both end up
+	// filling a sensible part of the screen rather than one being a dot and the
+	// other overshooting past it.
+	// SNAP THE VIEW ONTO WHAT IS SELECTED.
+	//
+	// Framed from the selection's own bounds so a bollard and a whole building
+	// both end up filling a sensible part of the screen - a fixed distance
+	// makes one a dot and overshoots past the other. The view ANGLE is kept:
+	// the creator chose where they are looking from, and a jump that also
+	// re-aims is disorienting when all they asked for was to be taken there.
+	// A VIEWPORT TO FLY, even when a menu has the focus.
+	//
+	// GCurrentLevelEditingViewportClient is whichever viewport the editor
+	// considers current, and a Slate popup taking focus can leave it null - so
+	// a "snap to this" clicked from inside a menu found no viewport and
+	// returned quietly, which is exactly the shape of a button that does
+	// nothing. Falling back to the first active level viewport gives it one.
+	static FLevelEditorViewportClient* BF6_ViewportToFly()
+	{
+		if (GCurrentLevelEditingViewportClient) return GCurrentLevelEditingViewportClient;
+		if (FLevelEditorModule* LE = FModuleManager::GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor")))
+			if (TSharedPtr<SLevelViewport> VP = LE->GetFirstActiveLevelViewport())
+				return &VP->GetLevelViewportClient();
+		return nullptr;
+	}
+
+	// Frame the view on a linked object WITHOUT selecting it.
+	//
+	// Selecting would be the obvious way and is wrong here: the attribute list
+	// is open on the object that OWNS the link, and changing the selection
+	// closes the list out from under the creator - they would lose the very
+	// panel they clicked from, to look at the thing it named.
+	bool FocusByLinkName(const FString& Name)
+	{
+		if (!GEditor || Name.IsEmpty()) return false;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return false;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)) continue;
+			FString Nm = It->GetActorLabel();
+			Nm.RemoveFromStart(TEXT("BF6_"));
+			if (Nm != Name) continue;
+			FLevelEditorViewportClient* VC = BF6_ViewportToFly();
+			if (!VC) return false;
+			FVector Org, Ext;
+			It->GetActorBounds(false, Org, Ext);
+			const double Span = FMath::Max3((double)Ext.X * 2.0, (double)Ext.Y * 2.0, 800.0);
+			FRotator Look = VC->GetViewRotation();
+			if (Look.Pitch > -10.f) Look.Pitch = -30.f;
+			VC->SetViewLocation(Org - Look.Vector() * (Span * 2.2));
+			VC->SetViewRotation(Look);
+			VC->Invalidate();
+			return true;
+		}
+		return false;
+	}
+
+	bool FocusSelection()
+	{
+		if (!GEditor) return false;
+		TArray<AActor*> Targets; SelectionTargets(Targets);
+		if (Targets.Num() == 0) return false;
+		FBox B(ForceInit);
+		for (AActor* A : Targets)
+		{
+			FVector Org, Ext;
+			A->GetActorBounds(false, Org, Ext);
+			B += FBox(Org - Ext, Org + Ext);
+		}
+		if (!B.IsValid) return false;
+		FLevelEditorViewportClient* VC = BF6_ViewportToFly();
+		if (!VC) return false;
+		const FVector C = B.GetCenter();
+		const double Span = FMath::Max3((double)B.GetSize().X, (double)B.GetSize().Y, 600.0);
+		FRotator Look = VC->GetViewRotation();
+		if (Look.Pitch > -10.f) Look.Pitch = -30.f;   // looking flat sees nothing of it
+		VC->SetViewLocation(C - Look.Vector() * (Span * 2.0));
+		VC->SetViewRotation(Look);
+		VC->Invalidate();
+		return true;
+	}
+
+	void FocusLinkCandidate(int32 i)
+	{
+		if (!GLinkPick.bActive || !GLinkPick.Candidates.IsValidIndex(i)) return;
+		AActor* A = GLinkPick.Candidates[i].Get();
+		if (!A) return;
+		FLevelEditorViewportClient* VC = BF6_ViewportToFly();
+		if (!VC) return;
+		FVector Org, Ext;
+		A->GetActorBounds(false, Org, Ext);
+		const double Span = FMath::Max3((double)Ext.X * 2.0, (double)Ext.Y * 2.0, 800.0);
+		const FRotator Look(-35.f, VC->GetViewRotation().Yaw, 0.f);
+		VC->SetViewLocation(Org - Look.Vector() * (Span * 2.2));
+		VC->SetViewRotation(Look);
+		VC->Invalidate();
+	}
+
 	void ToggleLinkCandidate(int32 Index)
 	{
 		if (!GEditor || !GLinkPick.Candidates.IsValidIndex(Index)) return;
@@ -7515,7 +9076,7 @@ namespace BF6Api
 
 	AActor* PlaceType(const FString& Type, const FVector& WorldPos)
 	{
-		if (!g_ss.bEditing) { Notify(TEXT("Open a custom map (a save) to place objects.")); return nullptr; }
+		if (!g_ss.bEditing) { BF6Api::RefuseReadOnly(TEXT("Objects can only be placed on a custom map. Name one and press Create, bottom right.")); return nullptr; }
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 
 		// volumes have no mesh - they're built, not loaded
@@ -7553,6 +9114,25 @@ namespace BF6Api
 		if (Mesh.IsEmpty()) { Notify(FString::Printf(TEXT("No SDK model for '%s'."), *Type)); return nullptr; }
 		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Place %s"), *Type)));
 		AActor* A = SpawnSdkModel(Mesh, Type, FTransform(WorldPos));
+		// A type that carries a WaypointPath is born WITH one. An AI_WaypointPath
+		// without points is an empty shell that exports a patrol route of
+		// nothing, and the SDK's own scene ships a default curve for the same
+		// reason. Three points ahead of the marker, open, ready to drag.
+		if (A && BF6_TypeHasWaypoints(Type))
+		{
+			TArray<FVector> Pts = {
+				WorldPos + FVector(0,     0, 0),
+				WorldPos + FVector(800,   0, 0),
+				WorldPos + FVector(1600, 500, 0) };
+			for (FVector& P : Pts)
+			{
+				FVector G;
+				if (GroundRay(P + FVector(0, 0, 2000), P - FVector(0, 0, 50000), nullptr, G)) P.Z = G.Z;
+			}
+			GVolumeLoops.Add(A, Pts);
+			BF6_WriteLoopTags(A);
+			RebuildVolumeWalls(A, Pts);
+		}
 		if (A && GEditor) { GEditor->SelectNone(false, true, false); GEditor->SelectActor(A, true, true); }
 		BF6_RecomputeBudget();
 		return A;
@@ -7785,6 +9365,7 @@ namespace BF6Api
 	// (block/link helpers live in the blocks section further down)
 	static FString BF6_LinkName(AActor* A);
 	static bool BF6_IsLinkProp(const FString& TypeName, const FString& PropName);
+	static int32 BF6_PruneDeadLinks();   // fwd: the fast delete prunes inside its own transaction
 	static void BF6_TagBlockInstance(const TArray<AActor*>& Actors, const FString& Name, const FVector& Anchor);
 
 	struct FBF6MultiUnit
@@ -7987,7 +9568,7 @@ namespace BF6Api
 	// for trees, rocks, and clutter. A spacing floor derived from the object's
 	// own footprint stops ugly clumping without adding a knob.
 	void CollectPlacedIn(const FBox2D& Area, TArray<AActor*>& Out);            // fwd (ray section)
-	bool GroundRay(const FVector& From, const FVector& To, const TArray<AActor*>* Placed, FVector& OutHit, FVector* OutNormal = nullptr);
+	bool GroundRay(const FVector& From, const FVector& To, const TArray<AActor*>* Placed, FVector& OutHit, FVector* OutNormal);   // default is on the earlier declaration
 
 	int32 MultiplyScatter(int32 Count, double RadiusMetres, bool bVarySize)
 	{
@@ -8109,6 +9690,66 @@ namespace BF6Api
 
 	// Godot's 'reparent to new node': the selection keeps its world transforms and
 	// moves as one from here on.
+	// ---- moving things into an EXISTING node ------------------------------
+	//
+	// Unreal's actor menu offers "Move To" a FOLDER, which is the wrong idea in
+	// this tool: folders are an editor convenience that Portal knows nothing
+	// about, and the thing that actually parents objects here - and that does
+	// reach the export - is a node. Offering both would be offering a creator a
+	// choice between the real one and a decoy.
+	static void BF6_CollectNodes(TArray<AActor*>& Out)
+	{
+		Out.Reset();
+		if (!GEditor) return;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return;
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (It->Tags.Contains(kGroupTag)) Out.Add(*It);
+		Out.Sort([](const AActor& A, const AActor& B)
+			{ return A.GetActorLabel() < B.GetActorLabel(); });
+	}
+
+	int32 TreeNodeCount()
+	{
+		TArray<AActor*> N; BF6_CollectNodes(N); return N.Num();
+	}
+
+	FString TreeNodeName(int32 i)
+	{
+		TArray<AActor*> N; BF6_CollectNodes(N);
+		if (!N.IsValidIndex(i)) return FString();
+		FString Nm = N[i]->GetActorLabel();
+		Nm.RemoveFromStart(TEXT("BF6_"));
+		return Nm;
+	}
+
+	int32 AttachSelectionToNode(int32 i)
+	{
+		if (!GEditor) return 0;
+		TArray<AActor*> Nodes; BF6_CollectNodes(Nodes);
+		if (!Nodes.IsValidIndex(i)) return 0;
+		AActor* Node = Nodes[i];
+		TArray<AActor*> Sel; SelectionTargets(Sel);
+		FScopedTransaction Tx(FText::FromString(TEXT("Move to node")));
+		int32 n = 0;
+		for (AActor* A : Sel)
+		{
+			if (!A || A == Node) continue;
+			// A node cannot be moved under something hanging off itself - that
+			// makes a cycle, and the tree walk that builds the export would not
+			// come back from it.
+			bool bCycle = false;
+			for (AActor* Up = Node; Up; Up = Up->GetAttachParentActor())
+				if (Up == A) { bCycle = true; break; }
+			if (bCycle) continue;
+			A->Modify();
+			A->AttachToActor(Node, FAttachmentTransformRules::KeepWorldTransform);
+			n++;
+		}
+		if (n > 0) RefreshSceneTree();
+		return n;
+	}
+
 	int32 GroupSelectionUnderNode()
 	{
 		if (!GEditor || !IsEditing()) return 0;
@@ -8523,17 +10164,54 @@ namespace BF6Api
 	// "Pilot" flies the camera directly - the most natural way to aim it.
 	// The component is transient + editor-only, aligned to the TYPE's true
 	// view direction, so what Unreal shows is exactly what the game renders.
-	static void BF6_EnsureCameraComponent(AActor* Cam)
+	// PUT UNREAL'S CAMERA WHERE OUR PREVIEW SAYS THE CAMERA IS.
+	//
+	// These were two different answers to the same question. The preview asks
+	// AttributeCameraView, which offsets by CameraOffsetPosition and aims at
+	// the object - the values the object actually ships with. The component was
+	// attached at the actor ROOT with a relative rotation and nothing else, so
+	// on an HQ it sat on the floor looking sideways while the preview beside it
+	// showed the real shot. Same object, two cameras, and only one of them was
+	// reading the properties.
+	//
+	// An object with no camera attributes (a plain Godot Camera3D) keeps the
+	// old treatment: there is nothing to read, and its own transform IS the
+	// camera.
+	static void BF6_SyncCameraComponent(AActor* Cam)
 	{
-		if (!Cam || Cam->FindComponentByClass<UCameraComponent>()) return;
-		UCameraComponent* C = NewObject<UCameraComponent>(Cam, TEXT("BF6CamView"));
-		C->SetFlags(RF_Transient);
-		C->bIsEditorOnly = true;
-		C->SetupAttachment(Cam->GetRootComponent());
-		C->RegisterComponent();
+		if (!Cam) return;
+		UCameraComponent* C = Cam->FindComponentByClass<UCameraComponent>();
+		if (!C) return;
+		FVector Loc; FRotator Rot; float Fov = 75.f;
+		if (AttributeCameraView(Cam, Loc, Rot, Fov))
+		{
+			// World, not relative: the offset is authored in world terms and
+			// the actor may be rotated.
+			C->SetWorldLocationAndRotation(Loc, Rot);
+			C->SetFieldOfView(FMath::Clamp(Fov, 5.f, 170.f));
+			return;
+		}
+		C->SetRelativeLocation(FVector::ZeroVector);
 		C->SetRelativeRotation(FRotator(0.f, BF6_CamFacesPlusY(Cam) ? 90.f : -90.f, 0.f));
 		C->SetFieldOfView(75.f);   // Godot Camera3D default, same as the PIP
-		C->SetConstraintAspectRatio(false);
+	}
+
+	static void BF6_EnsureCameraComponent(AActor* Cam)
+	{
+		if (!Cam) return;
+		if (!Cam->FindComponentByClass<UCameraComponent>())
+		{
+			UCameraComponent* C = NewObject<UCameraComponent>(Cam, TEXT("BF6CamView"));
+			C->SetFlags(RF_Transient);
+			C->bIsEditorOnly = true;
+			C->SetupAttachment(Cam->GetRootComponent());
+			C->RegisterComponent();
+			C->SetConstraintAspectRatio(false);
+		}
+		// Every time, not just on creation: the offset and look angle are
+		// attributes a creator edits, and a camera that only reads them once
+		// drifts away from its own preview the moment they do.
+		BF6_SyncCameraComponent(Cam);
 	}
 
 	AActor* CameraPreviewTarget() { return GCamTarget.Get(); }
@@ -8548,7 +10226,7 @@ namespace BF6Api
 					if (AActor* A = Cast<AActor>(Sel->GetSelectedObject(i)))
 						if (BF6_IsCameraActor(A) || BF6_HasAttributeCamera(A)) { Cam = A; break; }
 		GCamTarget = Cam;
-		if (Cam) BF6_EnsureCameraComponent(Cam);
+		if (Cam) BF6_EnsureCameraComponent(Cam);   // also re-syncs it from the attributes
 		if (!Cam)
 		{
 			// nothing selected: the capture rig goes away (it costs GPU)
@@ -8675,12 +10353,38 @@ namespace BF6Api
 	// REGENERATES as the sliders move. A fixed seed keeps the pattern stable
 	// while dragging; New pattern re-rolls it. Apply rebuilds the exact
 	// preview inside one transaction (single Ctrl+Z), Esc removes it all.
+	// ONE ENTRY IN THE SCATTER POOL.
+	//
+	// A library source needs no template actor in the world: duplicating a
+	// placed object already resolves down to a mesh name and a type and calls
+	// SpawnSdkModel, so the pool can carry those two directly. Spawning hidden
+	// templates to clone from would put objects in the level that the creator
+	// never placed and that a mid-session save would capture.
+	//
+	// Size is the object's world bounds, learned from the first copy actually
+	// spawned. It only feeds the minimum-spacing rule, so being unknown for one
+	// regeneration costs a slightly tight first layout and nothing else.
+	struct FBF6ScatterSource
+	{
+		FString Mesh;
+		FString Type;
+		FString Label;                        // what the panel lists it as
+		FVector Size = FVector(100, 100, 100);
+		bool    bSized = false;
+	};
+
 	struct FBF6ScatterLive
 	{
 		bool bActive = false;
 		FBF6MultiUnit U;
+		// THE POOL, when the scatter came from the object library rather than
+		// from a selection. Empty means the old behaviour: scatter copies of
+		// whatever was selected. Non-empty means every copy draws a source
+		// from here, so one region can mix rocks, bushes and debris.
+		TArray<FBF6ScatterSource> Pool;
 		TArray<TWeakObjectPtr<AActor>> Preview;
-		struct FTarget { FVector P; double Yaw = 0; double Tx = 0; double Ty = 0; double Scl = 1; };
+		struct FTarget { FVector P; double Yaw = 0; double Tx = 0; double Ty = 0; double Scl = 1;
+		                 int32 Pool = INDEX_NONE; };
 		TArray<FTarget> Targets;              // the preview's exact recipe
 		// per-copy variation limits: every scattered copy draws its OWN
 		// random value inside these ranges
@@ -8694,11 +10398,49 @@ namespace BF6Api
 		// region and grounding
 		int32 Shape = 0;                      // 0 circle, 1 square, 2 ring, 3 drawn outline
 		bool bFollowTerrain = true;           // off = copies keep the original's height
+		// ONLY LAND ON THE GROUND. Without it a scatter dropped over a street
+		// puts bushes on car roofs and window ledges, because the grounding
+		// trace takes the first thing it hits. On means a copy whose trace
+		// lands on anything but the map's terrain is skipped rather than
+		// placed, so the count is a budget and not a promise.
+		bool bTerrainOnly = false;
+		// WHERE THIS SESSION CAME FROM. A library scatter shows the pool
+		// section and asks for objects; a selection scatter never should, and
+		// "the pool is empty" cannot tell them apart at the moment one starts.
+		bool bFromLibrary = false;
+		// Whether anybody has said WHERE yet. A selection scatter is centred on
+		// its selection from the first frame; a library one is centred nowhere
+		// until the creator clicks the ground, and laying it out at the world
+		// origin in the meantime drops a ring of objects under the map.
+		bool bHasCenter = false;
 		bool bDrawing = false;                // clicking out a custom outline right now
 		TArray<FVector> Poly;                 // the drawn outline (world, >= 3 points)
+		// PAINT (shape 4). The brush accumulates rather than describing a
+		// region, so the STROKES are the record: everything visible - the area
+		// on the ground and the copies standing in it - is derived from them
+		// and can be rebuilt from them. That is what makes a stroke undoable
+		// and the area editable right up until Enter or Escape.
+		struct FStroke
+		{
+			TArray<FVector> Stamps;
+			float RadiusCm = 0.f;             // the brush width AT THE TIME
+		};
+		bool bPainting = false;               // left button down and travelling
+		TArray<FStroke> Strokes;
+		// WHAT HAS ALREADY BEEN FILLED, so a stroke in progress only has to
+		// cover the ground it just gained. Rebuilding every copy ten times a
+		// second is what made painting crawl: the cost is not the sampling, it
+		// is destroying and respawning hundreds of procedural-mesh actors.
+		// WHAT EACH PREVIEW ACTOR IS, parallel to Preview. Reuse has to hand a
+		// target an actor of the SAME source: a bush standing in for a rock
+		// would be quietly wrong in a way that survives all the way to Apply.
+		TArray<int32> PreviewKind;
+		TSet<int64> FilledCells;
+		double      FillDensity = 0.0;        // copies per square cm, held during a stroke
 	};
 	static FBF6ScatterLive GScat;
 	static int32 GScatSession = 0;   // bumps per session so the panel knows to reset
+	static double GScatPaintDrawn = 0.0;   // last time the painted area was rebuilt
 	// Ctrl edge preview on the drawn outline (mirrors the zone-point flow)
 	static int32 GScatEdgeSeg = INDEX_NONE;
 	static FVector GScatEdgeWorld = FVector::ZeroVector;
@@ -8735,6 +10477,7 @@ namespace BF6Api
 			}
 		for (AGroupActor* G : Roots) if (IsValid(G)) W->EditorDestroyActor(G, false);
 		GScat.Preview.Reset();
+		GScat.PreviewKind.Reset();   // parallel to Preview; they must never drift
 	}
 
 	// ---- the region preview: a translucent draped shape + corner dots ----
@@ -8770,10 +10513,55 @@ namespace BF6Api
 		return RefZ;
 	}
 
+	// THE PAINTED AREA, as cells. One definition shared by the thing that DRAWS
+	// the area and the thing that FILLS it, because those two disagreeing is
+	// the bug that would be hardest to see: copies landing slightly outside the
+	// region they are supposed to be inside, or a strip of region with nothing
+	// in it.
+	//
+	// A grid rather than the raw discs. A stroke lays hundreds of overlapping
+	// discs, and both consumers want the UNION: drawn as discs the overlaps
+	// darken, and sampled as discs the density follows how slowly the creator
+	// moved rather than the area they painted.
+	static double BF6_PaintCoverage(TArray<FIntPoint>& OutCells)
+	{
+		OutCells.Reset();
+		float MaxR = 0.f;
+		for (const FBF6ScatterLive::FStroke& St : GScat.Strokes) MaxR = FMath::Max(MaxR, St.RadiusCm);
+		if (MaxR <= 0.f) return 0.0;
+		const double Cell = FMath::Clamp((double)MaxR / 5.0, 120.0, 900.0);
+
+		TSet<int64> Seen;
+		for (const FBF6ScatterLive::FStroke& St : GScat.Strokes)
+		{
+			const double Rr = FMath::Max((double)St.RadiusCm, 50.0);
+			const int32 Span = FMath::Clamp((int32)FMath::CeilToInt(Rr / Cell), 1, 64);
+			for (const FVector& Pt : St.Stamps)
+			{
+				const int32 cx = (int32)FMath::FloorToDouble(Pt.X / Cell);
+				const int32 cy = (int32)FMath::FloorToDouble(Pt.Y / Cell);
+				for (int32 dy = -Span; dy <= Span; dy++)
+					for (int32 dx = -Span; dx <= Span; dx++)
+					{
+						// The cell's CENTRE against the brush, so the edge of
+						// the area follows the circle rather than the grid it
+						// was rasterised on.
+						const double px = (cx + dx + 0.5) * Cell;
+						const double py = (cy + dy + 0.5) * Cell;
+						if (FMath::Square(px - Pt.X) + FMath::Square(py - Pt.Y) > Rr * Rr) continue;
+						const int64 Key = ((int64)(cx + dx) << 32) ^ (int64)(uint32)(cy + dy);
+						if (Seen.Contains(Key)) continue;
+						Seen.Add(Key);
+						OutCells.Add(FIntPoint(cx + dx, cy + dy));
+					}
+			}
+		}
+		return Cell;
+	}
+
 	static void BF6_ScatterRegionRebuild()
 	{
-		BF6_ScatterRegionDestroy();
-		if (!GScat.bActive || !GEditor) return;
+		if (!GScat.bActive || !GEditor) { BF6_ScatterRegionDestroy(); return; }
 		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
 		FCollisionQueryParams QP(FName(TEXT("BF6ScatterRegion")), true);
 		for (AActor* M : GScat.U.Members) if (IsValid(M)) QP.AddIgnoredActor(M);
@@ -8799,7 +10587,25 @@ namespace BF6Api
 			T.Append({ a, b, c2, a, c2, d, a, c2, b, a, d, c2 });   // both windings
 		};
 		const bool bDrawn = GScat.Shape == 3 && GScat.Poly.Num() >= 3;
-		if (bDrawn)
+
+		// The painted area, from the one definition of it that the filler also
+		// uses - see BF6_PaintCoverage.
+		if (GScat.Shape == 4)
+		{
+			TArray<FIntPoint> Cells;
+			const double Cell = BF6_PaintCoverage(Cells);
+			for (const FIntPoint& Cp : Cells)
+			{
+				const double X0 = Cp.X * Cell, Y0 = Cp.Y * Cell;
+				// A hair inside the cell, so neighbouring quads do not co-plane
+				// along a shared edge and shimmer against each other.
+				const double X1 = X0 + Cell * 0.96, Y1 = Y0 + Cell * 0.96;
+				const int32 Base = V.Num();
+				Vert(X0, Y0, C.Z); Vert(X1, Y0, C.Z); Vert(X1, Y1, C.Z); Vert(X0, Y1, C.Z);
+				Quad(Base, Base + 1, Base + 2, Base + 3);
+			}
+		}
+		else if (bDrawn)
 		{
 			// hatch strips: scanlines clipped to the outline, so concave
 			// outlines fill correctly and the area reads as a hatch
@@ -8881,26 +10687,85 @@ namespace BF6Api
 				}
 		}
 		if (V.Num() == 0) return;
-		AActor* A = W->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-		if (!A) return;
-		UProceduralMeshComponent* M = MakeProcMesh(A, TEXT("ScatterRegion"));
+		// THE REGION ACTOR IS REUSED, not respawned.
+		//
+		// While a brush stroke is running this rebuilds ten times a second, and
+		// spawning an actor plus registering a component that often is real
+		// cost for no gain - the geometry changes, the actor never does. Only
+		// the mesh section is replaced.
+		AActor* A = GScatRegion.Get();
+		UProceduralMeshComponent* M = nullptr;
+		if (A)
+		{
+			M = Cast<UProceduralMeshComponent>(A->GetRootComponent());
+		}
+		else
+		{
+			A = W->SpawnActor<AActor>(AActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+			if (!A) return;
+			M = MakeProcMesh(A, TEXT("ScatterRegion"));
+			if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
+				M->SetMaterial(0, Mat);
+			M->bSelectable = false;   // clicks pass straight through to the map
+			A->SetActorLabel(TEXT("ScatterRegion"));
+			A->SetFlags(RF_Transient);
+			GScatRegion = A;
+		}
+		if (!M) return;
 		const TArray<FVector> NN; const TArray<FVector2D> UV; const TArray<FProcMeshTangent> NT;
+		M->ClearAllMeshSections();
 		M->CreateMeshSection_LinearColor(0, V, T, NN, UV, VC, NT, false);   // no collision: never blocks traces
-		if (UMaterialInterface* Mat = BF6_Material(TEXT("M_Volume")))
-			M->SetMaterial(0, Mat);
-		M->bSelectable = false;   // clicks pass straight through to the map
-		A->SetActorLabel(TEXT("ScatterRegion"));
-		A->SetFlags(RF_Transient);
-		GScatRegion = A;
 	}
 
 	static void BF6_ScatterRegenerate()
 	{
 		if (!GScat.bActive || !GEditor) return;
 		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
-		for (AActor* M : GScat.U.Members) if (!IsValid(M)) { GScat.bActive = false; BF6_ScatterDestroyPreview(); BF6_ScatterRegionDestroy(); return; }
-		BF6_ScatterDestroyPreview();
+		// A SELECTION-BASED SCATTER DIES WITH ITS SOURCE; a pool one has no
+		// source in the world to lose, so the same check would end the session
+		// the moment it started.
+		if (GScat.Pool.Num() == 0)
+			for (AActor* M : GScat.U.Members)
+				if (!IsValid(M)) { GScat.bActive = false; BF6_ScatterDestroyPreview(); BF6_ScatterRegionDestroy(); return; }
+		// PAINTING IS A REGION, NOT A DEPOSIT. An earlier cut of this had the
+		// brush place copies as it travelled and switched regeneration off, so
+		// the sliders only reached the NEXT stamp. That is the wrong contract:
+		// the whole reason the painted area is drawn on the ground is so the
+		// sliders can re-lay what is inside it, live, the way they do for every
+		// other shape. Different settings for a different patch means confirming
+		// this one and starting another.
+		//
+		// It also means the terrain filter and New pattern work here for free,
+		// because they are simply inputs to the same fill.
+		if (GScat.Shape == 4 && GScat.Strokes.Num() == 0)
+		{ BF6_ScatterDestroyPreview(); BF6_ScatterRegionDestroy(); GScat.Targets.Reset(); return; }
+
+		// NOTHING TO LAY OUT YET is a normal state for a library scatter, not a
+		// failure: the pool may still be empty, or the creator may not have
+		// clicked a spot. Clearing and returning leaves the panel up and asking.
+		if (GScat.bFromLibrary && GScat.Pool.Num() == 0)
+		{ BF6_ScatterDestroyPreview(); BF6_ScatterRegionDestroy(); GScat.Targets.Reset(); return; }
+		if (GScat.bFromLibrary && !GScat.bHasCenter && GScat.Shape != 4
+			&& !(GScat.Shape == 3 && GScat.Poly.Num() >= 3))
+		{ BF6_ScatterDestroyPreview(); BF6_ScatterRegionDestroy(); GScat.Targets.Reset(); return; }
+
+		// THE PREVIEW SURVIVES SAMPLING in pool mode - the reconcile pass below
+		// is what decides which of these actors are still wanted. Destroying
+		// them here would throw away the very thing being reused.
+		if (GScat.Pool.Num() == 0) BF6_ScatterDestroyPreview();
 		GScat.Targets.Reset();
+		// A FULL REFILL OWNS THE PAINTING AGAIN. Whatever the incremental pass
+		// did during the stroke is gone, so the record of what it filled has to
+		// go with it or the next stroke would skip ground that is now empty.
+		GScat.FilledCells.Reset();
+		if (GScat.Shape == 4)
+		{
+			TArray<FIntPoint> Cs;
+			const double Cl = BF6_PaintCoverage(Cs);
+			if (Cl > 0.0)
+				for (const FIntPoint& Cp : Cs)
+					GScat.FilledCells.Add(((int64)Cp.X << 32) ^ (int64)(uint32)Cp.Y);
+		}
 		// 1000 cap: the typed-value readout can stretch COUNT past the
 		// slider's default 200 top, but preview churn respawns everything per
 		// slider move, so a hard sanity ceiling stays
@@ -8924,8 +10789,35 @@ namespace BF6Api
 			}
 			Area = FMath::Max(FMath::Abs(A2) * 0.5, 10000.0);
 		}
+		// The painted area is however many cells it covers. Measuring the union
+		// this way rather than summing the discs matters: a stroke that doubles
+		// back over itself covers no more ground the second time.
+		TArray<FIntPoint> PaintCells;
+		double PaintCell = 0.0;
+		if (GScat.Shape == 4)
+		{
+			PaintCell = BF6_PaintCoverage(PaintCells);
+			Area = FMath::Max((double)PaintCells.Num() * PaintCell * PaintCell, 10000.0);
+			BB = FBox2D(ForceInit);
+			for (const FIntPoint& Cp : PaintCells)
+			{
+				BB += FVector2D(Cp.X * PaintCell, Cp.Y * PaintCell);
+				BB += FVector2D((Cp.X + 1) * PaintCell, (Cp.Y + 1) * PaintCell);
+			}
+		}
 		const double FitDist = FMath::Sqrt(Area / ((double)Count * 2.6));
-		const double MinDist = FMath::Clamp(FMath::Min(FMath::Max(GScat.U.Size.X, GScat.U.Size.Y) * 0.7, FitDist), 50.0, FMath::Max(R, 100.0));
+		// HOW CLOSE TWO COPIES MAY LAND, from the widest thing being scattered.
+		// With a pool that is the widest SOURCE, not the selection - which for
+		// a library scatter does not exist at all, and read as zero would let
+		// everything pile into the same spot.
+		double UnitW = FMath::Max(GScat.U.Size.X, GScat.U.Size.Y);
+		if (GScat.Pool.Num() > 0)
+		{
+			UnitW = 0.0;
+			for (const FBF6ScatterSource& Src : GScat.Pool)
+				UnitW = FMath::Max(UnitW, FMath::Max(Src.Size.X, Src.Size.Y));
+		}
+		const double MinDist = FMath::Clamp(FMath::Min(UnitW * 0.7, FitDist), 50.0, FMath::Max(R, 100.0));
 		// nearest point on the drawn outline, which carries the height it was
 		// drawn at. Strided: the outline is recorded while dragging so it is
 		// dense, and 64 samples of it place a point as well as all of them.
@@ -8945,7 +10837,10 @@ namespace BF6Api
 		FCollisionQueryParams QP(FName(TEXT("BF6ScatterLive")), true);
 		for (AActor* M : GScat.U.Members) QP.AddIgnoredActor(M);
 		TArray<FVector> Placed;
-		Placed.Add(GScat.U.Center);
+		// The centre is only occupied when something is already standing there:
+		// a selection scatter keeps its original, a library one has none and
+		// reserving the spot would leave a bare patch in the middle.
+		if (GScat.Pool.Num() == 0) Placed.Add(GScat.U.Center);
 		TArray<AActor*> NewOnes;
 		// The map's scenery is always in play; this is what the creator has
 		// built inside the area, so a scatter can land on a roof or a walkway
@@ -8971,7 +10866,33 @@ namespace BF6Api
 			const double Scl = 1.0 + (Rng.FRand() * 2.0 - 1.0) * GScat.Vary;
 			const double Elev = (Rng.FRand() * 2.0 - 1.0) * GScat.ElevM * 100.0;
 			FVector P = GScat.U.Center;
-			if (bDrawn)
+			if (GScat.Shape == 4)
+			{
+				// UNIFORM OVER THE PAINTED AREA. Sampling a random STAMP and
+				// then a point in its disc would be easier and wrong: a stroke
+				// lays stamps wherever the cursor slowed down, so density would
+				// follow how fast the creator moved rather than what they
+				// painted, and doubling back would double the objects.
+				if (PaintCells.Num() == 0) break;
+				const FIntPoint& Cp = PaintCells[Rng.RandRange(0, PaintCells.Num() - 1)];
+				P.X = (Cp.X + Rng.FRand()) * PaintCell;
+				P.Y = (Cp.Y + Rng.FRand()) * PaintCell;
+				// The stroke was painted ON the surface, so its own height is
+				// the sensible place to start the ground ray from - the same
+				// reason the drawn outline carries its height across.
+				double Best = TNumericLimits<double>::Max();
+				for (const FBF6ScatterLive::FStroke& St : GScat.Strokes)
+				{
+					const int32 Step = FMath::Max(1, St.Stamps.Num() / 32);
+					for (int32 si = 0; si < St.Stamps.Num(); si += Step)
+					{
+						const double dd = FMath::Square(St.Stamps[si].X - P.X)
+						                + FMath::Square(St.Stamps[si].Y - P.Y);
+						if (dd < Best) { Best = dd; P.Z = St.Stamps[si].Z; }
+					}
+				}
+			}
+			else if (bDrawn)
 			{
 				P.X = FMath::Lerp((double)BB.Min.X, (double)BB.Max.X, u);
 				P.Y = FMath::Lerp((double)BB.Min.Y, (double)BB.Max.Y, v);
@@ -9008,7 +10929,17 @@ namespace BF6Api
 			for (const FVector& Q : Placed)
 				if (FVector::DistSquaredXY(P, Q) < MinDist * MinDist) { bClose = true; break; }
 			if (bClose) continue;
-			if (GScat.bFollowTerrain)
+			if (GScat.bTerrainOnly)
+			{
+				// A MISS IS A SKIP, not a fallback. The point of the filter is
+				// that this copy would have landed on something that is not the
+				// ground, and dropping it back to the ordinary trace would put
+				// it on exactly the roof the creator was trying to avoid.
+				FVector Gnd;
+				if (!BF6_TerrainRay(P + FVector(0, 0, 5000), P - FVector(0, 0, 50000), Gnd)) continue;
+				P.Z = Gnd.Z;
+			}
+			else if (GScat.bFollowTerrain)
 			{
 				FVector Gnd;
 				if (GroundRay(P + FVector(0, 0, 500), P - FVector(0, 0, 50000), &Nearby, Gnd))
@@ -9018,17 +10949,186 @@ namespace BF6Api
 			}
 			else P.Z = GScat.U.Center.Z;
 			P.Z += Elev;
-			if (BF6_SpawnUnitCopy(GScat.U, P, Yaw, Scl, QP, NewOnes, Tx, Ty) > 0)
+
+			int32 Made = 0;
+			int32 PoolPick = INDEX_NONE;
+			if (GScat.Pool.Num() > 0)
+			{
+				// WHICH SOURCE THIS COPY IS, drawn from the same stream as its
+				// rotation and size so a given seed always lays out the same
+				// mix - re-rolling the pattern re-rolls which object goes
+				// where, and nudging a slider does not.
+				// NOTHING IS SPAWNED HERE. The layout is decided first and
+				// built afterwards, so the pass below can hand a target an
+				// actor that already exists instead of making a new one. Moving
+				// a static mesh is nearly free; creating one is not, and a
+				// slider drag was paying for a few hundred of them eight times
+				// a second when the only thing that changed was where they sit.
+				PoolPick = Rng.RandRange(0, GScat.Pool.Num() - 1);
+				Made = 1;
+			}
+			else Made = BF6_SpawnUnitCopy(GScat.U, P, Yaw, Scl, QP, NewOnes, Tx, Ty);
+
+			if (Made > 0)
 			{
 				Placed.Add(P);
 				FBF6ScatterLive::FTarget T; T.P = P; T.Yaw = Yaw; T.Tx = Tx; T.Ty = Ty; T.Scl = Scl;
+				T.Pool = PoolPick;
 				GScat.Targets.Add(T);
 				n++;
 			}
 		}
-		for (AActor* A : NewOnes) GScat.Preview.Add(A);
+		if (GScat.Pool.Num() > 0)
+		{
+			// ---- RECONCILE: move what exists, make only the difference ----
+			//
+			// The old pass destroyed every copy and spawned the whole set again
+			// on any change at all. For ROTATION, SIZE, WOBBLE, ELEVATION and
+			// New pattern nothing about WHICH objects exist changes - only
+			// where they sit - so all of that work bought nothing. This is the
+			// same insight as the fast delete: do not pay to recreate something
+			// you already have.
+			//
+			// Buckets by source, because a target must be handed an actor of
+			// its own kind. Anything left over at the end is genuinely surplus.
+			TMap<int32, TArray<AActor*>> Spare;
+			for (int32 i = 0; i < GScat.Preview.Num(); i++)
+				if (AActor* Old = GScat.Preview[i].Get())
+					Spare.FindOrAdd(GScat.PreviewKind.IsValidIndex(i) ? GScat.PreviewKind[i] : INDEX_NONE).Add(Old);
+
+			TArray<TWeakObjectPtr<AActor>> Keep;
+			TArray<int32> KeepKind;
+			Keep.Reserve(GScat.Targets.Num());
+			KeepKind.Reserve(GScat.Targets.Num());
+			int32 Reused = 0, Spawned = 0;
+
+			for (int32 ti = 0; ti < GScat.Targets.Num(); ti++)
+			{
+				const FBF6ScatterLive::FTarget& T = GScat.Targets[ti];
+				if (!GScat.Pool.IsValidIndex(T.Pool)) continue;
+				FBF6ScatterSource& Src = GScat.Pool[T.Pool];
+				const FQuat RotQ = FQuat(FVector::UpVector, FMath::DegreesToRadians(T.Yaw))
+					* FQuat(FVector::ForwardVector, FMath::DegreesToRadians(T.Tx))
+					* FQuat(FVector::RightVector, FMath::DegreesToRadians(T.Ty));
+				const FTransform Xf(RotQ, T.P, FVector(T.Scl));
+
+				AActor* A = nullptr;
+				if (TArray<AActor*>* Bucket = Spare.Find(T.Pool))
+					if (Bucket->Num() > 0) { A = Bucket->Pop(EAllowShrinking::No); A->SetActorTransform(Xf); Reused++; }
+				if (!A)
+				{
+					A = SpawnSdkModel(Src.Mesh, Src.Type, Xf);
+					if (!A) continue;
+					Spawned++;
+				}
+				// The bounds are only knowable once something exists, and they
+				// feed the spacing rule for the NEXT regeneration.
+				if (!Src.bSized)
+				{
+					FVector Org, Ext;
+					A->GetActorBounds(false, Org, Ext);
+					if (!Ext.IsNearlyZero()) { Src.Size = Ext * 2.0; Src.bSized = true; }
+				}
+				Keep.Add(A);
+				KeepKind.Add(T.Pool);
+			}
+
+			// Whatever no target claimed. Sections emptied first, for the same
+			// reason the fast delete does it: a procedural mesh serialises its
+			// whole vertex payload if it goes into a transaction.
+			for (const TPair<int32, TArray<AActor*>>& Kv : Spare)
+				for (AActor* Old : Kv.Value)
+					if (IsValid(Old))
+					{
+						if (UProceduralMeshComponent* Pm = Cast<UProceduralMeshComponent>(Old->GetRootComponent()))
+							Pm->ClearAllMeshSections();
+						W->EditorDestroyActor(Old, false);
+					}
+
+			GScat.Preview = MoveTemp(Keep);
+			GScat.PreviewKind = MoveTemp(KeepKind);
+		}
+		else
+		{
+			for (AActor* A : NewOnes) GScat.Preview.Add(A);
+			GScat.PreviewKind.Init(INDEX_NONE, GScat.Preview.Num());
+		}
 		BF6_ScatterRegionRebuild();
 		BF6_RecomputeBudget();
+	}
+
+	// START A SCATTER WITH NOTHING SELECTED.
+	//
+	// The old flow was select-then-scatter, which reads backwards for the thing
+	// people actually want: a bed of mixed vegetation. That starts from "what
+	// shall I strew", not from an object already standing in the level, and it
+	// meant placing a bush by hand first purely to have something to scatter.
+	//
+	// A session opened this way starts with an empty pool. It is live
+	// immediately so the panel can dock and ask for objects.
+	bool BeginScatterFromLibrary()
+	{
+		if (GScat.bActive) return true;
+		GScat = FBF6ScatterLive();
+		GScat.bActive = true;
+		GScat.bTerrainOnly = true;   // the common case for a library scatter
+		GScat.bFromLibrary = true;
+		GScatSession++;
+		GScatPolyUndo.Reset();
+		GScatPolyRedo.Reset();
+		// No regenerate yet: with no sources there is nothing to lay out, and
+		// the panel says so rather than showing an empty region.
+		return true;
+	}
+
+	int32 ScatterPoolCount() { return GScat.bActive ? GScat.Pool.Num() : 0; }
+
+	bool IsScatterFromLibrary() { return GScat.bActive && GScat.bFromLibrary; }
+
+	FString ScatterPoolName(int32 i)
+	{
+		return (GScat.bActive && GScat.Pool.IsValidIndex(i)) ? GScat.Pool[i].Label : FString();
+	}
+
+	void AddScatterObject(const FString& Mesh, const FString& Type, const FString& Label)
+	{
+		if (!GScat.bActive || Mesh.IsEmpty()) return;
+		for (const FBF6ScatterSource& S : GScat.Pool)
+			if (S.Mesh == Mesh && S.Type == Type) return;   // already in the mix
+		FBF6ScatterSource Src;
+		Src.Mesh = Mesh;
+		Src.Type = Type;
+		Src.Label = Label.IsEmpty() ? (Type.IsEmpty() ? Mesh : Type) : Label;
+		GScat.Pool.Add(Src);
+		BF6_ScatterRegenerate();
+	}
+
+	void RemoveScatterObject(int32 i)
+	{
+		if (!GScat.bActive || !GScat.Pool.IsValidIndex(i)) return;
+		GScat.Pool.RemoveAt(i);
+		BF6_ScatterRegenerate();
+	}
+
+	bool GetScatterTerrainOnly() { return GScat.bTerrainOnly; }
+
+	void SetScatterTerrainOnly(bool bOn)
+	{
+		if (!GScat.bActive || GScat.bTerrainOnly == bOn) return;
+		GScat.bTerrainOnly = bOn;
+		BF6_ScatterRegenerate();
+	}
+
+	// Where a click while a library scatter is live should drop the region.
+	// Selection-based scatter centres on the selection; this one has none, so
+	// the creator says where by clicking.
+	void SetScatterCenter(const FVector& W)
+	{
+		if (!GScat.bActive) return;
+		GScat.U.Center = W;
+		GScat.U.Size = FVector(100, 100, 100);
+		GScat.bHasCenter = true;
+		BF6_ScatterRegenerate();
 	}
 
 	bool BeginScatterLive()
@@ -9061,8 +11161,24 @@ namespace BF6Api
 	void SetScatterShape(int32 Shape)
 	{
 		if (!GScat.bActive || GScat.Shape == Shape) return;
+		const int32 Was = GScat.Shape;
 		GScat.Shape = Shape;
 		if (Shape != 3) GScat.bDrawing = false;
+		if (Shape == 4)
+		{
+			GScat.Strokes.Reset();
+			GScat.FilledCells.Reset();
+			// A BLANK CANVAS. Carrying the circle's layout into the brush would
+			// mean the first stroke starts on top of a scatter nobody asked
+			// for, and there is no way to tell the two apart afterwards.
+			BF6_ScatterDestroyPreview();
+			BF6_ScatterRegionDestroy();
+			GScat.Targets.Reset();
+			GScat.bPainting = false;
+			BF6_RecomputeBudget();
+			return;
+		}
+		if (Was == 4) { GScat.Strokes.Reset(); GScat.FilledCells.Reset(); GScat.bPainting = false; }
 		BF6_ScatterRegenerate();
 	}
 	int32 GetScatterShape() { return GScat.Shape; }
@@ -9233,6 +11349,261 @@ namespace BF6Api
 		BF6_ScatterRegenerate();
 	}
 
+	// ---- PAINT (shape 4) --------------------------------------------------
+	//
+	// The brush paints an AREA, and the area is filled exactly like any other
+	// shape. That is the whole design, and an earlier cut of it got this wrong:
+	// it had the brush place copies as it travelled and switched regeneration
+	// off, which meant the sliders only ever reached the next stamp. The reason
+	// to draw the painted area on the ground is so the sliders can re-lay what
+	// is inside it, live. Wanting different settings for a different patch
+	// means confirming this one and starting another.
+	//
+	// So the STROKES are the only state, and everything else - the region mesh,
+	// the copies, the area used to space them - is derived from them. The
+	// terrain filter and New pattern need no special handling here at all: they
+	// are inputs to the same fill.
+	// Fill only the cells the stroke just gained, at the density the whole
+	// painting is currently carrying.
+	//
+	// Density rather than a total, because a total is not knowable mid-stroke:
+	// the area is still growing. It is recomputed from Count over the area so
+	// far on every call, so it tracks the slider and self-corrects as the
+	// stroke runs; the authoritative refill on mouse-up settles it exactly.
+	static void BF6_ScatterPaintFillNew()
+	{
+		if (!GScat.bActive || GScat.Shape != 4 || !GEditor) return;
+		if (GScat.Pool.Num() == 0 && GScat.U.Members.Num() == 0) return;
+
+		TArray<FIntPoint> Cells;
+		const double Cell = BF6_PaintCoverage(Cells);
+		if (Cell <= 0.0 || Cells.Num() == 0) return;
+
+		TArray<FIntPoint> Fresh;
+		for (const FIntPoint& Cp : Cells)
+		{
+			const int64 Key = ((int64)Cp.X << 32) ^ (int64)(uint32)Cp.Y;
+			if (GScat.FilledCells.Contains(Key)) continue;
+			GScat.FilledCells.Add(Key);
+			Fresh.Add(Cp);
+		}
+		if (Fresh.Num() == 0) return;
+
+		const double CellArea = Cell * Cell;
+		const double TotalArea = FMath::Max((double)Cells.Num() * CellArea, 1.0);
+		const int32  Count = FMath::Clamp(GScat.Count, 1, 1000);
+		const double Density = (double)Count / TotalArea;
+		int32 Want = FMath::RoundToInt(Density * (double)Fresh.Num() * CellArea);
+		if (Want <= 0) return;
+		Want = FMath::Min(Want, 400);   // one stamp can never be a whole map
+
+		double UnitW = FMath::Max(GScat.U.Size.X, GScat.U.Size.Y);
+		if (GScat.Pool.Num() > 0)
+		{
+			UnitW = 0.0;
+			for (const FBF6ScatterSource& Src : GScat.Pool)
+				UnitW = FMath::Max(UnitW, FMath::Max(Src.Size.X, Src.Size.Y));
+		}
+		const double FitDist = FMath::Sqrt(1.0 / FMath::Max(Density, 1e-12) / 2.6);
+		const double MinDist = FMath::Clamp(FMath::Min(UnitW * 0.7, FitDist), 40.0, 4000.0);
+
+		// Only what is near the fresh ground can conflict with it. Bounded by
+		// the fresh cells rather than the whole painting, which is the other
+		// half of why this stays cheap as a stroke gets long.
+		FBox2D Fresh2(ForceInit);
+		for (const FIntPoint& Cp : Fresh)
+		{
+			Fresh2 += FVector2D(Cp.X * Cell, Cp.Y * Cell);
+			Fresh2 += FVector2D((Cp.X + 1) * Cell, (Cp.Y + 1) * Cell);
+		}
+		Fresh2 = Fresh2.ExpandBy(MinDist * 2.0);
+		TArray<FVector> Near;
+		for (const FBF6ScatterLive::FTarget& T : GScat.Targets)
+			if (Fresh2.IsInside(FVector2D(T.P.X, T.P.Y))) Near.Add(T.P);
+
+		FCollisionQueryParams QP(FName(TEXT("BF6ScatterPaint")), true);
+		for (AActor* M : GScat.U.Members) QP.AddIgnoredActor(M);
+
+		// Seeded from how much is already down, so the stroke keeps producing
+		// fresh arrangements as it travels instead of repeating one.
+		FRandomStream Rng(GScat.Seed * 7919 + GScat.Targets.Num() * 104729 + Fresh.Num());
+
+		TArray<AActor*> NewOnes;
+		int32 n = 0;
+		for (int32 s = 0; s < Want * 20 && n < Want; s++)
+		{
+			const FIntPoint& Cp = Fresh[Rng.RandRange(0, Fresh.Num() - 1)];
+			FVector P((Cp.X + Rng.FRand()) * Cell, (Cp.Y + Rng.FRand()) * Cell, 0.0);
+
+			bool bClose = false;
+			for (const FVector& Q : Near)
+				if (FVector::DistSquaredXY(P, Q) < MinDist * MinDist) { bClose = true; break; }
+			if (bClose) continue;
+
+			if (GScat.bTerrainOnly)
+			{
+				FVector Gnd;
+				if (!BF6_TerrainRay(P + FVector(0, 0, 50000), P - FVector(0, 0, 50000), Gnd)) continue;
+				P.Z = Gnd.Z;
+			}
+			else
+			{
+				FVector Gnd;
+				if (!GroundRay(P + FVector(0, 0, 50000), P - FVector(0, 0, 50000), nullptr, Gnd)) continue;
+				P.Z = Gnd.Z;
+			}
+
+			const double Yaw = (Rng.FRand() - 0.5) * GScat.RotDeg;
+			const double Tx  = (Rng.FRand() - 0.5) * GScat.WobX;
+			const double Ty  = (Rng.FRand() - 0.5) * GScat.WobY;
+			const double Scl = 1.0 + (Rng.FRand() * 2.0 - 1.0) * GScat.Vary;
+			P.Z += (Rng.FRand() * 2.0 - 1.0) * GScat.ElevM * 100.0;
+
+			int32 Made = 0;
+			int32 PoolPick = INDEX_NONE;
+			if (GScat.Pool.Num() > 0)
+			{
+				PoolPick = Rng.RandRange(0, GScat.Pool.Num() - 1);
+				FBF6ScatterSource& Src = GScat.Pool[PoolPick];
+				const FQuat RotQ = FQuat(FVector::UpVector, FMath::DegreesToRadians(Yaw))
+					* FQuat(FVector::ForwardVector, FMath::DegreesToRadians(Tx))
+					* FQuat(FVector::RightVector, FMath::DegreesToRadians(Ty));
+				if (AActor* A = SpawnSdkModel(Src.Mesh, Src.Type, FTransform(RotQ, P, FVector(Scl))))
+				{
+					NewOnes.Add(A);
+					QP.AddIgnoredActor(A);
+					Made = 1;
+					if (!Src.bSized)
+					{
+						FVector Org, Ext;
+						A->GetActorBounds(false, Org, Ext);
+						if (!Ext.IsNearlyZero()) { Src.Size = Ext * 2.0; Src.bSized = true; }
+					}
+				}
+			}
+			else Made = BF6_SpawnUnitCopy(GScat.U, P, Yaw, Scl, QP, NewOnes, Tx, Ty);
+
+			if (Made > 0)
+			{
+				Near.Add(P);
+				FBF6ScatterLive::FTarget T;
+				T.P = P; T.Yaw = Yaw; T.Tx = Tx; T.Ty = Ty; T.Scl = Scl; T.Pool = PoolPick;
+				GScat.Targets.Add(T);
+				n++;
+			}
+		}
+		// Kinds alongside, or the reconcile pass would mistake these for
+		// unknown-source actors and destroy every one of them on the next fill.
+		for (int32 k = 0; k < NewOnes.Num(); k++)
+		{
+			GScat.Preview.Add(NewOnes[k]);
+			const int32 Ti = GScat.Targets.Num() - NewOnes.Num() + k;
+			GScat.PreviewKind.Add(GScat.Targets.IsValidIndex(Ti) ? GScat.Targets[Ti].Pool : INDEX_NONE);
+		}
+		if (n > 0) BF6_RecomputeBudget();
+	}
+
+	void BeginScatterPaint()
+	{
+		if (!GScat.bActive) return;
+		GScat.bPainting = true;
+		// A NEW STROKE PER PRESS, which is the unit Ctrl+Z takes back. It also
+		// restarts the spacing rule, so a fresh press right where the last one
+		// ended still records a stamp instead of being suppressed as too close.
+		FBF6ScatterLive::FStroke S;
+		S.RadiusCm = FMath::Max(GScat.RadiusM, 0.5f) * 100.f;
+		GScat.Strokes.Add(MoveTemp(S));
+		// The cells already carrying copies stay filled across strokes: a new
+		// stroke over old ground should not double up on it.
+	}
+
+	void ScatterPaintTo(const FVector& W)
+	{
+		if (!GScat.bActive || !GScat.bPainting || GScat.Strokes.Num() == 0) return;
+		FBF6ScatterLive::FStroke& Stroke = GScat.Strokes.Last();
+		const double R = FMath::Max((double)Stroke.RadiusCm, 50.0);
+
+		// SPACING ALONG THE STROKE. Not about density - the fill decides that -
+		// but about how many stamps the area is described by. A stamp every
+		// third of a brush width traces the path closely and keeps the coverage
+		// pass cheap.
+		if (Stroke.Stamps.Num() > 0
+			&& FVector::DistSquaredXY(Stroke.Stamps.Last(), W) < FMath::Square(R * 0.35)) return;
+		Stroke.Stamps.Add(W);
+
+		// ONLY THE GROUND JUST GAINED.
+		//
+		// A full refill destroys and respawns every copy in the whole painting,
+		// and during a stroke that happens ten times a second over an area that
+		// only ever grows - which is what made this crawl. The stroke can only
+		// ADD coverage, so the copies already standing are still correct and
+		// the only work due is the cells that just became covered.
+		//
+		// The authoritative refill still happens, on mouse-up, where a pause is
+		// invisible. Everything a slider does goes through that path too, so
+		// the exact semantics are never decided by this shortcut.
+		BF6_ScatterPaintFillNew();
+
+		const double Now = FPlatformTime::Seconds();
+		if (Now - GScatPaintDrawn > 0.1)
+		{
+			GScatPaintDrawn = Now;
+			BF6_ScatterRegionRebuild();   // the area, not the fill
+		}
+	}
+
+	void EndScatterPaint()
+	{
+		if (!GScat.bActive) return;
+		GScat.bPainting = false;
+		// An empty stroke is one the creator clicked without dragging; keeping
+		// it would make the next Ctrl+Z appear to do nothing.
+		if (GScat.Strokes.Num() > 0 && GScat.Strokes.Last().Stamps.Num() == 0)
+			GScat.Strokes.Pop();
+		BF6_ScatterRegenerate();   // the final, unthrottled fill
+	}
+
+	bool IsScatterPainting() { return GScat.bActive && GScat.bPainting; }
+	int32 ScatterStrokeCount() { return GScat.bActive ? GScat.Strokes.Num() : 0; }
+
+	// One stroke back off the area. The fill follows, because the fill is only
+	// ever a function of the strokes.
+	bool ScatterPaintUndo()
+	{
+		if (!GScat.bActive || GScat.Shape != 4 || GScat.Strokes.Num() == 0) return false;
+		GScat.Strokes.Pop();
+		BF6_ScatterRegenerate();
+		return true;
+	}
+
+	// The brush ring, in screen pixels, for the viewport overlay.
+	bool GetScatterBrush(FVector2D& OutCenterPx, float& OutRadiusPx)
+	{
+		if (!GScat.bActive || GScat.Shape != 4) return false;
+		FVector W;
+		if (!WorldFromViewportCursor(W)) return false;
+		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+		if (!VC || !VC->Viewport) return false;
+		FSceneViewFamilyContext Family(FSceneViewFamily::ConstructionValues(VC->Viewport, VC->GetScene(), VC->EngineShowFlags));
+		FSceneView* View = VC->CalcSceneView(&Family);
+		if (!View) return false;
+		auto Project = [&](const FVector& P, FVector2D& Px) -> bool
+		{
+			const FVector4 Clip = View->WorldToScreen(P);
+			if (Clip.W <= 0.f) return false;
+			View->ScreenToPixel(Clip, Px);
+			return true;
+		};
+		// Projected rather than a fixed pixel size: a ring that stays the same
+		// on screen tells you nothing about how much ground it covers.
+		const double R = FMath::Max(GScat.RadiusM, 0.5f) * 100.0;
+		FVector2D C, E;
+		if (!Project(W, C) || !Project(W + FVector(R, 0, 0), E)) return false;
+		OutCenterPx = C;
+		OutRadiusPx = (float)FVector2D::Distance(C, E);
+		return true;
+	}
+
 	bool GetScatterDots(TArray<FVector2D>& OutPx, int32& OutDrag)
 	{
 		OutPx.Reset(); OutDrag = INDEX_NONE;
@@ -9299,18 +11670,41 @@ namespace BF6Api
 	{
 		if (!GScat.bActive) return;
 		GScat.bActive = false;
+		GScat.Strokes.Reset();
+		GScat.bPainting = false;
 		GScatDotDrag = INDEX_NONE;
 		GScatPolyUndo.Reset();
 		GScatPolyRedo.Reset();
 		BF6_ScatterRegionDestroy();
-		for (AActor* M : GScat.U.Members) if (!IsValid(M)) { BF6_ScatterDestroyPreview(); return; }
+		// The source check applies only to a selection scatter; a pool one has
+		// no members and would fail it every time.
+		if (GScat.Pool.Num() == 0)
+			for (AActor* M : GScat.U.Members)
+				if (!IsValid(M)) { BF6_ScatterDestroyPreview(); return; }
 		// swap the preview for an identical, UNDOABLE rebuild
 		BF6_ScatterDestroyPreview();
 		FScopedTransaction Tx(FText::FromString(TEXT("Scatter")));
 		FCollisionQueryParams QP(FName(TEXT("BF6ScatterLive")), true);
 		TArray<AActor*> NewOnes;
 		for (const FBF6ScatterLive::FTarget& T : GScat.Targets)
+		{
+			// EACH TARGET REMEMBERS WHICH SOURCE IT WAS, and it has to: replaying
+			// a pool scatter through the selection unit spawns from an empty
+			// member list, so the preview would vanish on Apply and leave
+			// nothing behind. The preview IS the promise, and this is what
+			// keeps it.
+			if (GScat.Pool.IsValidIndex(T.Pool))
+			{
+				const FBF6ScatterSource& Src = GScat.Pool[T.Pool];
+				const FQuat RotQ = FQuat(FVector::UpVector, FMath::DegreesToRadians(T.Yaw))
+					* FQuat(FVector::ForwardVector, FMath::DegreesToRadians(T.Tx))
+					* FQuat(FVector::RightVector, FMath::DegreesToRadians(T.Ty));
+				if (AActor* A = SpawnSdkModel(Src.Mesh, Src.Type, FTransform(RotQ, T.P, FVector(T.Scl))))
+				{ NewOnes.Add(A); QP.AddIgnoredActor(A); }
+				continue;
+			}
 			BF6_SpawnUnitCopy(GScat.U, T.P, T.Yaw, T.Scl, QP, NewOnes, T.Tx, T.Ty);
+		}
 		if (GEditor)
 		{
 			GEditor->SelectNone(false, true, false);
@@ -9824,6 +12218,10 @@ namespace BF6Api
 		int32 n = 0;
 		for (AActor* A : All)
 			if (W->EditorDestroyActor(A, true)) n++;
+		// This path destroys actors itself and never raises the editor's own
+		// delete delegate, so the prune has to happen here too. Inside the same
+		// transaction, so one Ctrl+Z brings back the objects AND their links.
+		BF6_PruneDeadLinks();
 		GEditor->NoteSelectionChange();
 		BF6_RecomputeBudget();
 		UE_LOG(LogBF6, Log, TEXT("fast delete: %d actor(s) in %.0f ms"), n, (FPlatformTime::Seconds() - T0) * 1000.0);
@@ -10054,12 +12452,35 @@ namespace BF6Api
 	{
 		bool bActive = false;
 		TArray<TWeakObjectPtr<AActor>> Movers;
-		TArray<FVector> Offsets;   // per mover, from the reference ground point
+		TArray<FVector> Offsets;    // per mover, from the reference ground point
+		TArray<FRotator> StartRot;  // per mover, so Yaw is applied ONCE not compounded
 		FVector Ref = FVector::ZeroVector;
+		// One yaw for the whole carried set, turned about the reference point.
+		// Stored rather than applied straight to the actors, because the tick
+		// rebuilds every transform from Ref + Offsets each frame and anything
+		// written directly would be overwritten by the next mouse move.
+		float Yaw = 0.f;
 	};
 	static FBF6PickPlace GPickPlace;
 
 	bool IsPickPlacing() { return GPickPlace.bActive; }
+
+	// Turn what is being carried, before setting it down.
+	//
+	// Rotating after placing means finding the gizmo, switching to rotate, and
+	// aiming it - all of it undone the moment the object turns out to be in the
+	// wrong spot. Turning it in the hand is the same decision made once.
+	bool RotatePickPlace(float DeltaDeg, bool bSnap)
+	{
+		if (!GPickPlace.bActive) return false;
+		GPickPlace.Yaw += DeltaDeg;
+		// Held Ctrl means the same thing here as everywhere else in the tool:
+		// land on the round number rather than near it.
+		if (bSnap) GPickPlace.Yaw = FMath::GridSnap(GPickPlace.Yaw, 15.f);
+		GPickPlace.Yaw = FMath::Fmod(GPickPlace.Yaw, 360.f);
+		TickPickPlace(false);   // show it immediately, without waiting for a mouse move
+		return true;
+	}
 
 	bool BeginPickPlace()
 	{
@@ -10089,6 +12510,7 @@ namespace BF6Api
 		{
 			GPickPlace.Movers.Add(S);
 			GPickPlace.Offsets.Add(S->GetActorLocation() - GPickPlace.Ref);
+			GPickPlace.StartRot.Add(S->GetActorRotation());
 		}
 		GEditor->BeginTransaction(FText::FromString(TEXT("Pick Place")));
 		for (TWeakObjectPtr<AActor>& Wk : GPickPlace.Movers)
@@ -10113,9 +12535,18 @@ namespace BF6Api
 			W.X = FMath::GridSnap(W.X, 100.0);
 			W.Y = FMath::GridSnap(W.Y, 100.0);
 		}
+		// The carried set turns about its OWN reference point, so a row of
+		// objects pivots as one piece instead of each spinning in place and the
+		// arrangement coming apart.
+		const FRotator Turn(0.f, GPickPlace.Yaw, 0.f);
 		for (int32 i = 0; i < GPickPlace.Movers.Num(); i++)
 			if (AActor* M = GPickPlace.Movers[i].Get())
-				M->SetActorLocation(W + GPickPlace.Offsets[i]);
+			{
+				M->SetActorLocation(W + Turn.RotateVector(GPickPlace.Offsets[i]));
+				if (GPickPlace.StartRot.IsValidIndex(i))
+					M->SetActorRotation(FRotator(GPickPlace.StartRot[i].Pitch,
+						GPickPlace.StartRot[i].Yaw + GPickPlace.Yaw, GPickPlace.StartRot[i].Roll));
+			}
 		GPickPlace.Ref = W;
 	}
 
@@ -10184,6 +12615,66 @@ namespace BF6Api
 				    || D.Type.Contains(TEXT("Path"))   || D.Type.Contains(TEXT("SpawnPoint"));
 		return false;
 	}
+	// Drop links that point at objects which no longer exist.
+	//
+	// A link is stored as a NAME, so deleting the thing it names leaves the
+	// name behind: an HQ still listing eight spawns after they were deleted,
+	// with the attribute panel reporting them as assigned. The link is the only
+	// part that matters and it is the part with no visual, so nothing about the
+	// map looks wrong until it is played.
+	//
+	// Swept over every link field of every object rather than special-cased for
+	// spawns, because every link type has this same hole.
+	//
+	// Runs INSIDE the delete transaction and calls Modify() first, so undoing
+	// the delete brings the links back with the objects.
+	static int32 BF6_PruneDeadLinks()
+	{
+		UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!W) return 0;
+
+		TSet<FString> Alive;
+		TArray<AActor*> Ours;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			AActor* A = *It;
+			if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kGroupTag)) continue;
+			if (!IsValid(A)) continue;
+			Ours.Add(A);
+			FString Nm = A->GetActorLabel();
+			Nm.RemoveFromStart(TEXT("BF6_"));
+			Alive.Add(Nm);
+		}
+
+		int32 Fixed = 0;
+		for (AActor* A : Ours)
+		{
+			FString Ty = TagValue(A, TEXT("label:"));
+			if (Ty.IsEmpty()) Ty = TagValue(A, TEXT("type:"));
+			if (Ty.IsEmpty()) continue;
+			for (const FPropDef& D : PropsForType(Ty))
+			{
+				if (!BF6_IsLinkProp(Ty, D.Name)) continue;
+				const FString Val = GetActorProp(A, D.Name);
+				if (Val.IsEmpty()) continue;
+				// A raw Godot value from a shipped scene is not ours to rewrite.
+				if (Val.Contains(TEXT("NodePath")) || Val.Contains(TEXT("ExtResource"))) continue;
+				TArray<FString> Parts;
+				Val.ParseIntoArray(Parts, TEXT(","), true);
+				const int32 Before = Parts.Num();
+				Parts.RemoveAll([&Alive](const FString& N){ return !Alive.Contains(N.TrimStartAndEnd()); });
+				if (Parts.Num() == Before) continue;
+				A->Modify();
+				SetActorProp(A, D.Name, FString::Join(Parts, TEXT(",")));
+				Fixed++;
+			}
+		}
+		if (Fixed > 0) UE_LOG(LogBF6, Warning, TEXT("pruned dead links on %d object(s)"), Fixed);
+		return Fixed;
+	}
+
+	int32 PruneDeadLinks() { return BF6_PruneDeadLinks(); }
+
 	static FString BF6_LinkName(AActor* A)
 	{
 		FString Nm = A->GetActorLabel();
@@ -10447,7 +12938,7 @@ namespace BF6Api
 
 	bool PlaceBlock(const FString& Name, const FVector& WorldPos)
 	{
-		if (!g_ss.bEditing) { Notify(TEXT("Open a custom map (a save) to place objects.")); return false; }
+		if (!g_ss.bEditing) { BF6Api::RefuseReadOnly(TEXT("Objects can only be placed on a custom map. Name one and press Create, bottom right.")); return false; }
 		TSharedPtr<FJsonObject> B = BF6_LoadBlock(Name);
 		if (!B.IsValid()) { Notify(FString::Printf(TEXT("Block '%s' could not be read."), *Name)); return false; }
 		FString Level; B->TryGetStringField(TEXT("level"), Level);
@@ -10749,6 +13240,16 @@ namespace BF6Api
 			const FString Ty = BF6_ObjIdType(A);
 			TArray<AActor*> T; bool bLegacy = false;
 
+			// gdconverter's REQUIRED_PROPS: a RingOfFire with either shape unset
+			// is refused at conversion, so it is a fault here, not advice.
+			if (Ty == TEXT("RingOfFire"))
+			{
+				if (GetActorProp(A, TEXT("HardRestrictOBB")).TrimStartAndEnd().IsEmpty())
+					Add(0, A, TEXT("Ring of fire has no HardRestrictOBB volume - the SDK refuses to convert the map without one."));
+				if (GetActorProp(A, TEXT("RestrictShapeData")).TrimStartAndEnd().IsEmpty())
+					Add(0, A, TEXT("Ring of fire has no RestrictShapeData volume - the SDK refuses to convert the map without one."));
+			}
+
 			if (Ty == TEXT("CombatArea"))
 			{
 				LinkTargets(A, TEXT("CombatVolume"), T, bLegacy);
@@ -10764,6 +13265,22 @@ namespace BF6Api
 					TArray<FVector> Loop;
 					if (!LoopOf(Vol, Loop)) continue;
 					CombatLoop = Loop;
+					// The SDK's own hard limit: gdconverter refuses a combat
+					// volume whose area exceeds 16,640,000 (Godot metres
+					// squared). Ours is in cm, so the shoelace result divides
+					// by 100^2. Finding this at upload after shaping a huge
+					// zone is the worst possible time.
+					{
+						double A2 = 0.0;
+						for (int32 i = 0; i < Loop.Num(); i++)
+						{
+							const FVector& a = Loop[i]; const FVector& b = Loop[(i + 1) % Loop.Num()];
+							A2 += a.X * b.Y - b.X * a.Y;
+						}
+						const double AreaM2 = FMath::Abs(A2) * 0.5 / 10000.0;
+						if (AreaM2 > 16640000.0)
+							Add(0, Vol, FString::Printf(TEXT("Combat volume covers %.0f km2 - over the SDK's %.1f km2 limit, and the converter rejects the map."), AreaM2 / 1e6, 16.64));
+					}
 					// winding law: the game wants CLOCKWISE in Godot's XZ, which
 					// is our X (east) / Y (as Godot Z). CCW turns the zone
 					// inside out - everything OUTSIDE becomes playable.
@@ -10937,17 +13454,75 @@ namespace BF6Api
 		}
 	}
 
+	// What this step is FOR, what a good placement looks like, and what happens
+	// when you click.
+	//
+	// The first cut said "Aim at the ground and click", which the title already
+	// said. Someone who has never built a Portal mode does not need the verb
+	// repeated - they need to know that an HQ is where a team comes back in
+	// after dying, that putting the two of them within sight of each other is
+	// the classic spawn-camping map, and that the thing they are about to click
+	// is a dozen linked objects they can pull apart afterwards.
 	FString ModeWizardBody()
 	{
 		if (!GWiz.bActive) return FString();
-		if (GWiz.bConquest && GWiz.Step <= 1)
-			return TEXT("Aim at the ground and click. You get the HQ, its protected area, and four linked spawn points. Inside or outside the combat area both work - the shipped maps do both.");
+
+		const bool bHQ = GWiz.bConquest ? (GWiz.Step <= 1) : (GWiz.Step % 4 <= 1);
+		if (bHQ)
+		{
+			const bool bFirst = GWiz.bConquest ? (GWiz.Step == 0) : (GWiz.Step % 4 == 0);
+			return FString::Printf(TEXT(
+				"An HQ is where this team comes back in after dying, and the one place they cannot be shot while doing it.%s\n\n"
+				"Put it behind the team's side of the map, with cover between it and the fighting. The two HQs facing each other across open ground is how a map ends up as a spawn-camp.\n\n"
+				"One click builds the HQ, a protected area around it, and four spawn points inside that area, all linked. They are ordinary objects afterwards - move them, reshape the area, add more spawns."),
+				bFirst ? TEXT("") : TEXT(" This is the second one, so keep it well away from the first."));
+		}
+
 		if (GWiz.bConquest)
-			return TEXT("Click where the flag goes. You get the capture point, its capture area, and four spawn points per team, all linked. The sector wires up automatically after the last flag.");
-		const int32 sub = GWiz.Step % 4;
-		if (sub <= 1)
-			return TEXT("Aim at the ground and click. You get the HQ, its protected area, and four linked spawn points.");
-		return TEXT("Click where the objective goes. You get the capture point, its capture area, and spawn points for both teams. The sector wires up after objective B.");
+			return TEXT(
+				"A flag is a place worth fighting over, so it wants cover, more than one way in, and no single window that owns it.\n\n"
+				"Spread flags out: players walk between them, and two flags close together turn the map into one fight instead of several.\n\n"
+				"One click builds the capture point, its capture area, and eight spawn points split between the two teams and facing the flag. When every flag is down, the sector is wired up for you and the checks run.");
+
+		return TEXT(
+			"An objective is what the attackers have to take before the sector moves on. Two per sector, far enough apart that one defensive position cannot hold both.\n\n"
+			"One click builds the capture point, its area, and spawns for both teams. When both are down this sector is wired and the next one begins.");
+	}
+
+	// The actor a link name refers to, or null.
+	static AActor* BF6_FindByLinkName(const FString& Name)
+	{
+		if (Name.IsEmpty() || !GEditor) return nullptr;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return nullptr;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			FString Nm = It->GetActorLabel();
+			Nm.RemoveFromStart(TEXT("BF6_"));
+			if (Nm == Name) return *It;
+		}
+		return nullptr;
+	}
+
+	// The next free ObjId in a band.
+	//
+	// The community's script templates address objects by id and expect the
+	// established bands - flags from 200, HQs in the 300s, sectors in the 100s -
+	// so a bundle dropped on its own has to land in the band the wizard would
+	// have used, and must not collide with one already there.
+	static int32 BF6_NextObjId(int32 Base, int32 Span)
+	{
+		int32 Best = Base - 1;
+		if (GEditor)
+			if (UWorld* W = GEditor->GetEditorWorldContext().World())
+				for (TActorIterator<AActor> It(W); It; ++It)
+				{
+					const FString V = TagValue(*It, TEXT("p:ObjId="));
+					if (V.IsEmpty()) continue;
+					const int32 Id = FCString::Atoi(*V);
+					if (Id >= Base && Id < Base + Span) Best = FMath::Max(Best, Id);
+				}
+		return Best + 1;
 	}
 
 	static FString BF6_ActorLinkName(AActor* A)
@@ -10973,6 +13548,10 @@ namespace BF6Api
 			A->Tags.Add(kPlacedTag);
 			A->Tags.Add(FName(*(FString(TEXT("label:")) + Type)));
 			A->SetFlags(RF_Transient);
+			// A type with no bundled model still belongs in the tree. Missing
+			// this is why a placed flag appeared in the world and nowhere in
+			// the scene tree.
+			BF6_FileActor(A);
 		}
 		BF6_SetPrettyLabel(A, Label);
 		return A;
@@ -11019,6 +13598,10 @@ namespace BF6Api
 		Hq->Tags.Add(FName(*FString::Printf(TEXT("p:ObjId=%d"), ObjIdVal)));
 		if (Sp.Num()) Hq->Tags.Add(FName(*(TEXT("p:InfantrySpawns=") + FString::Join(Sp, TEXT(",")))));
 		if (Area) Hq->Tags.Add(FName(*(TEXT("p:HQArea=") + BF6_ActorLinkName(Area))));
+		// The bundle is an assembly, so it is built like one: everything it made
+		// hangs under the HQ, the way real Portal maps are built.
+		BF6_ParentUnder(Area, Hq);
+		for (const FString& N : Sp) BF6_ParentUnder(BF6_FindByLinkName(N), Hq);
 	}
 
 	// capture point + capture area + four spawns per team facing the flag
@@ -11040,6 +13623,9 @@ namespace BF6Api
 		if (Area) Cp->Tags.Add(FName(*(TEXT("p:CaptureArea=") + BF6_ActorLinkName(Area))));
 		if (T1.Num()) Cp->Tags.Add(FName(*(TEXT("p:InfantrySpawnPoints_Team1=") + FString::Join(T1, TEXT(",")))));
 		if (T2.Num()) Cp->Tags.Add(FName(*(TEXT("p:InfantrySpawnPoints_Team2=") + FString::Join(T2, TEXT(",")))));
+		BF6_ParentUnder(Area, Cp);
+		for (const FString& N : T1) BF6_ParentUnder(BF6_FindByLinkName(N), Cp);
+		for (const FString& N : T2) BF6_ParentUnder(BF6_FindByLinkName(N), Cp);
 		return BF6_ActorLinkName(Cp);
 	}
 
@@ -11049,6 +13635,78 @@ namespace BF6Api
 		if (!Sec) return;
 		Sec->Tags.Add(FName(*FString::Printf(TEXT("p:ObjId=%d"), ObjIdVal)));
 		if (CpNames.Num()) Sec->Tags.Add(FName(*(TEXT("p:CapturePoints=") + FString::Join(CpNames, TEXT(",")))));
+	}
+
+	// ---- BUNDLES: a finished piece, dropped in one click --------------------
+	//
+	// The wizard already knew how to build these; they were just locked inside a
+	// script you had to run start to finish. Most of the time a creator wants
+	// ONE more flag, not a fresh Conquest layout, and building it by hand is a
+	// capture point, an area, sixteen spawns and twenty links.
+	//
+	// Same builders as the wizard, so a bundle placed here and one placed by the
+	// wizard cannot come out different.
+	TArray<FBundleDef> Bundles()
+	{
+		TArray<FBundleDef> Out;
+		Out.Add({ TEXT("HQ1"),    TEXT("HQ TEAM 1"), TEXT("hq, area, 4 spawns") });
+		Out.Add({ TEXT("HQ2"),    TEXT("HQ TEAM 2"), TEXT("hq, area, 4 spawns") });
+		Out.Add({ TEXT("FLAG"),   TEXT("FLAG"),      TEXT("capture point, area, 8 spawns") });
+		Out.Add({ TEXT("SECTOR"), TEXT("SECTOR"),    TEXT("sector and its area") });
+		Out.Add({ TEXT("MCOM"),   TEXT("MCOM"),      TEXT("one objective, on its own") });
+		return Out;
+	}
+
+	bool PlaceBundle(const FString& Key, const FVector& World)
+	{
+		if (!g_ss.bEditing) { RefuseReadOnly(FString()); return false; }
+		UWorld* BW = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!BW) return false;
+		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Place %s"), *Key)));
+		// A SPAWN is only undoable if the LEVEL was marked before it happened.
+		// Without this the transaction records the property edits and none of
+		// the actors, so Ctrl+Z left the whole bundle standing.
+		BW->GetCurrentLevel()->Modify();
+
+		if (Key == TEXT("HQ1") || Key == TEXT("HQ2"))
+		{
+			const int32 Team = (Key == TEXT("HQ2")) ? 2 : 1;
+			const int32 Id = BF6_NextObjId(301, 99);
+			BF6_WizHqBundle(Team, World, Id, FString::Printf(TEXT("Team%d_HQ_%d"), Team, Id));
+		}
+		else if (Key == TEXT("FLAG"))
+		{
+			const int32 Id = BF6_NextObjId(200, 99);
+			// Flags are lettered in every Portal script anyone will paste in, and
+			// A is 200 - so the letter follows from the id rather than a counter
+			// that would restart at A after a reload.
+			const FString Letter = FString::Chr((TCHAR)(TEXT('A') + FMath::Clamp(Id - 200, 0, 25)));
+			BF6_WizFlagBundle(World, Id, TEXT("CapturePoint_") + Letter);
+		}
+		else if (Key == TEXT("SECTOR"))
+		{
+			const int32 Id = BF6_NextObjId(100, 99);
+			const FString Nm = FString::Printf(TEXT("Sector_%d"), Id - 99);
+			BF6_WizSector(World, Id, Nm, TArray<FString>());
+			// A sector with no area covers nothing, so it gets the one field it
+			// cannot work without and the creator shapes it.
+			if (AActor* Sec = BF6_FindByLinkName(Nm))
+				if (AActor* Ar = BF6_WizSquareVolume(World, 2000.0, 10.0, Nm + TEXT("_SectorArea")))
+				{
+					Sec->Tags.Add(FName(*(TEXT("p:SectorArea=") + BF6_ActorLinkName(Ar))));
+					BF6_ParentUnder(Ar, Sec);
+				}
+		}
+		else if (Key == TEXT("MCOM"))
+		{
+			// MCOM owns nothing - it has no link fields at all - so the bundle is
+			// the object, and pretending otherwise would be theatre.
+			BF6_WizSpawn(TEXT("MCOM"), World, 0, FString::Printf(TEXT("MCOM_%d"), BF6_NextObjId(400, 99) - 399));
+		}
+		else return false;
+
+		BF6_RecomputeBudget();
+		return true;
 	}
 
 	static void BF6_WizFinish()
@@ -11064,7 +13722,7 @@ namespace BF6Api
 
 	void StartModeWizard(const FString& Mode, int32 Count)
 	{
-		if (!g_ss.bEditing) { Notify(TEXT("Open a custom map (a save) first.")); return; }
+		if (!g_ss.bEditing) { BF6Api::RefuseReadOnly(FString()); return; }
 		GWiz = FBF6Wiz();
 		GWiz.bActive = true;
 		GWiz.bConquest = Mode == TEXT("Conquest");
@@ -11079,6 +13737,10 @@ namespace BF6Api
 	{
 		if (!GWiz.bActive) return;
 		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Mode setup step %d"), GWiz.Step + 1)));
+		// same reason as the bundles: without the level, the spawns are not
+		// in the transaction and Ctrl+Z undoes nothing visible
+		if (UWorld* WW = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
+			WW->GetCurrentLevel()->Modify();
 		if (GWiz.bConquest)
 		{
 			if (GWiz.Step == 0)      BF6_WizHqBundle(1, World, 301, TEXT("Team1_HQ"));
@@ -11219,6 +13881,182 @@ namespace BF6Api
 		if (!GCurrentLevelEditingViewportClient) return false;
 		const FViewportCameraTransform& Cam = GCurrentLevelEditingViewportClient->GetViewTransform();
 		return TraceToSurface(Cam.GetLocation(), Cam.GetRotation().Vector(), OutWorld);
+	}
+
+	// ---- DISPLAY / SUN ----------------------------------------------------
+	//
+	// A VIEW AID, AND NOTHING MORE. Portal has no lighting in its authorable
+	// surface at all - the only types it exports are the two volumes, its
+	// exporter has no sun, sky or light handling, and this tool already treats
+	// DirectionalLight3D as an engine node that Portal's own exporter drops.
+	//
+	// That has to be said on the panel, because the failure mode is expensive
+	// and silent: a creator spends an hour finding a golden-hour angle, ships,
+	// and the map arrives lit however Portal lights it. Nothing here reaches an
+	// export, and nothing here is saved.
+	//
+	// It is still worth having. Turning the sun is how you read a silhouette,
+	// check that a lane stays legible when the light is low, and see where
+	// shadows actually fall; unlit is how you judge massing without shading
+	// arguing with you about it.
+	struct FBF6DisplaySun
+	{
+		TWeakObjectPtr<ADirectionalLight> Light;
+		bool     bCaptured = false;         // the map's own lighting, before we touched it
+		FRotator OrigRot = FRotator::ZeroRotator;
+		float    OrigIntensity = 0.f;
+		bool     bOrigShadows = true;
+		bool     bSpawned = false;          // we made the light; the map had none
+
+		float TimeH = 13.5f;                // a high, slightly-past-noon default
+		float DirDeg = 135.f;
+		float Bright = 1.f;                 // multiplier on the map's own intensity
+		bool  bShadows = true;
+		int32 ViewMode = 0;                 // 0 lit, 1 unlit, 2 wireframe
+		float EV = 0.f;                     // exposure compensation, 0 = the map's own
+		bool  bTouched = false;
+	};
+	static FBF6DisplaySun GSun;
+
+	// The sun this map is lit by. Preference is the light ALREADY IN THE LEVEL:
+	// spawning a second one next to it does not replace the first, it adds to
+	// it, and the map ends up brighter and lit from two directions at once.
+	static ADirectionalLight* BF6_SunLight(bool bCreate)
+	{
+		if (GSun.Light.IsValid()) return GSun.Light.Get();
+		if (!GEditor) return nullptr;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return nullptr;
+
+		for (TActorIterator<ADirectionalLight> It(W); It; ++It)
+		{
+			GSun.Light = *It;
+			GSun.bSpawned = false;
+			return *It;
+		}
+		if (!bCreate) return nullptr;
+
+		// No sun in the map at all. Ours is transient and context-tagged so it
+		// lives and dies with the scenery rather than with the creator's level.
+		ADirectionalLight* L = W->SpawnActor<ADirectionalLight>();
+		if (!L) return nullptr;
+		L->SetActorLabel(TEXT("BF6_ViewSun"));
+		L->Tags.Add(kContextTag);
+		L->SetFlags(RF_Transient);
+		if (ULightComponent* LC = L->GetLightComponent()) LC->SetIntensity(3.f);
+		GSun.Light = L;
+		GSun.bSpawned = true;
+		return L;
+	}
+
+	static void BF6_SunCapture(ADirectionalLight* L)
+	{
+		if (GSun.bCaptured || !L) return;
+		GSun.OrigRot = L->GetActorRotation();
+		if (ULightComponent* LC = L->GetLightComponent())
+		{
+			GSun.OrigIntensity = LC->Intensity;
+			GSun.bOrigShadows = LC->CastShadows != 0;
+		}
+		GSun.bCaptured = true;
+	}
+
+	static void BF6_SunApply()
+	{
+		ADirectionalLight* L = BF6_SunLight(true);
+		if (!L) return;
+		BF6_SunCapture(L);
+
+		// TIME TO AN ANGLE. Six is dawn on the horizon, noon is high, eighteen
+		// is dusk; outside that the sun is below the horizon and the map goes
+		// to whatever ambient it has, which is a legitimate thing to want to
+		// look at. Elevation tops out at 80 rather than 90 so there is always
+		// SOME shadow direction - a light straight overhead flattens every
+		// vertical face equally and tells you nothing about form.
+		const float Elev = FMath::Sin((GSun.TimeH - 6.f) / 12.f * PI) * 80.f;
+		L->SetActorRotation(FRotator(-Elev, GSun.DirDeg, 0.f));
+
+		if (ULightComponent* LC = L->GetLightComponent())
+		{
+			const float Base = GSun.OrigIntensity > 0.f ? GSun.OrigIntensity : 3.f;
+			LC->SetIntensity(Base * FMath::Max(GSun.Bright, 0.f));
+			LC->SetCastShadows(GSun.bShadows);
+		}
+		GSun.bTouched = true;
+		BF6_Redraw();
+	}
+
+	static void BF6_DisplayApply()
+	{
+		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+		if (!VC) return;
+		VC->SetViewMode(GSun.ViewMode == 1 ? VMI_Unlit
+			: GSun.ViewMode == 2 ? VMI_Wireframe : VMI_Lit);
+		// Exposure: zero means hand it back to the map's own auto exposure,
+		// rather than pinning it at EV 0 which is a real and quite dark value.
+		if (FMath::IsNearlyZero(GSun.EV))
+		{
+			VC->ExposureSettings.bFixed = false;
+		}
+		else
+		{
+			VC->ExposureSettings.bFixed = true;
+			VC->ExposureSettings.FixedEV100 = GSun.EV;
+		}
+		GSun.bTouched = true;
+		BF6_Redraw();
+	}
+
+	float GetSunTime()        { return GSun.TimeH; }
+	float GetSunDirection()   { return GSun.DirDeg; }
+	float GetSunBrightness()  { return GSun.Bright; }
+	bool  GetSunShadows()     { return GSun.bShadows; }
+	int32 GetDisplayViewMode(){ return GSun.ViewMode; }
+	float GetDisplayExposure(){ return GSun.EV; }
+	bool  DisplaySunTouched() { return GSun.bTouched; }
+
+	void SetSunTime(float H)       { GSun.TimeH = FMath::Clamp(H, 0.f, 24.f); BF6_SunApply(); }
+	void SetSunDirection(float D)  { GSun.DirDeg = D; BF6_SunApply(); }
+	void SetSunBrightness(float B) { GSun.Bright = FMath::Clamp(B, 0.f, 4.f); BF6_SunApply(); }
+	void SetSunShadows(bool b)     { GSun.bShadows = b; BF6_SunApply(); }
+	void SetDisplayViewMode(int32 M) { GSun.ViewMode = FMath::Clamp(M, 0, 2); BF6_DisplayApply(); }
+	void SetDisplayExposure(float E) { GSun.EV = FMath::Clamp(E, -6.f, 6.f); BF6_DisplayApply(); }
+
+	// Back to the map's own lighting, exactly as it was.
+	void ResetDisplaySun()
+	{
+		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+		if (VC)
+		{
+			VC->SetViewMode(VMI_Lit);
+			VC->ExposureSettings.bFixed = false;
+		}
+		ADirectionalLight* L = GSun.Light.Get();
+		if (L && GSun.bCaptured)
+		{
+			if (GSun.bSpawned)
+			{
+				// Ours to begin with, so the honest reset is to take it away
+				// again rather than leave a sun the map never had.
+				L->Destroy();
+				GSun.Light.Reset();
+			}
+			else
+			{
+				L->SetActorRotation(GSun.OrigRot);
+				if (ULightComponent* LC = L->GetLightComponent())
+				{
+					LC->SetIntensity(GSun.OrigIntensity);
+					LC->SetCastShadows(GSun.bOrigShadows);
+				}
+			}
+		}
+		GSun.bCaptured = false;
+		GSun.bSpawned = false;
+		GSun.TimeH = 13.5f; GSun.DirDeg = 135.f; GSun.Bright = 1.f;
+		GSun.bShadows = true; GSun.ViewMode = 0; GSun.EV = 0.f;
+		GSun.bTouched = false;
+		BF6_Redraw();
 	}
 
 	bool WorldFromViewportCursor(FVector& OutWorld)
@@ -11535,6 +14373,79 @@ static void BF6_RepairAfterUndo()
 // sections here keeps those snapshots featherweight too. BF6_RepairAfterUndo
 // refills the meshes if the delete is undone.
 static FDelegateHandle g_preDeleteHandle, g_postDeleteHandle;
+static FDelegateHandle g_selChangedHandle;
+static FDelegateHandle g_spawnHandle;
+static TWeakObjectPtr<UWorld> g_spawnHookWorld;
+
+// THE TREE-REFRESH INVARIANT, closed for good.
+//
+// Filing an actor marks the tree, and every well-behaved spawn files. The
+// trouble is the ones that are not: twenty-five places in this file spawn an
+// actor, several build one by hand without filing it, and each time one is
+// added the tree silently stops listing what it made. The flag bundle was the
+// latest - its fallback marker path never filed, so a flag appeared in the
+// world and nowhere in the tree.
+//
+// Auditing twenty-five call sites is a job that has to be redone the moment
+// somebody writes a twenty-sixth. Watching the WORLD instead is one hook that
+// cannot be forgotten. The mark coalesces and is spaced a quarter second, so
+// being told about spawns we did not care about costs almost nothing.
+static void BF6_OnAnyActorSpawned(AActor*)
+{
+	if (g_ss.CurrentLevel.IsEmpty()) return;   // no map open: nothing to list
+	BF6Api::MarkSceneTreeDirty();
+}
+
+static void BF6_HookSpawnWatch()
+{
+	UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (g_spawnHookWorld.Get() == W && g_spawnHandle.IsValid()) return;
+	if (UWorld* Old = g_spawnHookWorld.Get())
+		if (g_spawnHandle.IsValid()) Old->RemoveOnActorSpawnedHandler(g_spawnHandle);
+	g_spawnHandle.Reset();
+	g_spawnHookWorld = W;
+	if (!W) return;
+	g_spawnHandle = W->AddOnActorSpawnedHandler(
+		FOnActorSpawned::FDelegate::CreateStatic(&BF6_OnAnyActorSpawned));
+}
+
+// Cancel a selection made on a read-only base map.
+//
+// Selecting an object there leads nowhere: every action the selection unlocks
+// is refused, so the selection itself is the first thing the tool gets wrong -
+// it looks like a handle on something the creator cannot actually touch.
+// Refusing it the moment it happens is the honest answer, and it is where the
+// pulse belongs.
+//
+// DEFERRED, because clearing the selection from inside the selection-changed
+// event would re-enter it. One shot, and a guard so the clear we cause does
+// not look like a new selection to cancel.
+static bool GCancellingSelection = false;
+static void BF6_CancelSelectionOnBase(UObject*)
+{
+	if (GCancellingSelection) return;
+	if (!GEditor || g_ss.bEditing || g_ss.CurrentLevel.IsEmpty()) return;
+	if (!BF6Api::IsBuildOverlayActive()) return;
+
+	// Only OUR objects. An engine actor, a light, whatever else the creator
+	// clicks in their own level is none of this tool's business.
+	bool bOurs = false;
+	if (USelection* Sel = GEditor->GetSelectedActors())
+		for (FSelectionIterator It(*Sel); It; ++It)
+			if (AActor* A = Cast<AActor>(*It))
+				if (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag) || A->Tags.Contains(kGroupTag))
+					{ bOurs = true; break; }
+	if (!bOurs) return;
+
+	GCancellingSelection = true;
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+	{
+		if (GEditor) { GEditor->SelectNone(true, true, false); GEditor->NoteSelectionChange(); }
+		GCancellingSelection = false;
+		BF6Api::RefuseReadOnly(TEXT("Nothing on a base map can be selected or changed. Name it and press Create, bottom right, to build on it."));
+		return false;
+	}));
+}
 static double g_deleteT0 = 0.0;
 static TArray<TWeakObjectPtr<AActor>> GStrippedForDelete;
 static void BF6_StripMeshesBeforeStockDelete()
@@ -11591,6 +14502,7 @@ void FBF6UnrealSDKModule::StartupModule()
 	BF6_HookTransBuffer();
 	FCoreDelegates::OnPostEngineInit.AddStatic(&BF6_HookTransBuffer);
 	g_preDeleteHandle = FEditorDelegates::OnDeleteActorsBegin.AddStatic(&BF6_StripMeshesBeforeStockDelete);
+	g_selChangedHandle = USelection::SelectionChangedEvent.AddStatic(&BF6_CancelSelectionOnBase);
 	g_postDeleteHandle = FEditorDelegates::OnDeleteActorsEnd.AddStatic([]
 		{
 			const double Ms = (FPlatformTime::Seconds() - g_deleteT0) * 1000.0;
@@ -11599,6 +14511,10 @@ void FBF6UnrealSDKModule::StartupModule()
 			for (const TWeakObjectPtr<AActor>& Wk : GStrippedForDelete)
 				if (AActor* A = Wk.Get()) { BF6_RebuildActorGeometry(A); Back++; }
 			GStrippedForDelete.Reset();
+			// A deleted object may have been linked FROM somewhere. The name it
+			// was linked by outlives it, so the attribute panel would go on
+			// reporting it as assigned.
+			BF6Api::PruneDeadLinks();
 			if (Ms > 100.0)
 				UE_LOG(LogBF6, Warning, TEXT("stock delete took %.0f ms, then %d object(s) refilled in %.0f ms"),
 					Ms, Back, (FPlatformTime::Seconds() - R0) * 1000.0);
@@ -11658,6 +14574,7 @@ void FBF6UnrealSDKModule::StartupModule()
 
 	char err[256] = {0};
 	g_ctx = g_open(kGameDir, err, sizeof(err));
+	if (g_ctx) g_gameDir = UTF8_TO_TCHAR(kGameDir);
 	if (!g_ctx)
 	{
 		// No game install on this machine (or not at the Steam path). Fall back
@@ -11665,6 +14582,7 @@ void FBF6UnrealSDKModule::StartupModule()
 		// placeable catalogue is SDK data and works fully without the game.
 		UE_LOG(LogBF6, Log, TEXT("no game install (%hs); running catalogue-only"), err);
 		g_ctx = g_open("", err, sizeof(err));
+		g_gameDir.Reset();
 	}
 	if (!g_ctx) { UE_LOG(LogBF6, Warning, TEXT("bf6_open failed: %hs"), err); }
 	else
@@ -11701,6 +14619,27 @@ void FBF6UnrealSDKModule::StartupModule()
 		// here rather than at module startup because the level editor - and so
 		// its tab manager - does not exist that early.
 		BF6Api::RegisterOutlinerTab();
+		BF6Api::RegisterContextMenu();
+
+		// UNREAL'S OWN CAMERA PREVIEW, OFF.
+		//
+		// Selecting a camera pops the engine's picture-in-picture preview in
+		// the corner of the viewport, and this tool already shows its own -
+		// larger, docked, and updating live while the camera is moved. Two
+		// previews of the same camera, in different places and at different
+		// sizes, is worse than either alone: the creator has to work out which
+		// one is the real answer.
+		//
+		// Set every session rather than once behind a flag, because it is a
+		// global editor preference: a creator who opens another project and
+		// comes back should not silently lose it, and one who wants it back can
+		// turn it on in Editor Preferences and we will not fight them within
+		// the session.
+		if (ULevelEditorViewportSettings* VS = GetMutableDefault<ULevelEditorViewportSettings>())
+		{
+			VS->bPreviewSelectedCameras = false;
+			VS->PostEditChange();
+		}
 		// A bare-minimum editor layout, once: close Unreal's default panels so
 		// only the viewport (our whole UI) and the World Outliner remain. Users
 		// can reopen anything from the Window menu; we never fight them again.
@@ -11796,6 +14735,10 @@ void FBF6UnrealSDKModule::ShutdownModule()
 		g_preUndoHandle.Reset();
 	}
 	if (g_preDeleteHandle.IsValid()) { FEditorDelegates::OnDeleteActorsBegin.Remove(g_preDeleteHandle); g_preDeleteHandle.Reset(); }
+	if (g_selChangedHandle.IsValid()) { USelection::SelectionChangedEvent.Remove(g_selChangedHandle); g_selChangedHandle.Reset(); }
+	if (UWorld* SW = g_spawnHookWorld.Get())
+		if (g_spawnHandle.IsValid()) SW->RemoveOnActorSpawnedHandler(g_spawnHandle);
+	g_spawnHandle.Reset(); g_spawnHookWorld.Reset();
 	// release the assign-mode MIDs before static destruction (GLinkPick is a
 	// file-scope global; its strong pointers must not outlive the UObject system)
 	for (int32 s = 0; s < 3; s++) GLinkPick.Mid[s].Reset();

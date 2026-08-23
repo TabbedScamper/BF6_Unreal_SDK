@@ -1,5 +1,10 @@
 #include "BF6BuildMode.h"
+#include "Widgets/Colors/SColorPicker.h"
+#include "ToolMenus.h"
+#include "ToolMenu.h"
+#include "ToolMenuSection.h"
 #include "BF6Theme.h"
+#include "BF6ExtensionInternal.h"
 #include "BF6MapManifest.h"
 #include "SBF6PreviewViewport.h"
 
@@ -53,6 +58,7 @@
 #include "Engine/Selection.h"
 #include "MouseDeltaTracker.h"
 #include "EditorModeManager.h"
+#include "Misc/ConfigCacheIni.h"
 #include "UnrealWidgetFwd.h"
 #include "Settings/LevelEditorViewportSettings.h"
 
@@ -153,6 +159,49 @@ namespace
 	}
 
 	const FSlateBrush* LineBrush() { static FSlateColorBrush B(BF6Theme::Line); return &B; }
+
+	// ---- the read-only pulse ------------------------------------------------
+	//
+	// A base map refuses edits, and it used to refuse them quietly: a toast in
+	// the corner, or nothing at all. A creator who has not read the top read-out
+	// clicks again, and again, and concludes the tool is broken.
+	//
+	// So the refusal is now something you SEE, and what it lights up is the
+	// read-out itself - the one piece of UI that says why. The envelope is a
+	// fast swell and a slow release, because the eye reads the attack and not
+	// the decay; the glow grows out of the edge and settles back onto it.
+	//
+	// One shared clock, so everything that reacts reacts together. Re-firing
+	// restarts it rather than stacking, which is what makes it safe to call on
+	// every refused click.
+	static const double kFlashSecs  = 0.85;
+	static const float  kFlashSwell = 0.18f;   // fraction of the pulse spent growing
+	double GFlashAt = -1.0;
+
+	static double BF6_Now()
+	{
+		return FSlateApplication::IsInitialized() ? FSlateApplication::Get().GetCurrentTime() : 0.0;
+	}
+
+	// How far through the pulse we are, 0 to 1. Negative when idle.
+	static float BF6_FlashProgress()
+	{
+		if (GFlashAt < 0.0) return -1.f;
+		const double E = BF6_Now() - GFlashAt;
+		if (E < 0.0 || E > kFlashSecs) return -1.f;
+		return (float)(E / kFlashSecs);
+	}
+
+	// The brightness envelope: 0 at rest, 1 at the peak of the swell.
+	static float BF6_FlashEnvelope()
+	{
+		const float U = BF6_FlashProgress();
+		if (U < 0.f) return 0.f;
+		if (U < kFlashSwell) return U / kFlashSwell;
+		// eased release, so it settles rather than snapping off
+		const float R = (U - kFlashSwell) / (1.f - kFlashSwell);
+		return (1.f - R) * (1.f - R);
+	}
 
 	// Pie menu brushes: oval capsule pills with white outlines (corner radius =
 	// half the pill height), plus a circular hub.
@@ -425,6 +474,16 @@ private:
 	void OnActivate(TSharedPtr<BF6Api::FPlaceableInfo> Item)
 	{
 		if (!Item.IsValid()) return;
+		// WHILE A SCATTER IS ASKING FOR OBJECTS, the library fills its pool
+		// instead of placing. That is the whole "pick some objects to scatter"
+		// flow and it needs no second browser: the one the creator already
+		// knows changes what a click means for as long as the scatter is up,
+		// and the panel lists what has been picked so far.
+		if (BF6Api::IsScatterLive())
+		{
+			BF6Api::AddScatterObject(Item->Mesh, Item->Type, Item->Type);
+			return;   // menu stays open: picking several is the normal case
+		}
 		// Place at the remembered right-click spot (set when the radial opened).
 		extern FVector GBF6PendingWorld;
 		BF6Api::PlaceType(Item->Type, GBF6PendingWorld);
@@ -475,6 +534,7 @@ static void BF6_TickWalking(float DeltaSeconds);    // WASD on foot, defined wit
 static void BF6_WalkCaptureMouse(bool bCapture);    // hide the pointer while on foot
 static void BF6_WalkLookTick();                     // FPS look, one sample per frame
 static void BF6Pie_Close();                         // the radial, dismissed
+static void BF6_OpenObjectLibrary();                // the catalogue ring, straight open
 static void BF6Pie_Attach();                        // ...and rebuilt in place
 static double GLastSpaceTap = 0.0;                  // the double tap that enters and leaves walking
 static bool BF6_ShiftFlying();                      // Shift held during a flight
@@ -566,6 +626,7 @@ public:
 							[
 								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 1))
 								.OnClicked_Lambda([this]{ SetPinned(!bPinned); return FReply::Handled(); })
+								.ToolTip(BF6_MakeHint(TEXT("Pin this panel"), TEXT("Pinned, the panel stays open instead of sliding away when the pointer leaves it. Nothing on the map changes.")))
 								[ SNew(STextBlock).Font(FontBold(9))
 									.ColorAndOpacity_Lambda([this]{ return FSlateColor(bPinned ? BF6Theme::Accent : BF6Theme::TextDim); })
 									.Text_Lambda([this]{ return FText::FromString(bPinned ? TEXT("PINNED") : TEXT("PIN")); }) ]
@@ -574,6 +635,7 @@ public:
 							[
 								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 1))
 								.OnClicked_Lambda([this]{ SetPinned(false); SlideTarget = 0.f; return FReply::Handled(); })
+								.ToolTip(BF6_MakeHint(TEXT("Collapse the panel"), TEXT("Slides it out of the way and unpins it. Move the pointer back to the edge to bring it out again.")))
 								[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT(">"))) ]
 							]
 						]
@@ -626,6 +688,91 @@ private:
 // unpinned it collapses to a slim strip on the left edge and peeks on hover.
 // Its rows follow what the user is doing (zone points, box faces, groups...).
 // ---------------------------------------------------------------------------
+// The shine that runs once around the top read-out.
+//
+// Overlays the bar exactly, so it traces the bar's OWN perimeter rather than a
+// guessed rectangle. One lap over the pulse, a short bright head with a tail
+// behind it, drawn as a run of small quads whose alpha falls off along the
+// tail - a gradient, by the same means as the edge glow.
+class SBF6ReadOutShine : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6ReadOutShine) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		SetVisibility(EVisibility::HitTestInvisible);
+		ChildSlot[ SNullWidget::NullWidget ];
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		const float U = BF6_FlashProgress();
+		if (U < 0.f) return LayerId;
+
+		const FVector2D L = AllottedGeometry.GetLocalSize();
+		const float W = (float)L.X, H = (float)L.Y;
+		if (W < 8.f || H < 8.f) return LayerId;
+
+		const FSlateBrush* WB = FCoreStyle::Get().GetBrush("GenericWhiteBox");
+		const FLinearColor Amber = FLinearColor(1.f, 0.86f, 0.35f);
+		const float Per = 2.f * (W + H);
+
+		// Position on the perimeter, clockwise from the top-left corner.
+		auto At = [&](float D) -> FVector2D
+		{
+			D = FMath::Fmod(FMath::Fmod(D, Per) + Per, Per);
+			if (D < W)         return FVector2D(D, 0.f);
+			D -= W;
+			if (D < H)         return FVector2D(W, D);
+			D -= H;
+			if (D < W)         return FVector2D(W - D, H);
+			D -= W;
+			return FVector2D(0.f, H - D);
+		};
+
+		// One lap, eased so it leaves briskly and arrives softly.
+		const float Ease = 1.f - (1.f - U) * (1.f - U);
+		const float Head = Ease * Per;
+		const float Tail = Per * 0.22f;
+		const int32 Steps = 44;
+		const float Thick = 3.f;
+		// The whole shine fades out over the last third, so it does not stop dead.
+		const float Fade = U < 0.66f ? 1.f : FMath::Max(0.f, 1.f - (U - 0.66f) / 0.34f);
+
+		for (int32 i = 0; i < Steps; i++)
+		{
+			const float T = (float)i / (float)Steps;            // 0 at the head
+			const FVector2D P = At(Head - T * Tail);
+			const float A = Fade * (1.f - T) * (1.f - T);       // tail falloff
+			if (A <= 0.004f) continue;
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+				AllottedGeometry.ToPaintGeometry(FVector2f(Thick, Thick),
+					FSlateLayoutTransform(FVector2f((float)P.X - Thick * 0.5f, (float)P.Y - Thick * 0.5f))),
+				WB, ESlateDrawEffect::None, Amber.CopyWithNewOpacity(A));
+		}
+
+		// The bar's own outline warms up underneath the shine, so the read-out
+		// reads as the thing being pointed at and not just a track it runs on.
+		const float Env = BF6_FlashEnvelope();
+		if (Env > 0.002f)
+		{
+			const FLinearColor Ring = Amber.CopyWithNewOpacity(Env * 0.75f);
+			auto Box = [&](float X, float Y, float BW, float BH)
+			{
+				FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+					AllottedGeometry.ToPaintGeometry(FVector2f(BW, BH), FSlateLayoutTransform(FVector2f(X, Y))),
+					WB, ESlateDrawEffect::None, Ring);
+			};
+			Box(0.f, 0.f, W, 2.f); Box(0.f, H - 2.f, W, 2.f);
+			Box(0.f, 0.f, 2.f, H); Box(W - 2.f, 0.f, 2.f, H);
+		}
+		return LayerId + 2;
+	}
+};
+
 class SBF6HintPanel : public SCompoundWidget
 {
 public:
@@ -652,6 +799,12 @@ public:
 				.WidthOverride_Lambda([this]{ return FMath::Max(1.f, kPanelW * Slide); })
 				.Visibility_Lambda([this]{ return Slide > 0.01f ? EVisibility::Visible : EVisibility::Collapsed; })
 				[
+					// The shine laps THIS panel when an edit is refused. It is the
+					// read-out that lists what the creator can do, so it is the one
+					// worth looking at the moment something they tried did not happen.
+					SNew(SOverlay)
+					+ SOverlay::Slot()
+					[
 					SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(10, 8))
 					[
 						SNew(SVerticalBox)
@@ -674,6 +827,7 @@ public:
 							[
 								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 1))
 								.OnClicked_Lambda([this]{ SetPinned(!bPinned); return FReply::Handled(); })
+								.ToolTip(BF6_MakeHint(TEXT("Pin this panel"), TEXT("Pinned, the panel stays open instead of sliding away when the pointer leaves it. Nothing on the map changes.")))
 								[ SNew(STextBlock).Font(FontBold(9))
 									.ColorAndOpacity_Lambda([this]{ return FSlateColor(bPinned ? BF6Theme::Accent : BF6Theme::TextDim); })
 									.Text_Lambda([this]{ return FText::FromString(bPinned ? TEXT("PINNED") : TEXT("PIN")); }) ]
@@ -682,12 +836,15 @@ public:
 							[
 								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 1))
 								.OnClicked_Lambda([this]{ SetPinned(false); SlideTarget = 0.f; return FReply::Handled(); })
+								.ToolTip(BF6_MakeHint(TEXT("Collapse the panel"), TEXT("Slides it out of the way and unpins it. Move the pointer back to the edge to bring it out again.")))
 								[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("<"))) ]
 							]
 						]
 						+ SVerticalBox::Slot().AutoHeight()
 						[ SAssignNew(Rows, SVerticalBox) ]
 					]
+					]
+					+ SOverlay::Slot()[ SNew(SBF6ReadOutShine) ]
 				]
 			]
 			// the peek strip when hidden
@@ -714,7 +871,10 @@ public:
 		const int32 M = CurrentMode();
 		// context key: mode + whatever inside the mode changes the rows, so the
 		// panel follows the selection, not just the editing mode
-		int32 Key = M * 1000;
+		// The read-only state changes the rows without changing the mode, so it
+		// has to be part of the key or the panel keeps showing what it built
+		// before the map opened.
+		int32 Key = M * 1000 + (BF6Api::IsEditing() ? 0 : 500);
 		if (M == 5) Key += BF6Api::ModeWizardStep();
 		else if (M == 9) Key += (BF6Api::IsScatterDrawing() ? 1 : 0) + (BF6Api::GetScatterShape() == 3 ? 2 : 0);
 		else if (M == 6 || M == 8)
@@ -769,6 +929,8 @@ private:
 
 	static const TCHAR* TitleForMode(int32 M)
 	{
+		// A base map has no editing mode - nothing here changes anything.
+		if (!BF6Api::IsEditing()) return TEXT("READ ONLY");
 		switch (M)
 		{
 		case 1: return TEXT("ZONE POINTS");
@@ -809,7 +971,8 @@ private:
 			B = { { TEXT("Drag dot"), TEXT("move the point") },
 				  { TEXT("Drag TOP dot"), TEXT("set the height (to the floor = infinite)") },
 				  { TEXT("Ctrl+LMB"), TEXT("add a point on the edge") },
-				  { TEXT("Del / Ctrl+RMB"), TEXT("delete the point") },
+				  { TEXT("Ctrl + RMB"), TEXT("delete the point under the cursor") },
+				  { TEXT("Del"), TEXT("delete the whole zone") },
 				  { TEXT("Enter / Esc"), TEXT("finish editing") } };
 			break;
 		case 2:
@@ -828,10 +991,15 @@ private:
 				  { TEXT("Esc"), TEXT("cancel, back to attributes") } };
 			break;
 		case 5:
+			// The way out is spelled out on EVERY step, at the bottom where it is
+			// read last, because the guidance above it is now several sentences
+			// long and a creator part-way through a wizard needs to know they
+			// are not trapped in it.
 			B = { { FString::Printf(TEXT("Step %d of %d"), BF6Api::ModeWizardStep(), BF6Api::ModeWizardTotal()), BF6Api::ModeWizardTitle() },
 				  { FString(), BF6Api::ModeWizardBody() },
 				  { TEXT("Click"), TEXT("place it right where you aim") },
-				  { TEXT("Esc"), TEXT("stop the setup") } };
+				  { TEXT("Ctrl+Z"), TEXT("take back the last piece and try again") },
+				  { TEXT("Esc"), TEXT("leave the setup at any point - what is already down stays") } };
 			break;
 		case 6:   // one object selected
 		{
@@ -883,8 +1051,9 @@ private:
 			break;
 		case 10:  // carrying a selection with the cursor
 			B = { { TEXT("Move mouse"), TEXT("it rides the cursor on the terrain") },
+				  { TEXT("Q / E"), TEXT("turn it   (Shift = 5 degree steps)") },
 				  { TEXT("Click / Enter"), TEXT("place it here (one undo reverts)") },
-				  { TEXT("Hold Ctrl"), TEXT("snap to the metre grid") },
+				  { TEXT("Hold Ctrl"), TEXT("snap to the metre grid, and to 15 degrees") },
 				  { TEXT("Esc"), TEXT("put it back where it was") } };
 			break;
 		default:  // nothing selected: placement
@@ -898,6 +1067,31 @@ private:
 			B.Add({ TEXT("F1"), TEXT("all controls") });
 			break;
 		}
+
+		// READ-ONLY BASE, and this panel is the first thing a creator reads.
+		// Listing "Space: place objects" there is the tool asking for something
+		// it will then refuse, which is where the confusion starts. Say what is
+		// actually available, and name the one action that changes it.
+		if (!BF6Api::IsEditing())
+		{
+			B.Reset();
+			if (BF6Api::IsWalking())
+			{
+				B = { { TEXT("Mouse"), TEXT("look around") },
+					  { TEXT("W A S D"), TEXT("walk   (Shift run, Ctrl crouch)") },
+					  { TEXT("Space"), TEXT("jump") },
+					  { TEXT("Esc, or the FLY pill"), TEXT("stand up and fly again") } };
+			}
+			else
+			{
+				B = { { TEXT("Mouse"), TEXT("fly and look around") } };
+				if (BF6_GodotCameraOn()) B.Add({ TEXT("MMB"), TEXT("orbit   (Shift = pan)") });
+			}
+			B.Add({ TEXT("Nothing can be placed"), TEXT("this is the base map, and it is never changed") });
+			B.Add({ TEXT("Name it, then Create"), TEXT("bottom right - that unlocks building") });
+			B.Add({ TEXT("F1"), TEXT("all controls") });
+		}
+
 		for (const TPair<FString, FString>& P : B)
 		{
 			Rows->AddSlot().AutoHeight().Padding(0, 2)
@@ -1152,12 +1346,125 @@ public:
 			[
 				SNew(SBorder).BorderImage(PanelBrush()).Padding(12.f)
 				[
+					// CAPPED AND SCROLLABLE. This panel grew - a pool list, a
+					// ground filter, a fifth shape - and the extra height pushed
+					// the SHAPE row clean off the bottom of the screen, taking
+					// DRAW and PAINT with it. A control that cannot be reached
+					// is worse than one that is not there, because nothing says
+					// it exists.
+					//
+					// The cap is high enough that nothing scrolls on an ordinary
+					// display and low enough to fit a short one.
+					SNew(SBox).MaxDesiredHeight(760.f)
+					[
+					SNew(SScrollBox)
+					+ SScrollBox::Slot()
+					[
 					SNew(SVerticalBox)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 2)
 					[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("SCATTER"))) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
 					[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
 						.Text(FText::FromString(TEXT("Live - the scatter re-forms as you drag. Each copy rolls its own rotation, elevation, and size inside these limits."))) ]
+					// ---- THE POOL -------------------------------------------
+					//
+					// Only shown for a scatter that came from the library: a
+					// selection-based one has no pool and the section would be
+					// an empty box asking a question with no answer.
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+					[
+						SNew(SBox)
+						.Visibility_Lambda([]{ return BF6Api::ScatterPoolCount() > 0 || BF6Api::IsScatterFromLibrary()
+							? EVisibility::Visible : EVisibility::Collapsed; })
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+								.Text_Lambda([]
+								{
+									const int32 n = BF6Api::ScatterPoolCount();
+									return FText::FromString(n == 0 ? TEXT("OBJECTS - PICK SOME")
+										: FString::Printf(TEXT("OBJECTS (%d)"), n));
+								}) ]
+							// The prompt, while the pool is empty. It is the
+							// whole instruction for this mode, so it says what
+							// to click rather than that something is missing.
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+							[
+								SNew(SBox).Visibility_Lambda([]{ return BF6Api::ScatterPoolCount() == 0 ? EVisibility::Visible : EVisibility::Collapsed; })
+								[ SNew(STextBlock).Font(FontReg(9)).AutoWrapText(true)
+									.ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+									.Text(FText::FromString(TEXT("Open the object library and click anything you want in the mix. Pick as many as you like - every copy draws one at random."))) ]
+							]
+							+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)[ SAssignNew(PoolBox, SVerticalBox) ]
+							// REOPENING THE LIBRARY FROM HERE, because the ring
+							// that filled the pool is long since dismissed by
+							// the time anybody wants a fourth bush in the mix.
+							+ SVerticalBox::Slot().AutoHeight()
+							[
+								SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Add objects"),
+									TEXT("Opens the object library again. Click anything to add it to the mix; every copy draws one of them at random. BACK closes the library and leaves the scatter running.")))
+								[ MakeToolButton(TEXT("Add objects..."), []{ BF6_OpenObjectLibrary(); }) ]
+							]
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Ground only"),
+							TEXT("Copies that would land on anything but the map's terrain are skipped instead of placed. Off, a scatter over a street puts bushes on car roofs and window ledges, because the drop takes the first thing it hits.")))
+						[
+							SNew(SCheckBox)
+							.IsChecked_Lambda([]{ return BF6Api::GetScatterTerrainOnly() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+							.OnCheckStateChanged_Lambda([](ECheckBoxState St){ BF6Api::SetScatterTerrainOnly(St == ECheckBoxState::Checked); })
+							[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+								.Text(FText::FromString(TEXT("Ground only"))) ]
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+						[ SNew(SBox).WidthOverride(74.f)
+							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("SHAPE"))) ] ]
+						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("CIRCLE"), 0) ]
+						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("SQUARE"), 1) ]
+						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("RING"), 2) ]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(6, 0, 0, 0)
+						[
+							SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Paint it on"),
+								TEXT("Turns the cursor into a brush. Hold the left button and move to lay objects as you go - RADIUS is the brush size and COUNT is how thickly it lays. What you paint stays put while you change the sliders or the objects, so you can switch the mix halfway through a stroke.")))
+							[
+								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 2))
+								.OnClicked_Lambda([]{ BF6Api::SetScatterShape(4); return FReply::Handled(); })
+								[ SNew(STextBlock).Font(FontBold(9))
+									.ColorAndOpacity_Lambda([]{ return FSlateColor(BF6Api::GetScatterShape() == 4 ? BF6Theme::Accent : BF6Theme::TextDim); })
+									.Text(FText::FromString(TEXT("PAINT"))) ]
+							]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(6, 0, 0, 0)
+						[
+							SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Draw an area"), TEXT("Outline any area yourself: click corners on the map and the scatter fills the outline live from the third corner on. Enter finishes the outline, Esc throws it away.")))
+							[
+								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 2))
+								.OnClicked_Lambda([]{ BF6Api::BeginScatterDraw(); return FReply::Handled(); })
+								[ SNew(STextBlock).Font(FontBold(9))
+									.ColorAndOpacity_Lambda([]{ return FSlateColor(BF6Api::GetScatterShape() == 3 ? BF6Theme::Accent : BF6Theme::TextDim); })
+									.Text(FText::FromString(TEXT("DRAW..."))) ]
+							]
+						]
+					]
+					// The one thing everybody asks while painting: the sliders look
+					// broken because nothing they do reaches what is already on
+					// the ground.
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+					[
+						SNew(SBox)
+						.Visibility_Lambda([]{ return BF6Api::IsScatterLive() && BF6Api::GetScatterShape() == 4
+							? EVisibility::Visible : EVisibility::Collapsed; })
+						[ SNew(STextBlock).Font(FontReg(9)).AutoWrapText(true)
+							.ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+							.Text(FText::FromString(TEXT("Everything here re-lays what you have painted, live. Ctrl+Z takes back a stroke; Enter confirms it so you can start another with different settings."))) ]
+					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
 					[ Row(TEXT("COUNT"), 1.f, &MaxCount, 1000.f, 1.f, &CountF, [](float v){ return FString::Printf(TEXT("%d"), FMath::RoundToInt(v)); },
 						TEXT("Count"), TEXT("How many copies to scatter inside the circle. Spacing adapts so the count always fits.")) ]
@@ -1208,27 +1515,6 @@ public:
 						TEXT("Size limit"), TEXT("Each copy grows or shrinks a random amount within this percentage.")) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
 					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
-						[ SNew(SBox).WidthOverride(74.f)
-							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("SHAPE"))) ] ]
-						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("CIRCLE"), 0) ]
-						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("SQUARE"), 1) ]
-						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("RING"), 2) ]
-						+ SHorizontalBox::Slot().AutoWidth().Padding(6, 0, 0, 0)
-						[
-							SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Draw an area"), TEXT("Outline any area yourself: click corners on the map and the scatter fills the outline live from the third corner on. Enter finishes the outline, Esc throws it away.")))
-							[
-								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 2))
-								.OnClicked_Lambda([]{ BF6Api::BeginScatterDraw(); return FReply::Handled(); })
-								[ SNew(STextBlock).Font(FontBold(9))
-									.ColorAndOpacity_Lambda([]{ return FSlateColor(BF6Api::GetScatterShape() == 3 ? BF6Theme::Accent : BF6Theme::TextDim); })
-									.Text(FText::FromString(TEXT("DRAW..."))) ]
-							]
-						]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
-					[
 						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Follow terrain"), TEXT("On: every copy drops onto whatever is under it. Off: every copy stays at the original object's height - for scattering across a flat build or in the air.")))
 						[
 							SNew(SCheckBox)
@@ -1267,6 +1553,8 @@ public:
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("Enter / Esc"))) ]
 					]
+					]
+					]
 				]
 			]
 		];
@@ -1276,6 +1564,41 @@ public:
 	{
 		SCompoundWidget::Tick(Geo, CurTime, Dt);
 		const bool bLive = BF6Api::IsScatterLive();
+		// THE POOL LIST, rebuilt only when it changes. Slate has no binding for
+		// "a list of unknown length", and rebuilding every frame would throw
+		// away the row a creator is reaching for.
+		if (bLive)
+		{
+			const int32 n = BF6Api::ScatterPoolCount();
+			if (n != LastPool && PoolBox.IsValid())
+			{
+				LastPool = n;
+				PoolBox->ClearChildren();
+				for (int32 i = 0; i < n; i++)
+				{
+					const FString Nm = BF6Api::ScatterPoolName(i);
+					PoolBox->AddSlot().AutoHeight().Padding(0, 0, 0, 2)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::Text))
+							.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+							.ToolTipText(FText::FromString(Nm))
+							.Text(FText::FromString(Nm)) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[
+							SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 0))
+							.ToolTipText(FText::FromString(TEXT("Take this one out of the mix")))
+							.OnClicked_Lambda([i]{ BF6Api::RemoveScatterObject(i); return FReply::Handled(); })
+							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+								.Text(FText::FromString(TEXT("x"))) ]
+						]
+					];
+				}
+			}
+		}
+		else LastPool = -1;
+
 		// session counter, not a rising-edge flag: the panel is collapsed
 		// (and never ticks) between sessions, so an edge would be missed
 		if (bLive && BF6Api::ScatterSession() != LastSession)
@@ -1304,6 +1627,8 @@ private:
 	float CountF = 24.f, RadiusM = 20.f, RotDeg = 360.f, ElevM = 0.f, VaryPct = 15.f;
 	float WobbleF = 0.f, TiltXF = 0.f, TiltYF = 0.f;
 	// per-slider tops: typing a bigger number into a readout stretches these
+	TSharedPtr<SVerticalBox> PoolBox;
+	int32 LastPool = -1;
 	float MaxCount = 200.f, MaxRadius = 100.f, MaxRot = 360.f, MaxWob = 45.f;
 	float MaxTiltX = 90.f, MaxTiltY = 90.f, MaxElev = 10.f, MaxVary = 100.f;
 	int32 Seed = 1, LastSession = -1;
@@ -1314,6 +1639,79 @@ private:
 // ---------------------------------------------------------------------------
 // The zone's point handles, Godot-style: little orange screen-space dots at a
 // constant pixel size, painted over the viewport. Dragging happens directly in
+// ---------------------------------------------------------------------------
+// THE READ-ONLY PULSE, drawn.
+//
+// Two halves of one gesture. The viewport edge swells amber, which says
+// something was refused; a shine runs once around the top read-out, which says
+// where to look for the reason. Both ride BF6_FlashEnvelope so they cannot
+// drift apart.
+//
+// The glow is banded rather than textured: a stack of thin strips hugging each
+// edge, alpha falling off inward on a curve. That IS the gradient, it needs no
+// asset, and it costs a few dozen quads for under a second.
+// ---------------------------------------------------------------------------
+class SBF6ReadOnlyPulse : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6ReadOnlyPulse) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		SetVisibility(EVisibility::HitTestInvisible);   // never eats a click
+		ChildSlot[ SNullWidget::NullWidget ];
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		const float Env = BF6_FlashEnvelope();
+		if (Env <= 0.001f) return LayerId;
+
+		const FVector2D L = AllottedGeometry.GetLocalSize();
+		if (L.X < 8.f || L.Y < 8.f) return LayerId;
+
+		const FSlateBrush* WB = FCoreStyle::Get().GetBrush("GenericWhiteBox");
+		const FLinearColor Amber = FLinearColor(1.f, 0.78f, 0.18f);
+
+		auto Box = [&](float X, float Y, float W, float H, const FLinearColor& C)
+		{
+			if (W <= 0.f || H <= 0.f) return;
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+				AllottedGeometry.ToPaintGeometry(FVector2f((float)W, (float)H), FSlateLayoutTransform(FVector2f((float)X, (float)Y))),
+				WB, ESlateDrawEffect::None, C);
+		};
+
+		// The band GROWS as it brightens and shrinks back onto the edge as it
+		// fades, so the movement and the light are the same gesture.
+		const int32 Bands = 22;
+		const float Reach = 46.f * Env;
+		const float Step  = Reach / (float)Bands;
+		for (int32 i = 0; i < Bands; i++)
+		{
+			const float T = (float)i / (float)Bands;          // 0 at the edge
+			const float A = Env * 0.55f * (1.f - T) * (1.f - T);   // quadratic falloff
+			if (A <= 0.002f) continue;
+			const FLinearColor C = Amber.CopyWithNewOpacity(A);
+			const float O = i * Step;                          // this band's inset
+			Box(0.f, O, (float)L.X, Step + 1.f, C);                       // top
+			Box(0.f, (float)L.Y - O - Step - 1.f, (float)L.X, Step + 1.f, C);   // bottom
+			Box(O, 0.f, Step + 1.f, (float)L.Y, C);                       // left
+			Box((float)L.X - O - Step - 1.f, 0.f, Step + 1.f, (float)L.Y, C);   // right
+		}
+
+		// A crisp line right on the edge, so the pulse has an anchor to
+		// collapse back onto instead of dissolving into nothing.
+		const FLinearColor Edge = Amber.CopyWithNewOpacity(FMath::Min(1.f, Env * 1.1f));
+		Box(0.f, 0.f, (float)L.X, 2.f, Edge);
+		Box(0.f, (float)L.Y - 2.f, (float)L.X, 2.f, Edge);
+		Box(0.f, 0.f, 2.f, (float)L.Y, Edge);
+		Box((float)L.X - 2.f, 0.f, 2.f, (float)L.Y, Edge);
+		return LayerId + 2;
+	}
+};
+
 // the input processor (no gizmo); this widget only draws.
 // ---------------------------------------------------------------------------
 class SBF6ZoneDots : public SCompoundWidget
@@ -1488,6 +1886,31 @@ public:
 			}
 		}
 
+		// THE BRUSH RING. The only thing on screen that says how wide the next
+		// stamp will be, and it has to be projected rather than drawn at a
+		// fixed pixel size - a circle that stays the same size on screen tells
+		// you nothing about how much ground it covers.
+		{
+			FVector2D BC; float BR = 0.f;
+			if (BF6Api::GetScatterBrush(BC, BR) && BR > 1.f)
+			{
+				const float SS = AllottedGeometry.Scale;
+				const FLinearColor Ring = BF6Api::IsScatterPainting()
+					? FLinearColor(1.f, 0.55f, 0.18f)      // laying down
+					: FLinearColor(0.25f, 0.55f, 1.f);     // hovering
+				TArray<FVector2f> Circle;
+				const int32 Segs = 48;
+				for (int32 i = 0; i <= Segs; i++)
+				{
+					const float A = (float)i / Segs * 2.f * PI;
+					Circle.Add(FVector2f((BC.X + FMath::Cos(A) * BR) / SS,
+					                     (BC.Y + FMath::Sin(A) * BR) / SS));
+				}
+				FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 1,
+					AllottedGeometry.ToPaintGeometry(), Circle, ESlateDrawEffect::None, Ring, true, 2.f);
+			}
+		}
+
 		// scatter outline corners: blue dots + the outline itself, painted the
 		// same way as zone points (the translucent region mesh is 3D-side)
 		{
@@ -1560,20 +1983,73 @@ public:
 				AllottedGeometry.ToPaintGeometry(FVector2f(Size, Size), FSlateLayoutTransform(FVector2f(Local))),
 				Brush, ESlateDrawEffect::None, Tint);
 		};
+		// AN INFINITE ZONE SAYS SO ON ITS TOP HANDLES.
+		//
+		// Height 0 means unbounded and the zone is still DRAWN at 5 m, so it is
+		// pixel-identical to a real 5 m zone - there was nothing to tell them
+		// apart except a toast that fired once, while you were dragging, and
+		// never for a zone somebody else authored.
+		//
+		// The colour goes on the TOP ring only, because that ring is exactly
+		// what you drag to give the zone a height: the cue sits on the control
+		// that changes the thing it is describing. It is deliberately not the
+		// zone's body colour - that belongs to the creator now, and spending it
+		// on a state flag would take away what they organise their map with.
+		const bool bInfinite = BF6Api::IsEditZoneInfinite();
+		static const FSlateRoundedBoxBrush BlueDot16(FLinearColor(FColor(0x3A, 0x9B, 0xFF)), 8.f, FLinearColor::White, 2.f);
+		static const FSlateRoundedBoxBrush BlueDot20(FLinearColor(FColor(0x3A, 0x9B, 0xFF)), 10.f, FLinearColor::White, 2.5f);
+		const FLinearColor BlueTint(FColor(0x3A, 0x9B, 0xFF));
+
 		for (int32 i = 0; i < Px.Num(); i++)
 		{
 			if (Px[i].X < -999.f) continue;   // behind the camera
 			const bool bBig = (i == Drag) || (PointCount > 0 && (i % PointCount) == Active);
-			DrawAt(Px[i], bBig ? 12.f : 10.f, Square, OrangeTint);                    // fail-safe core
+			// [0..N) is the bottom ring, [N..2N) the top - so the top ring is
+			// the second half, whatever the point count.
+			const bool bTop = PointCount > 0 && i >= PointCount;
+			const bool bBlue = bInfinite && bTop;
+			DrawAt(Px[i], bBig ? 12.f : 10.f, Square, bBlue ? BlueTint : OrangeTint);   // fail-safe core
 			// the rounded-box shader takes the ELEMENT tint as its fill color
-			DrawAt(Px[i], bBig ? 20.f : 16.f, bBig ? &Dot20 : &Dot16, OrangeTint);
+			DrawAt(Px[i], bBig ? 20.f : 16.f,
+				bBlue ? (bBig ? &BlueDot20 : &BlueDot16) : (bBig ? &Dot20 : &Dot16),
+				bBlue ? BlueTint : OrangeTint);
+		}
+
+		// And what the colour MEANS, on hover. A colour alone is a code the
+		// creator has to be taught somewhere else; attached to the handle it is
+		// self-explaining, and it names the gesture that changes it rather than
+		// only the state it is in.
+		if (bInfinite && PointCount > 0)
+		{
+			const int32 Hot = BF6Api::ZoneDotUnderMouse();
+			if (Hot >= PointCount && Px.IsValidIndex(Hot) && Px[Hot].X > -999.f)
+			{
+				const FString Msg = TEXT("INFINITE  -  DRAG TO SET HEIGHT");
+				const FSlateFontInfo HF = FontBold(10);
+				const TSharedRef<FSlateFontMeasure> FM = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+				const FVector2D TS = FM->Measure(Msg, HF);
+				const float PW = TS.X + 18.f, PH = TS.Y + 10.f;
+				// Above the handle and centred on it, so it never sits under
+				// the cursor and hides the thing being pointed at.
+				const FVector2D PP(Px[Hot].X / S - PW * 0.5f, Px[Hot].Y / S - PH - 16.f);
+				static const FSlateRoundedBoxBrush Pill(FLinearColor::White, 7.f);
+				FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2,
+					AllottedGeometry.ToPaintGeometry(FVector2f(PW, PH), FSlateLayoutTransform(FVector2f(PP))),
+					&Pill, ESlateDrawEffect::None, FLinearColor(0.03f, 0.05f, 0.08f, 0.96f));
+				FSlateDrawElement::MakeText(OutDrawElements, LayerId + 3,
+					AllottedGeometry.ToPaintGeometry(FVector2f(PW, TS.Y),
+						FSlateLayoutTransform(FVector2f(PP.X + 9.f, PP.Y + 5.f))),
+					Msg, HF, ESlateDrawEffect::None, BlueTint);
+			}
 		}
 		if (bEdge)
 		{
 			DrawAt(EdgePx, 9.f, Square, FLinearColor::White);
 			DrawAt(EdgePx, 14.f, &Edge14, FLinearColor::White);
 		}
-		return LayerId + 1;
+		// +3, not +1: the hover label draws two layers above the handles, and
+		// returning a lower id lets whatever paints next cover it.
+		return LayerId + 3;
 	}
 };
 
@@ -1603,7 +2079,7 @@ public:
 			if (!FBF6LibDragOp::bWarnedReadOnly)
 			{
 				FBF6LibDragOp::bWarnedReadOnly = true;
-				BF6_MiniToast(TEXT("This base map is read-only. Type a name and click Create (bottom right) to start your custom map - then objects can be placed."));
+				BF6Api::RefuseReadOnly(TEXT("This base map is read-only. Type a name and press Create, bottom right, to start your custom map - then objects can be placed."));
 			}
 			return FReply::Handled();
 		}
@@ -2320,6 +2796,7 @@ private:
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 				[
 					SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 2))
+					.ToolTip(BF6_MakeHint(TEXT("Delete this block"), TEXT("Removes the saved block's file for good, after asking. Blocks already placed on a map stay where they are.")))
 					.OnClicked_Lambda([this, Item]
 					{
 						if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(
@@ -2408,6 +2885,274 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// "PICK IN WORLD": the candidate LIST, docked while a link is being assigned.
+//
+// The markers alone do not scale. They are the right answer for three
+// candidates in front of you and useless for thirty scattered across a map,
+// half of them behind a building or off screen entirely - and nothing about
+// hunting for a glow tells a creator what they have already assigned.
+//
+// So the same candidates the overlay is tracking are listed by name, with what
+// each one currently is, and picking a row flies the view onto it. The list and
+// the markers are two views of one thing: clicking either assigns, and both
+// show the same three states.
+// ---------------------------------------------------------------------------
+class SBF6LinkPickPanel : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6LinkPickPanel) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		ChildSlot
+		[
+			SNew(SBox).WidthOverride(300.f)
+			.Visibility_Lambda([]{ return BF6Api::IsLinkPicking() ? EVisibility::Visible : EVisibility::Collapsed; })
+			[
+				SNew(SBorder).BorderImage(PanelBrush()).Padding(12.f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 2)
+					[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+						.Text_Lambda([]{ return FText::FromString(BF6Api::LinkPickLabel()); }) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
+					[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
+						.Text(FText::FromString(TEXT("Click a row to assign it, or the arrow to fly there and look. Space or Enter confirms, Esc backs out."))) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ SNew(SBox).MaxDesiredHeight(420.f)
+						[ SNew(SScrollBox) + SScrollBox::Slot()[ SAssignNew(Rows, SVerticalBox) ] ] ]
+				]
+			]
+		];
+	}
+
+	virtual void Tick(const FGeometry& Geo, const double CurTime, const float Dt) override
+	{
+		SCompoundWidget::Tick(Geo, CurTime, Dt);
+		if (!BF6Api::IsLinkPicking()) { Built = -1; return; }
+
+		// REBUILT ON THE STATE, not every frame. The rows carry buttons, and
+		// replacing them under a cursor that is reaching for one is how a click
+		// lands on the wrong candidate. A cheap signature over the states
+		// catches an assignment made from the markers instead.
+		int32 Sig = BF6Api::LinkCandidateCount() * 31;
+		for (int32 i = 0; i < BF6Api::LinkCandidateCount(); i++)
+			Sig = Sig * 3 + BF6Api::LinkCandidateState(i);
+		if (Sig == Built || !Rows.IsValid()) return;
+		Built = Sig;
+
+		Rows->ClearChildren();
+		const int32 N = BF6Api::LinkCandidateCount();
+		if (N == 0)
+		{
+			Rows->AddSlot().AutoHeight()
+			[ SNew(STextBlock).Font(FontReg(9)).AutoWrapText(true)
+				.ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+				.Text(FText::FromString(TEXT("Nothing on this map can be assigned to this field."))) ];
+			return;
+		}
+		for (int32 i = 0; i < N; i++)
+		{
+			const FString Nm = BF6Api::LinkCandidateName(i);
+			if (Nm.IsEmpty()) continue;
+			Rows->AddSlot().AutoHeight().Padding(0, 1)
+			[
+				SNew(SHorizontalBox)
+				// The state, as the same three colours the markers use, so the
+				// list and the map never have to be translated between.
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
+				[
+					SNew(SBox).WidthOverride(8.f).HeightOverride(8.f)
+					[ SNew(SImage).Image(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
+						.ColorAndOpacity_Lambda([i]
+						{
+							switch (BF6Api::LinkCandidateState(i))
+							{
+							case 1:  return FSlateColor(FLinearColor(0.13f, 1.f, 0.27f));   // assigned
+							case 2:  return FSlateColor(FLinearColor(1.f, 0.55f, 0.18f));   // picked now
+							default: return FSlateColor(FLinearColor(0.f, 0.9f, 1.f));      // free
+							}
+						}) ]
+				]
+				+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+				[
+					SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(2, 3))
+					.ToolTipText(FText::FromString(TEXT("Assign or unassign this one")))
+					.OnClicked_Lambda([i]{ BF6Api::ToggleLinkCandidate(i); return FReply::Handled(); })
+					[ SNew(STextBlock).Font(FontReg(10))
+						.ColorAndOpacity_Lambda([i]
+						{
+							return FSlateColor(BF6Api::LinkCandidateState(i) == 0 ? BF6Theme::TextDim : BF6Theme::Text);
+						})
+						// Same reason as the chips: a long name must not push
+						// the snap button off the panel.
+						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						.ToolTipText(FText::FromString(Nm))
+						.Text(FText::FromString(Nm)) ]
+				]
+				// SNAP SEPARATE FROM ASSIGN. Wanting to LOOK at a candidate
+				// before committing to it is the common case, and folding both
+				// onto one click would mean every inspection changed the map.
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 3))
+					.ToolTipText(FText::FromString(TEXT("Fly the view to this one - nothing is assigned")))
+					.OnClicked_Lambda([i]{ BF6Api::FocusLinkCandidate(i); return FReply::Handled(); })
+					[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+						.Text(FText::FromString(TEXT(">"))) ]
+				]
+			];
+		}
+	}
+
+private:
+	TSharedPtr<SVerticalBox> Rows;
+	int32 Built = -1;
+};
+
+// ---------------------------------------------------------------------------
+// "DISPLAY/SUN": how the map is LIT and DRAWN while you work on it.
+//
+// Says what it is at the top, because the trap here is expensive and silent.
+// Portal exports no lighting: not a sun, not a sky, not a light. Somebody who
+// spends an hour finding a golden-hour angle and ships it gets whatever
+// lighting Portal gives the map, and nothing in the tool would otherwise tell
+// them that before they found out the hard way.
+// ---------------------------------------------------------------------------
+class SBF6DisplaySunPanel : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6DisplaySunPanel) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		auto Slider = [](const TCHAR* Label, float Min, float Max,
+			TFunction<float()> Get, TFunction<void(float)> Set,
+			TFunction<FString(float)> Fmt, const TCHAR* HintTitle, const TCHAR* HintBody)
+		{
+			return SNew(SBox).ToolTip(BF6_MakeHint(HintTitle, HintBody))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+				[ SNew(SBox).WidthOverride(76.f)
+					[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+						.Text(FText::FromString(Label)) ] ]
+				+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+				[ SNew(SSlider)
+					.Value_Lambda([Get, Min, Max]{ return (Get() - Min) / FMath::Max(Max - Min, 0.001f); })
+					.OnValueChanged_Lambda([Set, Min, Max](float v){ Set(Min + v * (Max - Min)); })
+					.SliderBarColor(BF6Theme::AccentDim)
+					.SliderHandleColor(BF6Theme::Accent) ]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0, 0, 0)
+				[ SNew(SBox).WidthOverride(62.f).HAlign(HAlign_Right)
+					[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::Text))
+						.Text_Lambda([Get, Fmt]{ return FText::FromString(Fmt(Get())); }) ] ]
+			];
+		};
+
+		auto ModeBtn = [](const TCHAR* Label, int32 Mode) -> TSharedRef<SWidget>
+		{
+			return SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(8, 2))
+				.OnClicked_Lambda([Mode]{ BF6Api::SetDisplayViewMode(Mode); return FReply::Handled(); })
+				[ SNew(STextBlock).Font(FontBold(9))
+					.ColorAndOpacity_Lambda([Mode]{ return FSlateColor(BF6Api::GetDisplayViewMode() == Mode ? BF6Theme::Accent : BF6Theme::TextDim); })
+					.Text(FText::FromString(Label)) ];
+		};
+
+		ChildSlot
+		[
+			SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(18, 16))
+			[
+				SNew(SBox).WidthOverride(360.f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+					[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+						.Text(FText::FromString(TEXT("DISPLAY / SUN"))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 14)
+					[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
+						.Text(FText::FromString(TEXT("How the map is lit and drawn while you work. A view aid only - Portal lights your map its own way, so none of this is saved and none of it reaches your export."))) ]
+
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+					[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+						.Text(FText::FromString(TEXT("SUN"))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+					[ Slider(TEXT("TIME"), 0.f, 24.f,
+						[]{ return BF6Api::GetSunTime(); },
+						[](float v){ BF6Api::SetSunTime(v); },
+						[](float v)
+						{
+							const int32 H = FMath::Clamp(FMath::FloorToInt(v), 0, 23);
+							const int32 M = FMath::Clamp(FMath::RoundToInt((v - H) * 60.f), 0, 59);
+							return FString::Printf(TEXT("%02d:%02d"), H, M);
+						},
+						TEXT("Time of day"), TEXT("Swings the sun from dawn through noon to dusk. Below the horizon the map falls back to its ambient light, which is worth a look if you are building somewhere dark.")) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+					[ Slider(TEXT("DIRECTION"), 0.f, 360.f,
+						[]{ return BF6Api::GetSunDirection(); },
+						[](float v){ BF6Api::SetSunDirection(v); },
+						[](float v){ return FString::Printf(TEXT("%.0f deg"), v); },
+						TEXT("Compass direction"), TEXT("Turns the sun around the map. Use it to throw shadows across a lane and see whether the shapes still read.")) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+					[ Slider(TEXT("BRIGHTNESS"), 0.f, 3.f,
+						[]{ return BF6Api::GetSunBrightness(); },
+						[](float v){ BF6Api::SetSunBrightness(v); },
+						[](float v){ return FString::Printf(TEXT("%.2fx"), v); },
+						TEXT("Brightness"), TEXT("Multiplies the map's own sun. 1.00 is exactly what the map came with.")) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 12)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Shadows"),
+							TEXT("Off flattens the lighting. Useful when you want to read a blockout's massing without shadows breaking the shapes up.")))
+						[
+							SNew(SCheckBox)
+							.IsChecked_Lambda([]{ return BF6Api::GetSunShadows() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+							.OnCheckStateChanged_Lambda([](ECheckBoxState S){ BF6Api::SetSunShadows(S == ECheckBoxState::Checked); })
+							[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+								.Text(FText::FromString(TEXT("Shadows"))) ]
+						]
+					]
+
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+					[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+						.Text(FText::FromString(TEXT("DISPLAY"))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+						[ SNew(SBox).WidthOverride(76.f)
+							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+								.Text(FText::FromString(TEXT("DRAW AS"))) ] ]
+						+ SHorizontalBox::Slot().AutoWidth()[ ModeBtn(TEXT("LIT"), 0) ]
+						+ SHorizontalBox::Slot().AutoWidth()[ ModeBtn(TEXT("UNLIT"), 1) ]
+						+ SHorizontalBox::Slot().AutoWidth()[ ModeBtn(TEXT("WIREFRAME"), 2) ]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 14)
+					[ Slider(TEXT("EXPOSURE"), -4.f, 4.f,
+						[]{ return BF6Api::GetDisplayExposure(); },
+						[](float v){ BF6Api::SetDisplayExposure(v); },
+						[](float v){ return FMath::IsNearlyZero(v, 0.05f)
+							? FString(TEXT("auto")) : FString::Printf(TEXT("%+.1f EV"), v); },
+						TEXT("Exposure"), TEXT("Pins the brightness the viewport settles on. At zero the map's own auto exposure is left alone, which is usually what you want - pin it when you are comparing two spots and the camera keeps re-adjusting between them.")) ]
+
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Back to the map's lighting"),
+							TEXT("Puts the sun, the draw mode and the exposure back exactly as the map had them.")))
+						[ MakeToolButton(TEXT("Reset to the map's lighting"), []
+							{
+								BF6Api::ResetDisplaySun();
+								BF6_MiniToast(TEXT("Back to the map's own lighting."));
+							}) ]
+					]
+				]
+			]
+		];
+	}
+};
+
 // "COLORIZE": the recolorizer, ported from the Godot plugin of the same idea.
 // A pure VIEW aid - it paints meshes in the editor so a blockout reads at a
 // glance and duplicates stand out, and nothing it does reaches the export.
@@ -2517,7 +3262,32 @@ public:
 					.Text(FText::FromString(TEXT("A view aid only - colours save with your map and never reach your export."))) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
 				[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("PAINT THE SELECTION"))) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 16)[ Row ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)[ Row ]
+				// THE FULL PICKER, because ten swatches is a palette and not a
+				// choice. This is the engine's own colour wheel: hue ring,
+				// saturation square, a hex field to type or paste an exact
+				// value, and an ALPHA slider - which on a volume is the control
+				// everyone went looking for, since a zone's transparency is
+				// just the alpha of its colour.
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 16)
+				[
+					SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Custom colour"),
+						TEXT("Opens the full colour wheel with a hex field and an alpha slider. On a zone the alpha is its transparency, so this is how you make a volume you can see the map through.")))
+					[ MakeToolButton(TEXT("Custom colour..."), []
+						{
+							// Seeded from whatever the selection is wearing, so
+							// nudging an existing colour does not start from
+							// white every time.
+							FLinearColor Start = BF6Api::SelectionColor();
+							FColorPickerArgs Args;
+							Args.bUseAlpha = true;
+							Args.bOnlyRefreshOnMouseUp = false;   // live, so a volume updates as you drag
+							Args.InitialColor = Start;
+							Args.OnColorCommitted = FOnLinearColorValueChanged::CreateLambda(
+								[](FLinearColor C){ BF6Api::RecolorSelection(C); });
+							OpenColorPicker(Args);
+						}) ]
+				]
 				+ SVerticalBox::Slot().AutoHeight()
 				[
 					SNew(SHorizontalBox)
@@ -2604,33 +3374,12 @@ public:
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
 						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("start at"))) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
-						[ SNew(SBox).WidthOverride(64.f)[ SAssignNew(StartBox, SEditableTextBox) ] ]
+						[ SNew(SBox).WidthOverride(64.f)
+							[ SAssignNew(StartBox, SEditableTextBox)
+								.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type How)
+									{ if (How == ETextCommit::OnEnter) AssignIds(); }) ] ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
-						[ MakePrimaryButton(TEXT("Assign to selection"), [this]
-							{
-								const int32 Start = FMath::Max(0, FCString::Atoi(*StartBox->GetText().ToString()));
-								// fills blanks only - ids already set are what scripts address
-								BF6Api::FObjIdAssign R = BF6Api::AutoAssignObjIds(Start, false);
-								if (R.Considered == 0) { BF6_MiniToast(TEXT("Select gameplay objects first.")); Refresh(); return; }
-								if (R.Assigned == 0 && R.Kept > 0)
-								{
-									// nothing blank left: renumbering is destructive, so ask plainly
-									const EAppReturnType::Type Pick = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(TEXT(
-										"All %d selected objects already have an ObjId.\n\n"
-										"Scripts address objects by these ids, so renumbering can break a mod that is already written.\n\n"
-										"Renumber them anyway, starting at %d?"), R.Kept, Start)));
-									if (Pick != EAppReturnType::Yes) { BF6_MiniToast(TEXT("Left every id as it was.")); return; }
-									R = BF6Api::AutoAssignObjIds(Start, true);
-									BF6_MiniToast(FString::Printf(TEXT("Renumbered %d ids starting at %d."), R.Assigned, Start));
-								}
-								else
-								{
-									BF6_MiniToast(R.Kept > 0
-										? FString::Printf(TEXT("Assigned %d id%s. Left %d that already had one."), R.Assigned, R.Assigned == 1 ? TEXT("") : TEXT("s"), R.Kept)
-										: FString::Printf(TEXT("Assigned %d id%s."), R.Assigned, R.Assigned == 1 ? TEXT("") : TEXT("s")));
-								}
-								Refresh();
-							}) ]
+						[ MakePrimaryButton(TEXT("Assign to selection"), [this]{ AssignIds(); }) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[ MakeToolButton(TEXT("Select duplicates"), [this]
 							{
@@ -2654,6 +3403,35 @@ public:
 private:
 	TSharedPtr<SVerticalBox> Rows;
 	TSharedPtr<STextBlock> Summary;
+	// The button and Enter in the start box both come here. Typing a start
+	// number and pressing Enter is what anyone expects that box to do, and it
+	// is safe: renumbering already-set ids still asks first.
+	void AssignIds()
+	{
+			const int32 Start = FMath::Max(0, FCString::Atoi(*StartBox->GetText().ToString()));
+			// fills blanks only - ids already set are what scripts address
+			BF6Api::FObjIdAssign R = BF6Api::AutoAssignObjIds(Start, false);
+			if (R.Considered == 0) { BF6_MiniToast(TEXT("Select gameplay objects first.")); Refresh(); return; }
+			if (R.Assigned == 0 && R.Kept > 0)
+			{
+				// nothing blank left: renumbering is destructive, so ask plainly
+				const EAppReturnType::Type Pick = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(TEXT(
+					"All %d selected objects already have an ObjId.\n\n"
+					"Scripts address objects by these ids, so renumbering can break a mod that is already written.\n\n"
+					"Renumber them anyway, starting at %d?"), R.Kept, Start)));
+				if (Pick != EAppReturnType::Yes) { BF6_MiniToast(TEXT("Left every id as it was.")); return; }
+				R = BF6Api::AutoAssignObjIds(Start, true);
+				BF6_MiniToast(FString::Printf(TEXT("Renumbered %d ids starting at %d."), R.Assigned, Start));
+			}
+			else
+			{
+				BF6_MiniToast(R.Kept > 0
+					? FString::Printf(TEXT("Assigned %d id%s. Left %d that already had one."), R.Assigned, R.Assigned == 1 ? TEXT("") : TEXT("s"), R.Kept)
+					: FString::Printf(TEXT("Assigned %d id%s."), R.Assigned, R.Assigned == 1 ? TEXT("") : TEXT("s")));
+			}
+			Refresh();
+	}
+
 	TSharedPtr<SEditableTextBox> StartBox;
 
 	void Refresh()
@@ -2906,12 +3684,33 @@ public:
 				Subs.Add(TEXT("conquest, breakthrough"));
 				Cats.Add(TEXT("VALIDATE"));
 				Subs.Add(TEXT("checks and object ids"));
+				// SCATTER UP FRONT, with nothing selected.
+				//
+				// It used to live only on a selected object's ring, which put
+				// it behind a step that has nothing to do with the job: to
+				// strew a bed of grass you first had to place one blade by
+				// hand purely so there was something to scatter. Here it opens
+				// empty and asks which objects to use.
+				Cats.Add(TEXT("SCATTER"));
+				Subs.Add(TEXT("strew objects over an area"));
+				Cats.Add(TEXT("DISPLAY/SUN"));
+				Subs.Add(BF6Api::DisplaySunTouched() ? TEXT("changed - reset inside") : TEXT("light and draw mode"));
 				Cats.Add(TEXT("COLORIZE"));
 				Subs.Add(BF6Api::AnyRecolored() ? TEXT("painted - clear inside") : TEXT("see your blockout"));
 				Cats.Add(TEXT("COLLISION"));
 				Subs.Add(BF6Api::AnyCollisionOverlay() ? TEXT("showing - hide inside") : TEXT("what you really hit"));
 				Cats.Add(BF6Api::IsWalking() ? TEXT("FLY") : TEXT("WALK"));
 				Subs.Add(BF6Api::IsWalking() ? TEXT("back to the camera") : TEXT("eye level, for scale"));
+
+				// Whatever the installed add-ons asked for, last on the ring. They
+				// are appended rather than woven in so the tool's own five stay
+				// where a creator's hand already expects them.
+				for (const BF6Ext::FPieEntry& E : BF6ExtInternal::PieEntries())
+				{
+					if (E.IsAvailable && !E.IsAvailable()) continue;
+					Cats.Add(E.Label.ToUpper());
+					Subs.Add(E.Sub);
+				}
 				}
 			}
 		}
@@ -2978,6 +3777,7 @@ public:
 			// reach for when you do not have a word to type
 			TSharedRef<SButton> FullLib = SNew(SButton)
 				.ButtonStyle(&PiePillStyle())
+				.ToolTip(BF6_MakeHint(TEXT("Browse everything"), TEXT("Opens the whole object library with no filter, for when you want to look rather than search by name.")))
 				.ContentPadding(FMargin(12.f, 6.f))
 				.OnClicked_Lambda([]
 				{
@@ -3253,6 +4053,11 @@ public:
 				.Anchors(FAnchors(0.f, 0.f, 1.f, 1.f)).Offset(FMargin(0.f))
 				[ SNew(SBF6ZoneDots) ]
 
+			// --- the read-only pulse: full screen, hit-test invisible, on top ---
+			+ SConstraintCanvas::Slot()
+				.Anchors(FAnchors(0.f, 0.f, 1.f, 1.f)).Offset(FMargin(0.f))
+				[ SNew(SBF6ReadOnlyPulse) ]
+
 			// --- budget bar (top, full width) ---
 			+ SConstraintCanvas::Slot()
 				.Anchors(FAnchors(0.f, 0.f, 1.f, 0.f)).Offset(FMargin(0.f, 0.f, 0.f, 40.f)).Alignment(FVector2D(0.f, 0.f))
@@ -3276,6 +4081,7 @@ public:
 							[
 								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6,2))
 								.OnClicked_Lambda([this]{ bBarHidden = true; return FReply::Handled(); })
+								.ToolTip(BF6_MakeHint(TEXT("Hide the budget bar"), TEXT("Tucks it into a small pill in the top-left corner. Click that pill to bring the full bar back.")))
 								[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("hide"))) ]
 							]
 						]
@@ -3310,6 +4116,13 @@ public:
 				.Anchors(FAnchors(1.f, 0.5f)).Offset(FMargin(0.f, 0.f, 14.f, 0.f)).Alignment(FVector2D(1.f, 0.5f)).AutoSize(true)
 				[ SNew(SBF6ScatterPanel) ]
 
+			// --- PICK IN WORLD candidate list (left, while assigning a link) ---
+			// Left rather than right: the scatter panel owns the right edge,
+			// and a creator can be assigning a link with a scatter still live.
+			+ SConstraintCanvas::Slot()
+				.Anchors(FAnchors(0.f, 0.5f)).Offset(FMargin(14.f, 0.f, 0.f, 0.f)).Alignment(FVector2D(0.f, 0.5f)).AutoSize(true)
+				[ SNew(SBF6LinkPickPanel) ]
+
 			// --- fixed-camera live preview (bottom-centre while one is selected) ---
 			+ SConstraintCanvas::Slot()
 				.Anchors(FAnchors(0.5f, 1.f)).Offset(FMargin(0.f, -64.f, 0.f, 0.f)).Alignment(FVector2D(0.5f, 1.f)).AutoSize(true)
@@ -3326,17 +4139,53 @@ public:
 						[
 							SNew(SBox).WidthOverride(190.f)
 							.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Collapsed : EVisibility::Visible; })
-							[ SAssignNew(NameBox, SEditableTextBox).HintText(FText::FromString(TEXT("custom map name..."))) ]
+							[
+								SAssignNew(NameBox, SEditableTextBox)
+									.HintText(FText::FromString(TEXT("custom map name...")))
+									// Enter is what anyone types a name INTO a box expects to
+									// do. Without this the only way through was the button,
+									// and the box gave no sign it had heard you.
+									.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type How)
+										{ if (How == ETextCommit::OnEnter) CreateFromNameBox(); })
+							]
 						]
 						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,6,0)
 						[
 							SNew(SBox).Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Collapsed : EVisibility::Visible; })
-							[ MakePrimaryButton(TEXT("Create"), [this]{ BF6Api::CreateCustom(NameBox.IsValid() ? NameBox->GetText().ToString() : FString()); }) ]
+							[ MakePrimaryButton(TEXT("Create"), [this]{ CreateFromNameBox(); }) ]
 						]
 						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,6,0)
 						[
 							SNew(SBox).Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
 							[ MakePrimaryButton(TEXT("Save"), []{ BF6Api::SaveCurrent(); }) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,6,0)
+						[
+							SNew(SBox)
+							.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
+							.ToolTip(BF6_MakeHint(TEXT("Save as a Godot scene"), TEXT("Writes this map as a .tscn the official Portal SDK opens - objects, zones, paths, links and your tree, all editable there. Nothing here changes.")))
+							[ MakeToolButton(TEXT(".tscn"), []{ BF6Api::SaveAsTscn(); }) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,6,0)
+						[
+							SNew(SBox)
+							.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
+							.ToolTip(BF6_MakeHint(TEXT("Autosave"),
+								TEXT("Writes your session to disk every minute. OFF by default on purpose: heavy throwaway changes to an existing map are the normal way this tool gets used, and an autosave turns \"revert\" into \"the file already has it\". Your choice is remembered.")))
+							[
+								SNew(SCheckBox)
+								.IsChecked_Lambda([]{ return BF6Api::GetAutosave() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+								.OnCheckStateChanged_Lambda([](ECheckBoxState St)
+								{
+									const bool bOn = St == ECheckBoxState::Checked;
+									BF6Api::SetAutosave(bOn);
+									BF6_MiniToast(bOn
+										? TEXT("Autosave on - your session is written every minute.")
+										: TEXT("Autosave off - nothing is written until you press Save."));
+								})
+								[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+									.Text(FText::FromString(TEXT("autosave"))) ]
+							]
 						]
 						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
 						[
@@ -3402,8 +4251,16 @@ public:
 			]   // (end of the HUD canvas slot)
 
 			// --- the Object Library: in flow at the very bottom ---
+			//
+			// HIDDEN on a read-only base. A shelf of objects none of which can be
+			// placed is the tool's loudest promise that building is available,
+			// and it is the promise that sends people clicking at the map.
 			+ SVerticalBox::Slot().AutoHeight()
-			[ SAssignNew(Library, SBF6LibraryPanel) ]
+			[
+				SNew(SBox)
+				.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed; })
+				[ SAssignNew(Library, SBF6LibraryPanel) ]
+			]
 
 		];
 		GLibraryPanel = Library;
@@ -3434,9 +4291,10 @@ public:
 			else if (GUndo == nullptr) BF6Api::RestoreStrippedGeometry(true);
 		}
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
-		// the tool's own autosave: closing the editor can never cost more than
-		// a minute of work (session files are tiny)
-		if (BF6Api::IsEditing() && T - LastAutoSave > 60.0)
+		// The tool's own autosave, when it is switched on. Off by default: the
+		// common use of this tool on an existing map is heavy throwaway change,
+		// and writing that to the file turns "revert" into "too late".
+		if (BF6Api::GetAutosave() && BF6Api::IsEditing() && T - LastAutoSave > 60.0)
 		{
 			LastAutoSave = T;
 			BF6Api::SaveCurrent(true);
@@ -3444,6 +4302,15 @@ public:
 	}
 
 private:
+	// Both the Create button and Enter in the name box come through here, so
+	// they cannot drift apart - which is exactly how Enter came to do nothing.
+	void CreateFromNameBox()
+	{
+		const FString Name = NameBox.IsValid() ? NameBox->GetText().ToString().TrimStartAndEnd() : FString();
+		if (Name.IsEmpty()) { BF6_MiniToast(TEXT("Give the custom map a name first.")); return; }
+		BF6Api::CreateCustom(Name);
+	}
+
 	bool bBarHidden = false;
 	double LastCalc = 0.0;
 	double LastAutoSave = 0.0;
@@ -3532,6 +4399,7 @@ public:
 		OnSdkSetup = InArgs._OnSdkSetup;
 		OnReturn = InArgs._OnReturn;
 		OnChanged = InArgs._OnChanged;
+		SavesSig = BF6Api::SavesFingerprint();
 
 		// Two sections instead of a price badge: full-game maps, then the free
 		// RedSec maps (a $ on the tile read like the PLUGIN costs money).
@@ -3601,12 +4469,44 @@ public:
 		];
 	}
 
+	// The save lists on these cards were read off disk when the menu was built,
+	// and a creator who tidies up their saves folder in Explorer does it with
+	// this menu open in front of them. Left alone, the RESUME dropdown goes on
+	// offering a save that no longer exists, and clicking it opens nothing -
+	// the menu quietly lying about what is on the machine.
+	//
+	// So while the menu is UP it keeps checking, once a second. The rebuild
+	// only fires when the answer actually differs, because rebuilding under a
+	// cursor that is reaching for a card is its own bug.
+	virtual void Tick(const FGeometry& Geo, const double CurTime, const float Dt) override
+	{
+		SCompoundWidget::Tick(Geo, CurTime, Dt);
+		if (CurTime < NextCheck) return;
+		NextCheck = CurTime + 1.0;
+
+		const uint32 Now = BF6Api::SavesFingerprint();
+		if (Now == SavesSig) return;
+		SavesSig = Now;
+
+		// Deferred: the rebuild replaces THIS widget, and doing that from
+		// inside its own Tick is pulling the floor out mid-step.
+		TWeakPtr<SWidget> Self = AsWeak();
+		FSimpleDelegate Changed = OnChanged;
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Self, Changed](float) -> bool
+		{
+			if (Self.IsValid()) Changed.ExecuteIfBound();
+			return false;
+		}));
+	}
+
 private:
 	FOnOpen OnOpen;
 	FSimpleDelegate OnImport;
 	FSimpleDelegate OnSdkSetup;
 	FSimpleDelegate OnReturn;
 	FSimpleDelegate OnChanged;
+	uint32 SavesSig = 0;
+	double NextCheck = 0.0;
 
 	void Open(const FString& Level, const FString& Save)
 	{
@@ -3683,13 +4583,19 @@ private:
 										.OnClicked_Lambda([this, Level, In]
 										{
 											if (!In.IsValid()) return FReply::Handled();
-											if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(
-												TEXT("Delete the save '%s' for %s?\n\nThis removes its file for good. Exports already made from it stay."),
-												**In, *BF6Api::DisplayName(Level)))) == EAppReturnType::Yes)
+											// Deleting the one you have OPEN also throws away the objects in
+											// the world, so it does not get the same sentence as deleting a
+											// save you are not currently looking at.
+											const bool bOpen = BF6Api::CurrentLevel() == Level && BF6Api::CurrentSave() == *In;
+											const FString Ask = bOpen
+												? FString::Printf(TEXT("Delete the save you have OPEN, '%s'?\n\nIts file goes for good and the view drops back to the read-only base, so anything placed since the last save goes with it. Exports already made from it stay."), **In)
+												: FString::Printf(TEXT("Delete the save '%s' for %s?\n\nThis removes its file for good. Exports already made from it stay."), **In, *BF6Api::DisplayName(Level));
+											if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(Ask)) == EAppReturnType::Yes)
 											{
 												if (BF6Api::DeleteSave(Level, *In))
 												{
-													BF6_MiniToast(FString::Printf(TEXT("Deleted '%s'."), **In));
+													// the open-save path says more than this, from the delete itself
+													if (!bOpen) BF6_MiniToast(FString::Printf(TEXT("Deleted '%s'."), **In));
 													OnChanged.ExecuteIfBound();
 												}
 											}
@@ -3760,8 +4666,16 @@ private:
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(10,0,0,3)
 				[ SNew(STextBlock).Font(FontBold(14)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text_Lambda([]{ return FText::FromString(BF6Api::DisplayName(BF6Api::CurrentLevel())); }) ]
 			]
+			// THE read-out. When an edit is refused the shine runs a lap around
+			// this line, because this line is the one that says why - which is
+			// the whole reason to point at it rather than repeat it elsewhere.
 			+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(20, 0, 20, 14))
-			[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text_Lambda([]{ return FText::FromString(BF6Api::CurrentSave().IsEmpty() ? TEXT("Read-only base. Create a custom map to place objects.") : FString::Printf(TEXT("Editing '%s'  -  aim in the viewport and press SPACE to place objects."), *BF6Api::CurrentSave())); }) ]
+			[
+				SNew(SOverlay)
+				+ SOverlay::Slot().Padding(FMargin(4, 2))
+				[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text_Lambda([]{ return FText::FromString(BF6Api::CurrentSave().IsEmpty() ? TEXT("Read-only base. Create a custom map to place objects.") : FString::Printf(TEXT("Editing '%s'  -  aim in the viewport and press SPACE to place objects."), *BF6Api::CurrentSave())); }) ]
+				+ SOverlay::Slot()[ SNew(SBF6ReadOutShine) ]
+			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(20, 0, 20, 0))
 			[
 				SNew(SHorizontalBox)
@@ -3992,7 +4906,10 @@ namespace
 
 	// context the pie opened with: placing objects, editing an object's
 	// attributes, or editing a zone's points
-	enum class EBF6PieMode { Place, Objects, Props, VolEdit };
+	// context the pie opened with, plus HQSpawns: the sub-ring that asks WHICH
+	// of an object's link fields a run should fill, and which of its volume
+	// fields an area should be made for.
+	enum class EBF6PieMode { Place, Objects, Props, VolEdit, HQSpawns, HQVolumes };
 	EBF6PieMode                   GPieMode = EBF6PieMode::Place;
 	TWeakObjectPtr<AActor>        GPieTarget;
 	FString                       GPieTargetType;
@@ -4046,14 +4963,116 @@ static void BF6Pie_Attach()
 	switch (GPieMode)
 	{
 	case EBF6PieMode::VolEdit:
-		Items = { TEXT("ADD POINT"), TEXT("DELETE POINT"), TEXT("RESET CENTER"), TEXT("FINISH EDITING") };
-		Subs  = { TEXT("after selected"), TEXT("selected"), TEXT("origin to the middle"), TEXT("bake the zone") };
+		// COLOUR BELONGS HERE, and it is the only ring a zone ever reaches.
+		//
+		// Selecting a zone begins its point edit automatically, so pressing
+		// space on one opens THIS ring and never the object ring where COLORIZE
+		// lives. From the creator's side that reads as "zones have no colour
+		// option", which is exactly what it was.
+		// RESET CENTER is gone: the origin is put back in the middle on every
+		// shape change now, so the pill was asking the creator to remember to
+		// do something the tool can always do for them.
+		Items = { TEXT("ADD POINT"), TEXT("DELETE POINT"),
+		          TEXT("COLORIZE"), TEXT("FINISH EDITING") };
+		Subs  = { TEXT("after selected"), TEXT("selected"),
+		          TEXT("colour and transparency"), TEXT("bake the zone") };
+		// a PATH is the same dots with one extra question: does the route loop?
+		if (BF6Api::IsPathSelectedVolume())
+		{
+			Items.Insert(TEXT("LOOP / OPEN"), 2);
+			Subs.Insert(TEXT("join the ends, or not"), 2);
+		}
 		break;
+	case EBF6PieMode::HQVolumes:
+	{
+		// WHICH AREA. A Sector has five and they are not interchangeable -
+		// the retreat area and the advance-to area are opposite ends of a
+		// push. Read off the schema like everything else here.
+		for (const BF6Api::FLinkField& V : BF6Api::LinkVolumeFields(GPieTarget.Get()))
+		{
+			Items.Add(V.Label);
+			Subs.Add(V.Count > 0 ? TEXT("made - edit its shape") : TEXT("not made yet"));
+		}
+		Items.Add(TEXT("< BACK"));
+		Subs.Add(TEXT("back to the object"));
+		break;
+	}
+
+	case EBF6PieMode::HQSpawns:
+	{
+		// WHICH KIND OF SPAWN.
+		//
+		// An HQ holds more than one array of spawn points and they mean
+		// different things in play - where you come back in, versus where you
+		// push up to. A SpawnPoint carries none of that itself, so the choice
+		// has to be made when it is placed, and this is where it is made.
+		//
+		// Read off the schema, never listed: a kind the next SDK adds shows up
+		// here without anybody editing this file.
+		for (const BF6Api::FLinkField& K : BF6Api::LinkArrayFields(GPieTarget.Get()))
+		{
+			Items.Add(K.Label);
+			Subs.Add(K.Count > 0 ? FString::Printf(TEXT("%d placed - add more"), K.Count)
+			                     : FString(TEXT("none yet")));
+		}
+		Items.Add(TEXT("< BACK"));
+		Subs.Add(TEXT("back to the HQ"));
+		break;
+	}
+
 	case EBF6PieMode::Props:
 	{
 		// a FEW pills; the detail lives in pop-out menus (way too many pills to
 		// remember otherwise - attribute lists open as a menu instead)
 		GPieProps = BF6Api::PropsForType(GPieTargetType);
+
+		// AN ASSEMBLY GETS ITS OWN RING.
+		//
+		// Eleven shipped types own other objects through link fields, and every
+		// one is built the same way: make what the field wants, link it, park it
+		// under its owner. This used to be written out for HQ alone, so a Sector
+		// with SEVEN links had no help at all.
+		//
+		// The ring is now derived from the schema. Most of the generic ring is
+		// meaningless on one of these - multiplying a Sector, scattering HQs -
+		// and offering those buries the things it actually needs among eight
+		// that it does not.
+		{
+			AActor* Owner = GPieTarget.Get();
+			const TArray<BF6Api::FLinkField> Vols = BF6Api::LinkVolumeFields(Owner);
+			const TArray<BF6Api::FLinkField> Arrs = BF6Api::LinkArrayFields(Owner);
+			if (Owner && (Vols.Num() > 0 || Arrs.Num() > 0))
+			{
+				if (Arrs.Num() > 0)
+				{
+					int32 Have = 0;
+					for (const BF6Api::FLinkField& K : Arrs) Have += K.Count;
+					// One array needs no menu; several do.
+					Items.Add(Arrs.Num() == 1 ? TEXT("ADD ") + Arrs[0].Label : FString(TEXT("ADD LINKED")));
+					Subs.Add(Have > 0 ? FString::Printf(TEXT("%d linked - add more"), Have)
+					                  : FString(TEXT("place and link them")));
+				}
+				if (Vols.Num() > 0)
+				{
+					int32 Made = 0;
+					for (const BF6Api::FLinkField& V : Vols) Made += V.Count;
+					Items.Add(Vols.Num() == 1
+						? FString(Vols[0].Count > 0 ? TEXT("EDIT AREA") : TEXT("CREATE AREA"))
+						: FString(TEXT("AREAS")));
+					Subs.Add(Vols.Num() == 1
+						? FString(Vols[0].Count > 0 ? TEXT("reshape it") : TEXT("make it and link it"))
+						: FString::Printf(TEXT("%d of %d made"), Made, Vols.Num()));
+				}
+				if (GPieProps.Num() > 0)
+				{ Items.Add(TEXT("ATTRIBUTES")); Subs.Add(FString::Printf(TEXT("%d fields"), GPieProps.Num())); }
+				Items.Add(TEXT("SET CAMERA"));     Subs.Add(TEXT("take the editor view"));
+				Items.Add(TEXT("COLORIZE"));       Subs.Add(TEXT("pick a colour"));
+				Items.Add(TEXT("PICK PLACE"));     Subs.Add(TEXT("carry with the cursor"));
+				Items.Add(TEXT("SELECT SIMILAR")); Subs.Add(TEXT("every one of these"));
+				break;
+			}
+		}
+
 		if (BF6Api::IsVolumeActor(GPieTarget.Get())) { Items.Add(TEXT("EDIT POINTS")); Subs.Add(TEXT("zone shape")); }
 		if (BF6Api::CameraPreviewTarget() == GPieTarget.Get() && GPieTarget.IsValid())
 		{ Items.Add(TEXT("SET CAMERA")); Subs.Add(TEXT("take the editor view")); }
@@ -4098,8 +5117,52 @@ static void BF6Pie_Attach()
 // Space over the viewport: pick the pie's mode from context (selection / zone
 // edit in progress), remember the world spot under the crosshair, and open the
 // pie centred on the viewport with the cursor warped to neutral.
+// Make (or open) the volume for ONE of an owner's volume fields.
+//
+// Both doors - the single-field shortcut and the sub-ring - come through here,
+// so the wording and the behaviour cannot drift apart.
+static void BF6_MakeLinkedVolume(AActor* Owner, const BF6Api::FLinkField& V)
+{
+	const bool bHad = BF6Api::HQVolume(Owner, V.Field) != nullptr;
+	BF6Pie_Close();
+	if (BF6Api::HQCreateOrEditVolume(Owner, V.Field))
+		BF6_MiniToast(bHad
+			? FString::Printf(TEXT("Editing the %s area - drag the orange dots, Enter when done."), *V.Label.ToLower())
+			: FString::Printf(TEXT("%s area made around it, linked, and parked under it - drag the dots to shape it."), *V.Label));
+	else BF6_MiniToast(TEXT("Could not make that area."));
+}
+
+// Start laying objects into ONE of an owner's link arrays.
+//
+// Both doors into this - the sub-ring, and the shortcut taken when an HQ has
+// only one field - come through here, so the highlight, the run and the words
+// cannot drift apart.
+static void BF6_StartHQSpawnRun(AActor* Owner, const BF6Api::FLinkField& Kind)
+{
+	// The ones already in THIS array light up first, so the new one is placed
+	// in relation to them rather than blind. Only this kind: lighting up the
+	// forward spawns while laying infantry would be answering a question the
+	// creator did not ask.
+	const int32 Lit = BF6Api::HQHighlightSpawns(Owner, Kind.Field);
+	BF6Api::BeginHQSpawnRun(Owner, Kind.Field);
+	BF6Pie_Close();
+	if (BF6Api::HQSpawnRunNext())
+		BF6_MiniToast(Lit > 0
+			? FString::Printf(TEXT("Placing %s. The %d already linked are green. Q and E turn. Enter keeps them, Esc cancels the whole run."), *Kind.Label.ToLower(), Lit)
+			: FString::Printf(TEXT("Placing %s. Q and E turn. Enter keeps them, Esc cancels the whole run."), *Kind.Label.ToLower()));
+	else BF6_MiniToast(TEXT("Could not place one of those here."));
+}
+
 static void BF6Pie_Open()
 {
+	// The wheel is the tool's edit surface: place, attributes, colorize, scatter,
+	// every one of them refused on a base map. Opening it anyway offers a menu
+	// of things that cannot happen, so it does not open - it says why instead.
+	if (!BF6Api::IsEditing())
+	{
+		BF6Api::RefuseReadOnly(TEXT("There is nothing to edit on a base map. Name it and press Create, bottom right, and the wheel opens."));
+		return;
+	}
 	FVector W; if (BF6Api::WorldFromViewportCursor(W)) GBF6PendingWorld = W;
 
 	if (BF6Api::IsVolumeEditing())
@@ -4125,6 +5188,23 @@ static void BF6Pie_Open()
 	if (!VP.IsValid()) return;
 	const FGeometry& Geo = VP->GetCachedGeometry();
 	GPieCenter = Geo.LocalToAbsolute(Geo.GetLocalSize() * 0.5f);
+	BF6Pie_Attach();
+}
+
+// The object catalogue, opened directly rather than walked into.
+//
+// The scatter panel needs it back after the ring has been dismissed - the
+// creator picked three bushes, closed the wheel, dropped the region, and now
+// wants a fourth. Reopening it from the panel is the same ring, entered one
+// step in, so nothing about picking behaves differently the second time.
+static void BF6_OpenObjectLibrary()
+{
+	FLevelEditorModule& LE = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
+	if (!VP.IsValid()) return;
+	const FGeometry& Geo = VP->GetCachedGeometry();
+	GPieCenter = Geo.LocalToAbsolute(Geo.GetLocalSize() * 0.5f);
+	GPieMode = EBF6PieMode::Objects;
 	BF6Pie_Attach();
 }
 
@@ -4195,12 +5275,73 @@ public:
 			TSharedRef<SWidget> Editor = SNullWidget::NullWidget;
 			if (bLink)
 			{
-				Editor = MakeToolButton(TEXT("Pick in world..."), [this, Def]
+				// WHAT IS ASSIGNED, not just a way to assign something.
+				//
+				// A link field used to be a lone "Pick in world..." button,
+				// which answers "how do I change this" and never "what is it
+				// now". The only way to find out was to open the picker and
+				// read the colours off the markers - i.e. to start editing in
+				// order to look.
+				//
+				// The names are the value, so they are shown as the value, one
+				// chip each. Clicking a chip flies the view to that object
+				// WITHOUT selecting it: selecting would close this very list.
+				TSharedRef<SWrapBox> Chips = SNew(SWrapBox).UseAllottedSize(true);
+				TArray<FString> Names;
+				Current.ParseIntoArray(Names, TEXT(","), true);
+				for (FString Nm : Names)
 				{
-					AActor* A = Target.Get(); if (!A) return;
-					BF6Api::HideTransientMenus();
-					BF6Api::BeginLinkPick(A, Def.Name, Def.Type.Contains(TEXT("Array[")));
-				});
+					Nm.TrimStartAndEndInline();
+					if (Nm.IsEmpty()) continue;
+					Chips->AddSlot().Padding(0, 0, 4, 2)
+					[
+						SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(5, 1))
+						.ToolTipText(FText::FromString(FString::Printf(
+							TEXT("%s is assigned here. Click to fly there - nothing is selected or changed."), *Nm)))
+						.OnClicked_Lambda([Nm]{ BF6Api::FocusByLinkName(Nm); return FReply::Handled(); })
+						[
+							// NAMES ARE USER TEXT and can be any length: a zone
+							// called "Attacker spawn protection - do not move"
+							// would otherwise push the row past the panel and
+							// shove the Change... button off the edge. Capped
+							// and elided, with the full name on the tooltip
+							// that is already attached.
+							SNew(SBox).MaxDesiredWidth(150.f)
+							[ SNew(STextBlock).Font(FontBold(9))
+								.ColorAndOpacity(FSlateColor(FLinearColor(0.13f, 1.f, 0.27f)))   // the picker's "assigned" green
+								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+								.Text(FText::FromString(Nm)) ]
+						]
+					];
+				}
+				// EMPTY IS PLAIN TEXT, not an empty wrap box.
+				//
+				// SWrapBox with UseAllottedSize reports a desired width from
+				// its content before it has been given a width to wrap into,
+				// so in a fill slot it asked for more room than the row had and
+				// drew straight over the button beside it. A single label has a
+				// desired size the layout can actually satisfy.
+				TSharedRef<SWidget> Value = Names.Num() > 0
+					? StaticCastSharedRef<SWidget>(Chips)
+					: StaticCastSharedRef<SWidget>(
+						SNew(STextBlock).Font(FontReg(9))
+							.ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+							.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+							.Text(FText::FromString(TEXT("nothing assigned"))));
+
+				Editor = SNew(SHorizontalBox)
+					// CLIPPED, so an overlong value can never paint over the
+					// control next to it - the row is fixed width and the
+					// button is the part that must always stay reachable.
+					+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+					[ SNew(SBox).Clipping(EWidgetClipping::ClipToBounds)[ Value ] ]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
+					[ MakeToolButton(Names.Num() > 0 ? TEXT("Change...") : TEXT("Pick in world..."), [this, Def]
+						{
+							AActor* A = Target.Get(); if (!A) return;
+							BF6Api::HideTransientMenus();
+							BF6Api::BeginLinkPick(A, Def.Name, Def.Type.Contains(TEXT("Array[")));
+						}) ];
 			}
 			else if (Def.Type == TEXT("bool"))
 			{
@@ -4256,6 +5397,25 @@ public:
 				[ Editor ]
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 				[ SNew(STextBlock).Font(FontReg(8)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(Def.Type)) ]
+				// ZERO IS A VALUE; INFINITE IS A STATE. On a zone's height the
+				// two are the same number, and printing the number hides the
+				// state - somebody reading "0" has to already know the rule to
+				// understand what they are looking at.
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
+				[
+					SNew(STextBlock).Font(FontBold(8))
+					.ColorAndOpacity(FSlateColor(FLinearColor(FColor(0x3A, 0x9B, 0xFF))))
+					.Visibility_Lambda([this, Def]
+					{
+						if (Def.Name != TEXT("height")) return EVisibility::Collapsed;
+						AActor* A = Target.Get();
+						if (!A) return EVisibility::Collapsed;
+						const FString V = BF6Api::GetActorProp(A, Def.Name, Def.Default);
+						const bool bInf = !V.IsNumeric() || FCString::Atod(*V) <= 0.01;
+						return bInf ? EVisibility::Visible : EVisibility::Collapsed;
+					})
+					.Text(FText::FromString(TEXT("INFINITE")))
+				]
 			];
 		}
 
@@ -4293,6 +5453,268 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// ATTRIBUTES, DOCKED UNDER THE SCENE TREE.
+//
+// As a popup at the cursor this had nowhere to go. The tree lives against an
+// edge of the screen, so a menu opened from a row in it is already at the edge,
+// and a tall attribute list gets shoved off it - the creator right-clicks a
+// thing in the tree and the panel they asked for is half outside the window.
+//
+// Docked under the tree it has a column to grow into, it is in the place they
+// were already looking, and it follows the selection rather than being a
+// snapshot of whatever was selected when it opened.
+// ---------------------------------------------------------------------------
+class SBF6AttributesDock : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6AttributesDock) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		ChildSlot
+		[
+			SNew(SBox)
+			.Visibility_Lambda([this]{ return Shown.IsValid() ? EVisibility::Visible : EVisibility::Collapsed; })
+			[
+				SNew(SBorder).BorderImage(PanelBrush()).Padding(6.f)
+				[
+					SNew(SBox).MaxDesiredHeight(420.f)
+					[ SNew(SScrollBox) + SScrollBox::Slot()[ SAssignNew(Host, SBox) ] ]
+				]
+			]
+		];
+	}
+
+	virtual void Tick(const FGeometry& Geo, const double CurTime, const float Dt) override
+	{
+		SCompoundWidget::Tick(Geo, CurTime, Dt);
+		FString Ty;
+		AActor* A = BF6Api::IsEditing() ? BF6Api::SelectedGameplayActor(Ty) : nullptr;
+		if (A && BF6Api::PropsForType(Ty).Num() == 0) A = nullptr;   // nothing to show
+
+		// REBUILT ONLY WHEN THE TARGET CHANGES. The rows carry live text boxes,
+		// and replacing them every frame would take the caret out of one the
+		// moment a creator typed into it.
+		if (A == Shown.Get() && Ty == ShownType) return;
+		Shown = A;
+		ShownType = Ty;
+		if (!Host.IsValid()) return;
+		if (!A) { Host->SetContent(SNullWidget::NullWidget); return; }
+		Host->SetContent(SNew(SBF6AttributesMenu).TargetActor(A).TypeName(Ty));
+	}
+
+private:
+	TSharedPtr<SBox> Host;
+	TWeakObjectPtr<AActor> Shown;
+	FString ShownType;
+};
+
+TSharedRef<SWidget> BF6Api::MakeAttributesPanel()
+{
+	return SNew(SBF6AttributesDock);
+}
+
+// Open one of the tool's own panels on the CURRENT selection, at the cursor.
+// The radial normally supplies both the target and the place to put the popup;
+// a context-menu entry has neither, so it takes the selection and the pointer.
+static void BF6_OpenAttributesForSelection()
+{
+	FString Ty;
+	AActor* A = BF6Api::SelectedGameplayActor(Ty);
+	if (!A) return;
+	GPieTarget = A;
+	GPieTargetType = Ty;
+	GPiePage = 0;
+	// The panel under the tree already follows the selection, so there is
+	// nothing to push - just make sure the creator can see it.
+	BF6Api::OpenOutlinerTab();
+	BF6_MiniToast(TEXT("Attributes are under the Scene tree."));
+}
+
+static void BF6_OpenColorizeForSelection()
+{
+	BF6_PushTransient(SNew(SBF6ColorizePanel), FSlateApplication::Get().GetCursorPos());
+}
+
+// ---------------------------------------------------------------------------
+// RIGHT-CLICK, IN THE SCENE TREE AND IN THE VIEWPORT.
+//
+// The tree is where a creator goes to find something they cannot see or cannot
+// click - buried under a building, behind the camera, one of forty identical
+// crates. Having found it there, everything they might want to DO with it was
+// somewhere else: the radial only opens over the viewport, and it opens on
+// what the viewport can hit.
+//
+// This is the same actions, on the item under the cursor. It extends the level
+// editor's own actor context menu, so the entries appear in the tree AND on a
+// right-click in the world - one registration, both places, and the two can
+// never drift apart.
+//
+// Scoped to OUR objects. The menu is the engine's and other things live on it;
+// a section that appears over a light probe offering to edit its Portal
+// attributes would be worse than no section at all.
+// THE OUTLINER HAS ITS OWN MENU, and that is why the first attempt at this did
+// nothing in the tree.
+//
+// Right-clicking in the viewport builds LevelEditor.ActorContextMenu; the Scene
+// Outliner builds SceneOutliner.DefaultContextMenu, a separate menu that knows
+// nothing about the other. Extending one and expecting both is the mistake -
+// and it presents as "the tree ignored my entries" with no error anywhere.
+//
+// Move To lives on the outliner's menu, in section "MainSection" as entry
+// "MoveActorsTo" (ActorBrowsingMode.cpp), which is why removing sections by
+// guessed names off the actor menu never touched it.
+static void BF6_BuildPortalSection(UToolMenu* Menu)
+{
+	if (!Menu) return;
+
+	FToolMenuSection& Sec = Menu->AddSection(
+		TEXT("BF6Actions"), FText::FromString(TEXT("Portal")),
+		FToolMenuInsert(NAME_None, EToolMenuInsertType::First));
+
+	// Shown only when the selection is something this tool owns.
+	// Shown for our objects AND for folder rows - a folder selects no actor at
+	// all, so keying purely on the selection hid the menu exactly where the
+	// creator had just asked for one.
+	const auto Ours = FToolMenuVisibilityChoice(TAttribute<bool>::CreateLambda([]
+	{
+		FString Ty;
+		return BF6Api::IsEditing() && (BF6Api::SelectedGameplayActor(Ty) != nullptr
+		                               || BF6Api::SelectFolderContentsCount() > 0);
+	}));
+	Sec.Visibility = Ours;
+
+	// MOVE TO (FOLDER), REMOVED - the entry, not the section.
+	//
+	// It is "MoveActorsTo" in section "MainSection" on the outliner's menu.
+	// Removing the whole section would take Force Load and the rest with it;
+	// this takes the one entry that offers a parent Portal will never see.
+	// A name the engine has since changed simply finds nothing, so a future
+	// version loses the hiding rather than breaking the menu.
+	// FToolMenuSection::RemoveEntry is private; UToolMenus exposes the same
+	// removal by (menu, section, entry), which is the supported route.
+	if (UToolMenus* TM = UToolMenus::Get())
+		TM->RemoveEntry(Menu->GetMenuName(), TEXT("MainSection"), TEXT("MoveActorsTo"));
+
+	Sec.AddMenuEntry(TEXT("BF6Focus"),
+		FText::FromString(TEXT("Snap view to this")),
+		FText::FromString(TEXT("Fly the viewport onto it, framed to its own size. Nothing is changed.")),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([]{ BF6Api::FocusSelection(); })));
+
+	Sec.AddMenuEntry(TEXT("BF6Attrs"),
+		FText::FromString(TEXT("Edit attributes...")),
+		FText::FromString(TEXT("Open this object's Portal fields - team, id, timers, links.")),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([]{ BF6_OpenAttributesForSelection(); }),
+			FCanExecuteAction::CreateLambda([]
+			{
+				FString Ty;
+				AActor* A = BF6Api::SelectedGameplayActor(Ty);
+				return A != nullptr && BF6Api::PropsForType(Ty).Num() > 0;
+			})));
+
+	Sec.AddMenuEntry(TEXT("BF6Colour"),
+		FText::FromString(TEXT("Colour...")),
+		FText::FromString(TEXT("Paint the selection, or set a zone's colour and transparency.")),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([]{ BF6_OpenColorizeForSelection(); })));
+
+	Sec.AddSeparator(TEXT("BF6Sep1"));
+
+	Sec.AddMenuEntry(TEXT("BF6Similar"),
+		FText::FromString(TEXT("Select every copy of this")),
+		FText::FromString(TEXT("Selects every object of the same type on the map.")),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([]{ BF6Api::SelectSimilar(); })));
+
+	Sec.AddMenuEntry(TEXT("BF6Group"),
+		FText::FromString(TEXT("Group under a new node")),
+		FText::FromString(TEXT("Wraps the selection in a parent node so it moves as one.")),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([]{ BF6Api::GroupSelectionUnderNode(); })));
+
+	Sec.AddMenuEntry(TEXT("BF6Carry"),
+		FText::FromString(TEXT("Pick up and place")),
+		FText::FromString(TEXT("The selection rides the cursor until you click it down.")),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([]{ BF6Api::BeginPickPlace(); })));
+
+	// MOVE TO NODE, in place of the engine's move-to-FOLDER.
+	//
+	// A folder is an editor convenience Portal knows nothing about; a node is
+	// what actually parents objects here and what reaches the export. Offering
+	// both would be offering a choice between the real thing and a decoy, so
+	// the engine's folder entries are hidden below.
+	Sec.AddSubMenu(TEXT("BF6MoveToNode"),
+		FText::FromString(TEXT("Move to node")),
+		FText::FromString(TEXT("Re-parent the selection under an existing node. World positions are kept.")),
+		FNewToolMenuChoice(FNewToolMenuDelegate::CreateLambda([](UToolMenu* Sub)
+		{
+			FToolMenuSection& S2 = Sub->AddSection(TEXT("BF6Nodes"));
+			const int32 N = BF6Api::TreeNodeCount();
+			if (N == 0)
+			{
+				S2.AddMenuEntry(TEXT("BF6NoNodes"),
+					FText::FromString(TEXT("No nodes yet")),
+					FText::FromString(TEXT("Make one with + Node at the top of the Scene tree.")),
+					FSlateIcon(), FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]{ return false; })));
+				return;
+			}
+			for (int32 i = 0; i < N; i++)
+			{
+				const FString Nm = BF6Api::TreeNodeName(i);
+				S2.AddMenuEntry(FName(*FString::Printf(TEXT("BF6Node%d"), i)),
+					FText::FromString(Nm), FText::GetEmpty(), FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([i]{ BF6Api::AttachSelectionToNode(i); })));
+			}
+		})));
+
+	Sec.AddMenuEntry(TEXT("BF6SelectFolder"),
+		FText::FromString(TEXT("Select everything in this folder")),
+		FText::FromString(TEXT("Folders here are generated from each object's category, so they are not deleted - their contents are. This selects them so you can see what you are about to act on.")),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([]
+			{
+				const int32 n = BF6Api::SelectFolderContents();
+				BF6_MiniToast(n > 0
+					? FString::Printf(TEXT("Selected %d object%s."), n, n == 1 ? TEXT("") : TEXT("s"))
+					: FString(TEXT("That folder is empty.")));
+			}),
+			FCanExecuteAction::CreateLambda([]{ return BF6Api::IsEditing(); })));
+
+	Sec.AddSeparator(TEXT("BF6Sep2"));
+
+	// OURS, not the editor's. The fast path empties the procedural-mesh payload
+	// before the transaction opens, so deleting a painted forest is instant
+	// rather than serialising megabytes of vertex data into the undo buffer.
+	Sec.AddMenuEntry(TEXT("BF6Delete"),
+		FText::FromString(TEXT("Delete")),
+		FText::FromString(TEXT("Removes the selection, and everything hanging under it.")),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([]
+		{
+			BF6Api::FinishVolumeEdit();   // a zone holds a pointer and an open transaction
+			BF6Api::DeleteSelectionFast();
+		})));
+}
+
+static void BF6_RegisterActorContextMenu()
+{
+	UToolMenus* Menus = UToolMenus::Get();
+	if (!Menus) return;
+	// Both menus, from one builder, so the tree and the viewport can never
+	// offer different things.
+	for (const TCHAR* Name : { TEXT("LevelEditor.ActorContextMenu"),
+	                           TEXT("SceneOutliner.DefaultContextMenu") })
+		BF6_BuildPortalSection(Menus->ExtendMenu(FName(Name)));
+}
+
+
+// ---------------------------------------------------------------------------
 // GROUPING pop-out: group / ungroup / edit group / save block as a small menu.
 // ---------------------------------------------------------------------------
 class SBF6GroupingMenu : public SCompoundWidget
@@ -4306,7 +5728,7 @@ public:
 		TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
 		auto AddRow = [&Box](const FString& Label, const FString& Hint, TFunction<void()> Fn, bool bEnabled = true)
 		{
-			Box->AddSlot().AutoHeight().Padding(0, 1)
+			Box->AddSlot().AutoHeight().Padding(0, 2)
 			[
 				SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(8, 4)).HAlign(HAlign_Fill)
 				.IsEnabled(bEnabled)
@@ -4370,9 +5792,18 @@ public:
 
 	void Construct(const FArguments&)
 	{
-		auto NumBox = [](TSharedPtr<SEditableTextBox>& Out, const TCHAR* Default)
+		// Enter in a field does that field's OWN Create. There are two here, so
+		// each box has to say which one it belongs to; "the last button" would
+		// be a guess, and a wrong guess would place objects the user did not ask
+		// for.
+		auto NumBox = [](TSharedPtr<SEditableTextBox>& Out, const TCHAR* Default, TFunction<void()> OnEnter)
 		{
-			return SNew(SBox).WidthOverride(52.f)[ SAssignNew(Out, SEditableTextBox).Text(FText::FromString(Default)) ];
+			return SNew(SBox).WidthOverride(52.f)
+			[
+				SAssignNew(Out, SEditableTextBox).Text(FText::FromString(Default))
+					.OnTextCommitted_Lambda([OnEnter](const FText&, ETextCommit::Type How)
+						{ if (How == ETextCommit::OnEnter) OnEnter(); })
+			];
 		};
 		auto Dim = [](const TCHAR* T)
 		{
@@ -4402,21 +5833,14 @@ public:
 					[
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)[ Dim(TEXT("Row / grid:")) ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(CountBox, TEXT("5")) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(CountBox, TEXT("5"), [this]{ MakeGrid(); }) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4, 0)[ Dim(TEXT("x")) ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(RowsBox, TEXT("1")) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(RowsBox, TEXT("1"), [this]{ MakeGrid(); }) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0, 4, 0)[ Dim(TEXT("gap (m)")) ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(GapBox, TEXT("0")) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(GapBox, TEXT("0"), [this]{ MakeGrid(); }) ]
 						+ SHorizontalBox::Slot().FillWidth(1) [ SNullWidget::NullWidget ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ MakePrimaryButton(TEXT("Create"), [this]
-							{
-								const int32 n = BF6Api::MultiplyGrid(
-									FCString::Atoi(*CountBox->GetText().ToString()),
-									FCString::Atoi(*RowsBox->GetText().ToString()),
-									FCString::Atod(*GapBox->GetText().ToString()));
-								if (n > 0) { BF6Api::HideTransientMenus(); BF6_MiniToast(FString::Printf(TEXT("Added %d flush cop%s."), n, n == 1 ? TEXT("y") : TEXT("ies"))); }
-							}) ]
+						[ MakePrimaryButton(TEXT("Create"), [this]{ MakeGrid(); }) ]
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
 					[ Dim(TEXT("Copies tile edge to edge along the object's facing. Gap adds space.")) ]
@@ -4424,18 +5848,12 @@ public:
 					[
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)[ Dim(TEXT("Circle:")) ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(CircleBox, TEXT("8")) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(CircleBox, TEXT("8"), [this]{ MakeCircle(); }) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0, 4, 0)[ Dim(TEXT("radius (m)")) ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(RadiusBox, TEXT("5")) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(RadiusBox, TEXT("5"), [this]{ MakeCircle(); }) ]
 						+ SHorizontalBox::Slot().FillWidth(1) [ SNullWidget::NullWidget ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ MakePrimaryButton(TEXT("Create"), [this]
-							{
-								const int32 n = BF6Api::MultiplyCircle(
-									FCString::Atoi(*CircleBox->GetText().ToString()),
-									FCString::Atod(*RadiusBox->GetText().ToString()));
-								if (n > 0) { BF6Api::HideTransientMenus(); BF6_MiniToast(FString::Printf(TEXT("Ringed %d copies around it."), n)); }
-							}) ]
+						[ MakePrimaryButton(TEXT("Create"), [this]{ MakeCircle(); }) ]
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
 					[ Dim(TEXT("Copies ring the selected object, each facing the centre.")) ]
@@ -4447,6 +5865,24 @@ public:
 	}
 
 private:
+	// One implementation each, shared by the button and by Enter.
+	void MakeGrid()
+	{
+		const int32 n = BF6Api::MultiplyGrid(
+			FCString::Atoi(*CountBox->GetText().ToString()),
+			FCString::Atoi(*RowsBox->GetText().ToString()),
+			FCString::Atod(*GapBox->GetText().ToString()));
+		if (n > 0) { BF6Api::HideTransientMenus(); BF6_MiniToast(FString::Printf(TEXT("Added %d flush cop%s."), n, n == 1 ? TEXT("y") : TEXT("ies"))); }
+	}
+
+	void MakeCircle()
+	{
+		const int32 n = BF6Api::MultiplyCircle(
+			FCString::Atoi(*CircleBox->GetText().ToString()),
+			FCString::Atod(*RadiusBox->GetText().ToString()));
+		if (n > 0) { BF6Api::HideTransientMenus(); BF6_MiniToast(FString::Printf(TEXT("Ringed %d copies around it."), n)); }
+	}
+
 	TSharedPtr<SEditableTextBox> CountBox, RowsBox, GapBox, CircleBox, RadiusBox;
 };
 
@@ -4463,6 +5899,10 @@ public:
 
 	void Construct(const FArguments&)
 	{
+		// No Enter handler here ON PURPOSE, and check.ps1 will keep warning about
+		// it. The buttons below are Conquest and Breakthrough - two different
+		// modes, not one confirm - so there is no answer to "what does Enter do"
+		// that would not be a guess, and guessing would start the wrong wizard.
 		auto NumBox = [](TSharedPtr<SEditableTextBox>& Out, const TCHAR* Default)
 		{
 			return SNew(SBox).WidthOverride(44.f)[ SAssignNew(Out, SEditableTextBox).Text(FText::FromString(Default)) ];
@@ -4519,14 +5959,62 @@ public:
 						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("sectors"))) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(SectorsBox, TEXT("3")) ]
 					]
-					+ SVerticalBox::Slot().AutoHeight()
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
 					[ Dim(TEXT("Per sector: attacker and defender HQs plus objectives A and B, wired into their sector as you go.")) ]
+
+					// ---- ONE PIECE, not a whole mode --------------------------
+					//
+					// The wizard already knew how to build these; they were just
+					// locked inside a script you had to run start to finish. Most
+					// of the time a creator wants one more flag, not a fresh
+					// Conquest layout - and building that by hand is a capture
+					// point, an area, sixteen spawns and twenty links.
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+					[ MakeSectionHeader(TEXT("Or drop one finished piece")) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+					[ Dim(TEXT("Placed where you were aiming when the wheel opened, fully linked and parked under its owner. Everything is an ordinary object afterwards.")) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ BundleRows() ]
 				]
 			]
 		];
 	}
 
 private:
+	// One row per bundle, read from the API so this panel never carries its own
+	// idea of what can be built.
+	TSharedRef<SWidget> BundleRows()
+	{
+		TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+		for (const BF6Api::FBundleDef& B : BF6Api::Bundles())
+		{
+			const FString Key = B.Key, Label = B.Label, Sub = B.Sub;
+			Box->AddSlot().AutoHeight().Padding(0, 1)
+			[
+				// A REAL BUTTON, not borderless text. These build a dozen linked
+				// objects on one click, and a row that looks like a label reads
+				// as something to consult rather than something to press.
+				SNew(SButton).ButtonStyle(&GhostButtonStyle()).ContentPadding(FMargin(10, 7))
+				.ToolTip(BF6_MakeHint(Label, FString::Printf(TEXT("Builds %s at the spot you were aiming at, already linked. One Ctrl+Z removes the whole piece."), *Sub)))
+				.OnClicked_Lambda([Key, Label]
+				{
+					BF6Api::HideTransientMenus();
+					if (BF6Api::PlaceBundle(Key, GBF6PendingWorld))
+						BF6_MiniToast(FString::Printf(TEXT("%s placed and linked. One Ctrl+Z removes the whole piece."), *Label));
+					return FReply::Handled();
+				})
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+					[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(Label)) ]
+					+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+					[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(Sub)) ]
+				]
+			];
+		}
+		return Box;
+	}
+
 	TSharedPtr<SEditableTextBox> FlagsBox, SectorsBox;
 };
 
@@ -4566,15 +6054,42 @@ static void BF6Pie_Confirm()
 
 	if (Mode == EBF6PieMode::VolEdit)
 	{
+		if (Pick == TEXT("COLORIZE"))
+		{
+			// The zone stays in point editing behind the panel, so a creator
+			// can recolour it and carry straight on shaping it.
+			BF6_PushTransient(SNew(SBF6ColorizePanel), Center);
+			return;
+		}
+		if (Pick == TEXT("LOOP / OPEN"))
+		{
+			BF6_MiniToast(BF6Api::TogglePathClosed()
+				? TEXT("Path closed - the route loops back to the start.")
+				: TEXT("Path open - the route ends at the last point."));
+			return;
+		}
 		if (Pick == TEXT("ADD POINT"))         BF6Api::VolumeAddPoint();
 		else if (Pick == TEXT("DELETE POINT")) BF6Api::VolumeDeletePoint();
-		else if (Pick == TEXT("RESET CENTER"))
-		{
-			BF6_MiniToast(BF6Api::ResetVolumeCenter()
-				? TEXT("Zone origin moved to the middle - the shape didn't move.")
-				: TEXT("Already centred."));
-		}
 		else                                   BF6Api::FinishVolumeEdit();
+		return;
+	}
+
+	if (Mode == EBF6PieMode::HQVolumes)
+	{
+		AActor* Owner = GPieTarget.Get();
+		if (!Owner) return;
+		for (const BF6Api::FLinkField& V : BF6Api::LinkVolumeFields(Owner))
+			if (Pick == V.Label) { BF6_MakeLinkedVolume(Owner, V); return; }
+		return;
+	}
+
+	if (Mode == EBF6PieMode::HQSpawns)
+	{
+		AActor* HQ = GPieTarget.Get();
+		if (!HQ) return;
+		for (const BF6Api::FLinkField& K : BF6Api::LinkArrayFields(HQ))
+			if (Pick == K.Label) { BF6_StartHQSpawnRun(HQ, K); return; }
+		// anything else on this ring is BACK, handled above
 		return;
 	}
 
@@ -4582,6 +6097,36 @@ static void BF6Pie_Confirm()
 	{
 		AActor* Target = GPieTarget.Get();
 		if (!Target) return;
+		if (Pick.StartsWith(TEXT("ADD ")) || Pick == TEXT("ADD LINKED"))
+		{
+			// WHICH field, before any are placed. Choosing after the fact would
+			// mean re-linking every one by hand, because the field IS the
+			// meaning - a SpawnPoint carries none of it itself.
+			const TArray<BF6Api::FLinkField> Kinds = BF6Api::LinkArrayFields(Target);
+			if (Kinds.Num() == 0) { BF6_MiniToast(TEXT("Nothing on this object links to other objects.")); return; }
+			// One kind is not a choice; skip the ring nobody would read.
+			if (Kinds.Num() == 1) { BF6_StartHQSpawnRun(Target, Kinds[0]); return; }
+			GPieMode = EBF6PieMode::HQSpawns;
+			GPieCenter = Center;
+			BF6Pie_Attach();
+			return;
+		}
+		if (Pick == TEXT("CREATE AREA") || Pick == TEXT("EDIT AREA") || Pick == TEXT("AREAS"))
+		{
+			const TArray<BF6Api::FLinkField> Vols = BF6Api::LinkVolumeFields(Target);
+			if (Vols.Num() == 0) return;
+			// Several volume fields is a real choice - a Sector has five, and
+			// they mean entirely different things. One is not a choice.
+			if (Vols.Num() > 1)
+			{
+				GPieMode = EBF6PieMode::HQVolumes;
+				GPieCenter = Center;
+				BF6Pie_Attach();
+				return;
+			}
+			BF6_MakeLinkedVolume(Target, Vols[0]);
+			return;
+		}
 		if (Pick == TEXT("EDIT POINTS")) { BF6Api::BeginVolumeEdit(Target); return; }
 		if (Pick == TEXT("SET CAMERA"))
 		{
@@ -4655,7 +6200,45 @@ static void BF6Pie_Confirm()
 	// Top ring: OBJECTS steps into the catalogue, the rest open their panel.
 	if (Pick == TEXT("< BACK"))
 	{
-		GPieMode = EBF6PieMode::Place;
+		// WHILE A SCATTER IS PICKING OBJECTS, BACK MEANS DONE.
+		//
+		// Stepping out to the front page is right when the library was entered
+		// to place something - there is more ring behind it. Here the ring was
+		// only ever a way to fill the pool, and the next thing the creator has
+		// to do is click the ground, which they cannot do through an open
+		// radial. Going back a page leaves them one more dismissal away from
+		// the thing they are trying to do.
+		if (BF6Api::IsScatterFromLibrary())
+		{
+			BF6Pie_Close();
+			BF6_MiniToast(BF6Api::ScatterPoolCount() > 0
+				? TEXT("Now click the ground to drop the scatter, or pick DRAW for a custom outline.")
+				: TEXT("No objects picked yet - reopen the library from the scatter panel."));
+			return;
+		}
+		// The spawn-kind ring was stepped INTO from the HQ, so back means the
+		// HQ. Dropping to the front page from here would throw away the target
+		// the creator is working on.
+		const bool bSubRing = (Mode == EBF6PieMode::HQSpawns || Mode == EBF6PieMode::HQVolumes);
+		GPieMode = (bSubRing && GPieTarget.IsValid()) ? EBF6PieMode::Props : EBF6PieMode::Place;
+		GPieCenter = Center;
+		BF6Pie_Attach();
+		return;
+	}
+	if (Pick == TEXT("DISPLAY/SUN"))
+	{
+		BF6_PushTransient(SNew(SBF6DisplaySunPanel), Center);
+		return;
+	}
+	if (Pick == TEXT("SCATTER"))
+	{
+		// The panel docks and asks for objects, and the library opens straight
+		// away to answer it - "pick some objects" with no library in front of
+		// you is an instruction with nowhere to carry it out. Stepping into the
+		// catalogue is exactly what OBJECTS does, so it does the same thing.
+		BF6Api::BeginScatterFromLibrary();
+		BF6_MiniToast(TEXT("Pick objects from the library to scatter - as many as you like."));
+		GPieMode = EBF6PieMode::Objects;
 		GPieCenter = Center;
 		BF6Pie_Attach();
 		return;
@@ -4718,6 +6301,9 @@ static void BF6Pie_Confirm()
 		BF6_PushTransient(SNew(SBF6ModeWizardMenu), Center);
 		return;
 	}
+	// Nothing of ours matched. An add-on may own this pill; only if none does
+	// is the label treated as an object category.
+	if (BF6ExtInternal::DispatchPie(Pick, Center)) return;
 	BF6_PushTransient(SNew(SBF6CategoryPopup).Category(Pick), Center);
 }
 
@@ -5260,7 +6846,9 @@ namespace
 								]
 							]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
-							[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(BF6Theme::TextDim).Text(FText::FromString(TEXT("F1, Esc, or click anywhere to close. Sessions autosave every 60 seconds."))) ]
+							[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(BF6Theme::TextDim).Text_Lambda([]{ return FText::FromString(BF6Api::GetAutosave()
+								? TEXT("F1, Esc, or click anywhere to close. Autosave is on - sessions save every 60 seconds.")
+								: TEXT("F1, Esc, or click anywhere to close. Autosave is off - press Save to keep your work.")); }) ]
 						]
 					]
 				]
@@ -5295,6 +6883,17 @@ public:
 	virtual bool HandleKeyDownEvent(FSlateApplication& App, const FKeyEvent& E) override
 	{
 		const FKey K = E.GetKey();
+
+		// Flying keys pressed while the right button is down mean the button is
+		// the camera, not a menu gesture - even if the mouse never moves, which
+		// is exactly the case that used to end in an unwanted context menu.
+		if (bRightDown && (K == EKeys::W || K == EKeys::A || K == EKeys::S || K == EKeys::D
+			|| K == EKeys::Q || K == EKeys::E || K == EKeys::LeftShift || K == EKeys::RightShift
+			|| K == EKeys::C || K == EKeys::Z || K == EKeys::SpaceBar))
+		{
+			bRightFlew = true;
+		}
+
 		// typing in a text box: none of our binds may fire
 		if (BF6_TextFieldFocused()) return false;
 
@@ -5364,6 +6963,16 @@ public:
 			{
 				BF6Api::ToggleWalk();
 				BF6_WalkCaptureMouse(false);
+				return true;
+			}
+			if (BF6Api::IsHQSpawnRun())
+			{
+				// ESCAPE CANCELS. The whole run comes back out, including the
+				// ones already set down, because that is what cancel means
+				// everywhere else and anything softer reads as the key not
+				// working. ENTER is the way to keep them.
+				BF6Api::EndHQSpawnRun(false);
+				BF6_MiniToast(TEXT("Cancelled - the spawns from this run are gone. Enter keeps them next time."));
 				return true;
 			}
 			if (BF6Api::IsPickPlacing())
@@ -5449,6 +7058,11 @@ public:
 		// when there is no outline history.
 		if (E.IsControlDown() && !BF6_TextFieldFocused() && BF6Api::IsScatterLive())
 		{
+			// A PAINTED STROKE IS THE UNIT HERE, and it is claimed before the
+			// outline's undo: in paint mode there is no outline to undo, and
+			// falling through would hand Ctrl+Z to the editor's own undo, which
+			// would start dismantling whatever the creator did before painting.
+			if (K == EKeys::Z && !E.IsShiftDown() && BF6Api::ScatterPaintUndo()) return true;
 			if (K == EKeys::Z && !E.IsShiftDown() && BF6Api::ScatterOutlineUndo()) return true;
 			if ((K == EKeys::Y || (K == EKeys::Z && E.IsShiftDown())) && BF6Api::ScatterOutlineRedo()) return true;
 		}
@@ -5459,24 +7073,45 @@ public:
 			const int32 Dot = BF6Api::ScatterDotUnderMouse();
 			if (Dot != INDEX_NONE) { BF6Api::ScatterDeletePointByIndex(Dot); return true; }
 		}
-		// DEL removes the zone point under the cursor (or the last-clicked one).
-		// Consuming it also protects the zone itself: the volume actor is the
-		// selection during point editing, so the editor's own Delete would
-		// otherwise remove the whole zone.
+		// DEL REMOVES THE ZONE, not one of its corners.
+		//
+		// It used to delete a point, on the reasoning that the volume actor is
+		// the selection during point editing so the editor's own Delete would
+		// take the whole zone. That protection cost more than it saved: Delete
+		// means "get rid of what I have selected" everywhere else in the tool
+		// and everywhere else in Unreal, and a creator who selects a zone and
+		// presses it is not asking to lose one corner of it.
+		//
+		// Points come off with Ctrl+RMB, which is a deliberate gesture aimed at
+		// a specific corner rather than a guess at which one was meant.
 		if (K == EKeys::Delete && !BF6Pie_Active() && !GTransientMenu.IsValid() && BF6Api::IsVolumeEditing())
 		{
-			const int32 Dot = BF6Api::ZoneDotUnderMouse();
-			if (Dot != INDEX_NONE) BF6Api::VolumeDeletePointByIndex(Dot);
-			else BF6Api::VolumeDeletePoint();
+			// The edit has to end first: it holds a pointer to the actor and an
+			// open transaction, and tearing the actor out from under it leaves
+			// both dangling.
+			BF6Api::FinishVolumeEdit();
+			BF6Api::DeleteSelectionFast();
 			return true;
 		}
 		// DEL on our objects: the fast path empties proc-mesh payloads before
 		// the transaction, so deleting a scattered forest is instant instead
 		// of serializing megabytes of vertex data into the undo buffer
 		if (K == EKeys::Delete && !BF6Pie_Active() && !GTransientMenu.IsValid() && !BF6_TextFieldFocused()
-			&& BF6Api::IsBuildOverlayActive() && BF6Api::IsEditing() && !BF6Api::IsVolumeEditing())
+			&& BF6Api::IsBuildOverlayActive() && BF6Api::IsEditing())
 		{
 			if (BF6Api::DeleteSelectionFast()) return true;
+			// NOTHING OF OURS WAS SELECTED - which is what a FOLDER row looks
+			// like from here, because a folder is not an actor and the delete
+			// walks selected actors. Turning its contents into a selection
+			// gives Delete something it can act on.
+			const int32 n = BF6Api::SelectFolderContents();
+			if (n > 0)
+			{
+				BF6Api::DeleteSelectionFast();
+				BF6_MiniToast(FString::Printf(
+					TEXT("Deleted %d object%s from the folder."), n, n == 1 ? TEXT("") : TEXT("s")));
+				return true;
+			}
 		}
 		// ENTER also bakes and ends a zone-point edit (when no popup is up);
 		// deselecting stops the auto-edit from restarting it next tick
@@ -5493,6 +7128,37 @@ public:
 			BF6Api::ClearSelection();
 			return true;
 		}
+		// ENTER ends a spawn run: the one on the cursor was never placed, so it
+		// goes, and everything already down stays.
+		if (K == EKeys::Enter && !BF6Pie_Active() && !GTransientMenu.IsValid() && BF6Api::IsHQSpawnRun())
+		{
+			const int32 n = BF6Api::EndHQSpawnRun(true);
+			BF6_MiniToast(n > 0
+				? FString::Printf(TEXT("%d placed and linked."), n)
+				: FString(TEXT("No spawns placed.")));
+			return true;
+		}
+		// Q and E TURN what is being carried.
+		//
+		// They are the fly up/down keys, but only while the right button is
+		// held - and nobody flies and carries at the same time, because the
+		// carried object follows the cursor the camera is moving. So while
+		// something is in the hand and the camera is not being driven, they
+		// mean rotate, which is the thing you actually want at that moment.
+		//
+		// Rotating after placing costs a gizmo hunt, a mode switch and an aim,
+		// and all of it is wasted the moment the object turns out to be in the
+		// wrong spot anyway.
+		if ((K == EKeys::Q || K == EKeys::E) && BF6Api::IsPickPlacing()
+			&& !BF6Pie_Active() && !GTransientMenu.IsValid()
+			&& !FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::RightMouseButton))
+		{
+			// Shift is the fine step, the same as it is for the nudge keys.
+			const float Step = E.IsShiftDown() ? 5.f : 15.f;
+			BF6Api::RotatePickPlace(K == EKeys::Q ? -Step : Step, E.IsControlDown());
+			return true;
+		}
+
 		// ENTER while carrying sets the selection down, same as the click
 		if (K == EKeys::Enter && !BF6Pie_Active() && !GTransientMenu.IsValid() && BF6Api::IsPickPlacing())
 		{
@@ -5555,6 +7221,16 @@ public:
 		// consumed - everything else still sees the move.
 		if (BF6Api::IsWalking() && !BF6_MenuHasMouse()) return true;   // the tick does the looking
 		if (BF6_ShiftFlying() && !BF6_MenuHasMouse()) BF6_ShiftFlyLook(E.GetCursorDelta());
+
+		// PAINTING: every move lays another stamp, and the stamp itself decides
+		// whether the brush has travelled far enough to be worth one. Not
+		// consumed, so the camera and everything else carry on working.
+		if (BF6Api::IsScatterPainting())
+		{
+			FVector W;
+			if (BF6Api::WorldFromViewportCursor(W)) BF6Api::ScatterPaintTo(W);
+			return true;
+		}
 
 		if (BF6Pie_Active()) BF6Pie_Update(E.GetScreenSpacePosition());
 		// pick place: the selection rides the cursor (never consumed, so the
@@ -5629,6 +7305,16 @@ public:
 			&& !BF6_CursorOverSlateUI(App, E.GetScreenSpacePosition()))
 		{
 			BF6Api::FinishPickPlace();
+			// A SPAWN RUN CARRIES ON. Each placement hands the next one to the
+			// cursor, so laying a line of eight is eight clicks rather than
+			// eight trips back to the radial.
+			if (BF6Api::IsHQSpawnRun() && BF6Api::HQSpawnRunNext())
+			{
+				BF6_MiniToast(FString::Printf(
+					TEXT("%d placed - keep clicking, Enter to finish, Esc to stop."),
+					BF6Api::HQSpawnRunPlaced()));
+				return true;
+			}
 			BF6_MiniToast(TEXT("Placed - one Ctrl+Z puts it back."));
 			return true;
 		}
@@ -5640,13 +7326,9 @@ public:
 			&& !GTransientMenu.IsValid() && !GControls.IsValid() && !BF6Pie_Active()
 			&& !BF6_CursorOverSlateUI(App, E.GetScreenSpacePosition()))
 		{
-			static double LastWarn = 0.0;
-			const double Now = FPlatformTime::Seconds();
-			if (Now - LastWarn > 5.0)
-			{
-				LastWarn = Now;
-				BF6_MiniToast(TEXT("Read-only base - hit Create in the bottom right, or resume a custom level from < Maps."));
-			}
+			// The door throttles the words itself, so every click still gets
+			// the light - which is the half that answers "did it hear me".
+			BF6Api::RefuseReadOnly(TEXT("Read-only base - press Create in the bottom right, or resume a custom level from < Maps."));
 		}
 
 		// assign mode: clicking a candidate marker (de)selects that target
@@ -5686,6 +7368,40 @@ public:
 		{
 			FVector W;
 			if (BF6Api::WorldFromViewportCursor(W)) { BF6Api::ScatterDrawAddPoint(W); return true; }
+		}
+
+		// THE BRUSH TAKES THE BUTTON FOR AS LONG AS IT IS DOWN.
+		//
+		// Claimed before drag-move and box-select, both of which also start on
+		// a left press over the map, because a stroke that turned into a
+		// marquee halfway across would be worse than either.
+		if (E.GetEffectingButton() == EKeys::LeftMouseButton && !E.IsControlDown()
+			&& BF6Api::IsScatterLive() && BF6Api::GetScatterShape() == 4
+			&& !GTransientMenu.IsValid() && !GControls.IsValid() && !BF6Pie_Active()
+			&& !BF6_CursorOverSlateUI(App, E.GetScreenSpacePosition()))
+		{
+			BF6Api::BeginScatterPaint();
+			FVector W;
+			if (BF6Api::WorldFromViewportCursor(W)) BF6Api::ScatterPaintTo(W);
+			return true;
+		}
+
+		// A LIBRARY SCATTER HAS NO PLACE TO BE UNTIL SOMEBODY SAYS SO.
+		//
+		// One that came from a selection is centred on that selection. This one
+		// has no selection at all, so the region sits nowhere until the creator
+		// clicks the ground - and then it drops the chosen shape right there,
+		// which is the whole "click a spot" half of the flow. DRAW is the other
+		// half and is handled above; that path sets Shape 3 and consumes clicks
+		// before this one, so the two never fight over the same click.
+		if (E.GetEffectingButton() == EKeys::LeftMouseButton && !E.IsControlDown()
+			&& BF6Api::IsScatterFromLibrary() && !BF6Api::IsScatterDrawing()
+			&& BF6Api::ScatterPoolCount() > 0 && BF6Api::GetScatterShape() != 3
+			&& !GTransientMenu.IsValid() && !GControls.IsValid() && !BF6Pie_Active()
+			&& !BF6_CursorOverSlateUI(App, E.GetScreenSpacePosition()))
+		{
+			FVector W;
+			if (BF6Api::WorldFromViewportCursor(W)) { BF6Api::SetScatterCenter(W); return true; }
 		}
 
 		// Godot-style dots: grabbing one starts a direct drag (consumed, so the
@@ -5786,7 +7502,9 @@ public:
 		{
 			bRightDown = true;
 			bRightDragged = false;
+			bRightFlew = false;
 			RightDownPos = E.GetScreenSpacePosition();
+			RightDownAt = FPlatformTime::Seconds();
 		}
 		return false;   // never consume the down - camera look must still work
 	}
@@ -5810,6 +7528,14 @@ public:
 
 	virtual bool HandleMouseButtonUpEvent(FSlateApplication& App, const FPointerEvent& E) override
 	{
+		// Letting go ends the stroke. The next press starts a new run, which is
+		// what makes the spacing rule restart rather than measure back to where
+		// the last stroke happened to finish.
+		if (E.GetEffectingButton() == EKeys::LeftMouseButton && BF6Api::IsScatterPainting())
+		{
+			BF6Api::EndScatterPaint();
+			return true;
+		}
 		// Closing a gizmo drag serialises the object one more time to finish the
 		// transaction, and by now the geometry is back - which is the two second
 		// pause on letting go. We see the release first, so it comes out again
@@ -5859,8 +7585,11 @@ public:
 			return true;
 		}
 		if (E.GetEffectingButton() != EKeys::RightMouseButton) return false;
-		const bool bWasClick = bRightDown && !bRightDragged;
+		const bool bHeld = bRightDown && (FPlatformTime::Seconds() - RightDownAt) > 0.22;
+		const bool bWasClick = bRightDown && !bRightDragged && !bHeld && !bRightFlew;
+		const bool bWasCamera = bRightDown && (bRightDragged || bHeld || bRightFlew);
 		bRightDown = false;
+		bRightFlew = false;
 		// Godot-style: while a zone's points are up, right-clicking near an edge
 		// inserts a point there. Right-drag (camera) passes through untouched.
 		if (bWasClick && BF6Api::IsVolumeEditing())
@@ -5868,11 +7597,38 @@ public:
 			FVector W;
 			if (BF6Api::WorldFromViewportCursor(W)) { BF6Api::VolumeAddPointAt(W); return true; }
 		}
+
+		// FLYING IS NOT A RIGHT-CLICK - but the RELEASE MUST STILL GET THROUGH.
+		//
+		// The editor decides between "camera" and "context menu" purely on
+		// whether the mouse moved, so coming to rest on something and letting
+		// go drops a menu over the view you were lining up.
+		//
+		// Swallowing that release was the obvious fix and it was WRONG: the
+		// viewport never saw the button come up, so it never released mouse
+		// capture and the camera stayed glued to the pointer until the next
+		// right-click. The up event is what ends the look, and it is not ours
+		// to eat.
+		//
+		// So the release goes through and the MENU is closed instead, on the
+		// next tick, once. Guarded on our own menus so a radial or a popup that
+		// happens to be open is never taken down with it.
+		if (bWasCamera && BF6Api::IsBuildOverlayActive() && !BF6_CursorOverSlateUI(App, E.GetScreenSpacePosition()))
+		{
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+			{
+				if (!BF6Pie_Active() && !GTransientMenu.IsValid() && !GControls.IsValid())
+					FSlateApplication::Get().DismissAllMenus();
+				return false;
+			}));
+		}
 		return false;
 	}
 
 private:
 	bool bRightDown = false, bRightDragged = false;
+	bool bRightFlew = false;      // a movement key was held during the press
+	double RightDownAt = 0.0;
 	FVector2D RightDownPos = FVector2D::ZeroVector;
 	// Godot MMB navigation state
 	bool bMMBNav = false, bMMBPan = false;
@@ -5955,6 +7711,37 @@ void BF6Api::ShowSdkSetup()     { if (GRoot.IsValid()) GRoot->ShowSetup(); }
 
 bool BF6Api::IsBuildOverlayActive() { return GRoot.IsValid() && GRoot->IsBuildScreen(); }
 
+// The read-only pulse. Re-firing RESTARTS it rather than stacking, which is
+// what makes it safe to call from every refused click without a throttle of
+// its own - a creator hammering the map gets one continuous pulse, not a
+// strobe. The toast beside it stays throttled; the light does not need to be.
+void BF6Api::FlashReadOnly()
+{
+	GFlashAt = BF6_Now();
+}
+
+bool BF6Api::IsFlashing()
+{
+	return BF6_FlashProgress() >= 0.f;
+}
+
+void BF6Api::RefuseReadOnly(const FString& What)
+{
+	// The light every time: it is the part that answers "did it hear me", and
+	// re-firing restarts one pulse rather than stacking a strobe.
+	BF6Api::FlashReadOnly();
+
+	// The words only now and then. Repeating the same sentence on every click
+	// is how a warning turns into wallpaper.
+	static double LastSaid = 0.0;
+	const double Now = BF6_Now();
+	if (Now - LastSaid < 4.0) return;
+	LastSaid = Now;
+	BF6_MiniToast(What.IsEmpty()
+		? FString(TEXT("This is the read-only base map. Name it and press Create, bottom right, to start building on it."))
+		: What);
+}
+
 void BF6Api::HideTransientMenus()
 {
 	if (GTransientMenu.IsValid()) { GTransientMenu->Dismiss(); GTransientMenu.Reset(); }
@@ -5967,9 +7754,28 @@ void BF6Api::InstallInputHandler()
 	FSlateApplication::Get().RegisterInputPreProcessor(GInput);
 }
 
+void BF6Api::RegisterContextMenu()
+{
+	// UToolMenus owns the actor context menu and is registered lazily, so this
+	// runs from the same late startup hook the outliner takeover does rather
+	// than at module load - the menu does not exist yet at module load and
+	// extending nothing silently does nothing.
+	BF6_RegisterActorContextMenu();
+}
+
 void BF6Api::RemoveInputHandler()
 {
 	if (GInput.IsValid() && FSlateApplication::IsInitialized())
 		FSlateApplication::Get().UnregisterInputPreProcessor(GInput);
 	GInput.Reset();
+}
+namespace BF6Api
+{
+	// Add-on panels go up the same way the tool's own do, so the radial knows a
+	// popup is open and the menu stack dismisses it on a click away. A raw
+	// PushMenu from an add-on fights the wheel for the mouse.
+	void PushAddonPopup(TSharedRef<SWidget> Content, FVector2D ScreenPos)
+	{
+		BF6_PushTransient(Content, ScreenPos);
+	}
 }
