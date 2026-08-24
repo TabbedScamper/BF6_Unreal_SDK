@@ -17,6 +17,8 @@
 #include "Components/LightComponent.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
 #include "MaterialEditingLibrary.h"
 #include "Misc/Compression.h"
 #include "Dom/JsonObject.h"
@@ -40,6 +42,8 @@
 #include "ImageUtils.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/DecalActor.h"
+#include "Components/DecalComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Camera/CameraComponent.h"
 #include "PreviewScene.h"
@@ -494,6 +498,7 @@ static int32 BF6_RebuildTreeFromTags();      // authored tree, hooked up as atta
 static AActor* BF6_SpawnTreeNode(UWorld* W, const FString& Key, const FString& ParentKey,
 	const FTransform& Xf, int32 Order = MAX_int32);   // an empty Godot node, as an actor
 namespace BF6Api { static bool BF6_IsLinkProp(const FString& TypeName, const FString& PropName); }
+namespace BF6Api { static void BF6_MapDecalStash(); }   // fwd: map close stashes the decal shift
 static int32 BF6_ApplyTreeMetadata(const TArray<TSharedPtr<FJsonValue>>* StaticArr);   // tree from a spatial file
 bool BF6_KeepGodotTree();                    // the creator's outliner preference
 
@@ -867,6 +872,7 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	Actor->Tags.Add(kContextTag);
 	Actor->SetFlags(RF_Transient);          // never saved into the level
 	UProceduralMeshComponent* Mesh = MakeProcMesh(Actor, TEXT("ContextMesh"));
+	Mesh->SetReceivesDecals(true);   // the map-image decal lands on the context
 	// Collision ON: the space-bar placement ray traces this surface so objects
 	// land where the crosshair points (not on a flat z=0 plane under the map).
 	const double CtxD0 = GMeshDecodeSec, CtxB0 = GMeshBuildSec;
@@ -1112,6 +1118,10 @@ static UProceduralMeshComponent* MakeProcMesh(AActor* A, const FName Name)
 	// proc-mesh actors (one-file-per-actor packages included) crashed the
 	// save-on-close prompt. Transient objects still ride the undo buffer.
 	M->SetFlags(RF_Transactional | RF_Transient);
+	// The map-image decal drapes the low-poly CONTEXT only. Placed objects opt
+	// out here so a road stripe never paints itself across the roof of a
+	// building the creator just placed; SpawnContextMesh turns receipt back on.
+	M->SetReceivesDecals(false);
 	A->SetFlags(RF_Transient);
 	A->SetRootComponent(M);
 	M->RegisterComponent();
@@ -4217,7 +4227,7 @@ static void BF6_OpenMapWorldImpl(const FString& Level, const FString& SaveName)
 	}
 	// Tell the add-ons the old map is going before anything is torn down, so
 	// an overlay can drop its own actors while the world is still coherent.
-	if (!g_ss.CurrentLevel.IsEmpty()) BF6ExtInternal::BroadcastMapClosing(g_ss.CurrentLevel);
+	if (!g_ss.CurrentLevel.IsEmpty()) { BF6Api::BF6_MapDecalStash(); BF6ExtInternal::BroadcastMapClosing(g_ss.CurrentLevel); }
 	BF6_EnsureBaseSetupFormat();
 	g_ss.CurrentLevel = Level; g_ss.CurrentSave = Save; g_ss.bEditing = !Save.IsEmpty();
 	BF6_HookSpawnWatch();   // the world may have been replaced since last time
@@ -13049,6 +13059,216 @@ namespace BF6Api
 
 	// one folder per custom map, the level file inside - the folder is what
 	// you back up or share
+	// ---- the map-image decal ----------------------------------------------
+	//
+	// The Godot SDK's terrain_decal plugin, matched: the same top-down map
+	// image from the same CDN ("<downloadUrl>maptiles/<level>.jpg", which
+	// answers only to a browser User-Agent), placed with the same per-map box
+	// from the SDK's own bounds.json, draped over the low-poly terrain and
+	// assets. It is a real actor: hide it, or grab it with the gizmo and shift
+	// it to realign, exactly like moving the Decal node in Godot. The adjusted
+	// transform is remembered per map.
+	static const FName kMapDecalTag("BF6MapDecal");
+	static bool GMapDecalFetching = false;
+
+	static AActor* BF6_FindMapDecal()
+	{
+		UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!W) return nullptr;
+		for (TActorIterator<AActor> It(W); It; ++It)
+			if (It->Tags.Contains(kMapDecalTag)) return *It;
+		return nullptr;
+	}
+
+	static FString BF6_MapDecalCachePath(const FString& Level)
+	{
+		return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("decals"), Level + TEXT(".jpg"));
+	}
+
+	// the image, wherever it already is: the SDK's own download cache first,
+	// then ours. Empty means it needs fetching.
+	static FString BF6_MapDecalImageOnDisk(const FString& Level)
+	{
+		const FString Sdk = StoredSdkRoot();
+		if (!Sdk.IsEmpty())
+		{
+			const FString Theirs = Sdk / TEXT("GodotProject/addons/bf_portal/terrain_decal/textures") / (Level + TEXT(".jpg"));
+			if (FPaths::FileExists(Theirs)) return Theirs;
+		}
+		const FString Ours = BF6_MapDecalCachePath(Level);
+		return FPaths::FileExists(Ours) ? Ours : FString();
+	}
+
+	// the per-map box, from the SDK's own bounds.json (Godot metres)
+	static bool BF6_MapDecalBounds(const FString& Level, FVector& OutSizeM, FVector& OutPosM)
+	{
+		OutSizeM = FVector(1000, 500, 1000); OutPosM = FVector::ZeroVector;
+		const FString Sdk = StoredSdkRoot();
+		if (Sdk.IsEmpty()) return false;
+		FString In;
+		if (!FFileHelper::LoadFileToString(In, *(Sdk / TEXT("GodotProject/addons/bf_portal/terrain_decal/bounds.json")))) return false;
+		TSharedPtr<FJsonObject> Root;
+		TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
+		if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid()) return false;
+		const TSharedPtr<FJsonObject>* E = nullptr;
+		if (!Root->TryGetObjectField(Level, E) && !Root->TryGetObjectField(TEXT("_default"), E)) return false;
+		const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+		if ((*E)->TryGetArrayField(TEXT("size"), Arr) && Arr->Num() == 3)
+			OutSizeM = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
+		if ((*E)->TryGetArrayField(TEXT("position"), Arr) && Arr->Num() == 3)
+			OutPosM = FVector((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber());
+		return true;
+	}
+
+	// runtime decal material, built the way the volume material is built - the
+	// proven pattern: a real /Temp package (transient-package materials
+	// half-register and fail to compile) and UMaterialEditingLibrary wiring.
+	static UMaterialInstanceDynamic* BF6_MapDecalMID(UTexture2D* Tex, UObject* Outer)
+	{
+		static TWeakObjectPtr<UMaterial> GParent;
+		UMaterial* Parent = GParent.Get();
+		if (!Parent)
+		{
+			UPackage* Pkg = CreatePackage(TEXT("/Temp/BF6MapDecal"));
+			if (!Pkg) return nullptr;
+			Pkg->SetFlags(RF_Transient);
+			Parent = NewObject<UMaterial>(Pkg, TEXT("M_BF6MapDecal"), RF_Transient);
+			if (!Parent) return nullptr;
+			Parent->MaterialDomain = MD_DeferredDecal;
+			Parent->BlendMode = BLEND_Translucent;
+			UMaterialExpressionTextureSampleParameter2D* T =
+				Cast<UMaterialExpressionTextureSampleParameter2D>(
+					UMaterialEditingLibrary::CreateMaterialExpression(
+						Parent, UMaterialExpressionTextureSampleParameter2D::StaticClass(), -400, 0));
+			if (T)
+			{
+				T->ParameterName = TEXT("Image");
+				T->SamplerType = SAMPLERTYPE_Color;
+				UMaterialEditingLibrary::ConnectMaterialProperty(T, TEXT("RGB"), MP_BaseColor);
+			}
+			UMaterialExpressionScalarParameter* O =
+				Cast<UMaterialExpressionScalarParameter>(
+					UMaterialEditingLibrary::CreateMaterialExpression(
+						Parent, UMaterialExpressionScalarParameter::StaticClass(), -400, 200));
+			if (O)
+			{
+				O->ParameterName = TEXT("Opacity");
+				O->DefaultValue = 0.9f;
+				UMaterialEditingLibrary::ConnectMaterialProperty(O, TEXT(""), MP_Opacity);
+			}
+			Parent->PreEditChange(nullptr);
+			Parent->PostEditChange();
+			Parent->AddToRoot();
+			GParent = Parent;
+		}
+		UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(Parent, Outer);
+		if (Mid && Tex) Mid->SetTextureParameterValue(TEXT("Image"), Tex);
+		return Mid;
+	}
+
+	static FString BF6_MapDecalConfigKey(const FString& Level) { return TEXT("Decal_") + Level; }
+
+	static void BF6_MapDecalSpawn(const FString& Level, const FString& ImagePath)
+	{
+		UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!W) return;
+		UTexture2D* Tex = FImageUtils::ImportFileAsTexture2D(ImagePath);
+		if (!Tex) { Notify(TEXT("Could not read the map image.")); return; }
+		Tex->AddToRoot();
+
+		FVector SizeM, PosM;
+		BF6_MapDecalBounds(Level, SizeM, PosM);
+
+		ADecalActor* A = W->SpawnActor<ADecalActor>(ADecalActor::StaticClass());
+		if (!A) return;
+		A->SetFlags(RF_Transient);
+		A->Tags.Add(kContextTag);   // never saved, never exported, cleared with the map
+		A->Tags.Add(kMapDecalTag);
+		BF6_SetPrettyLabel(A, FString::Printf(TEXT("%s_MapImage"), *Level));
+
+		UDecalComponent* D = A->GetDecal();
+		D->SetDecalMaterial(BF6_MapDecalMID(Tex, D));
+		// godot metres -> our cm, godot (x, y-up, z) -> ours (x, z, y). The
+		// decal projects along its local X; pitched down, local Z spans world
+		// X and local Y spans world Y. Half-extents.
+		D->DecalSize = FVector(SizeM.Y * 50.f, SizeM.Z * 50.f, SizeM.X * 50.f);
+		FTransform Xf(FRotator(-90, 0, 0), FVector(PosM.X, PosM.Z, PosM.Y) * 100.f);
+		// a saved realignment wins over the book position
+		FString Saved;
+		if (GConfig->GetString(TEXT("BF6UnrealSDK"), *BF6_MapDecalConfigKey(Level), Saved, GEditorPerProjectIni) && !Saved.IsEmpty())
+			Xf.InitFromString(Saved);
+		A->SetActorTransform(Xf);
+		BF6_Redraw();
+	}
+
+	// remember where the creator shifted it, per map
+	static void BF6_MapDecalStash()
+	{
+		AActor* A = BF6_FindMapDecal();
+		if (!A || g_ss.CurrentLevel.IsEmpty()) return;
+		GConfig->SetString(TEXT("BF6UnrealSDK"), *BF6_MapDecalConfigKey(g_ss.CurrentLevel),
+			*A->GetActorTransform().ToString(), GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
+
+	int32 MapDecalState()
+	{
+		if (GMapDecalFetching) return 2;
+		AActor* A = BF6_FindMapDecal();
+		if (!A) return 0;
+		return A->IsTemporarilyHiddenInEditor() ? 1 : 3;
+	}
+
+	void ToggleMapDecal()
+	{
+		const FString Level = g_ss.CurrentLevel;
+		if (Level.IsEmpty() || GMapDecalFetching) return;
+
+		if (AActor* A = BF6_FindMapDecal())
+		{
+			const bool bHide = !A->IsTemporarilyHiddenInEditor();
+			A->SetIsTemporarilyHiddenInEditor(bHide);
+			BF6_MapDecalStash();
+			BF6_Redraw();
+			return;
+		}
+
+		const FString Have = BF6_MapDecalImageOnDisk(Level);
+		if (!Have.IsEmpty()) { BF6_MapDecalSpawn(Level, Have); return; }
+
+		// fetch it the way the SDK does, from the same place - the CDN answers
+		// only to a browser User-Agent, which the SDK-download code already
+		// carries for exactly this host
+		const FString Url = FString::Printf(TEXT("https://download.portal.battlefield.com/maptiles/%s.jpg"), *Level);
+		GMapDecalFetching = true;
+		Notify(FString::Printf(TEXT("Downloading the %s map image..."), *BF6Api::DisplayName(Level)));
+		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
+		Req->SetURL(Url);
+		Req->SetVerb(TEXT("GET"));
+		Req->SetHeader(TEXT("User-Agent"), TEXT("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"));
+		Req->OnProcessRequestComplete().BindLambda([Level](FHttpRequestPtr, FHttpResponsePtr Resp, bool bOk)
+		{
+			GMapDecalFetching = false;
+			// the CDN's "not found" is a tiny 200 text page, so the content
+			// type is the real answer, exactly as the SDK's own plugin checks
+			if (!bOk || !Resp.IsValid() || Resp->GetResponseCode() != 200
+				|| !Resp->GetContentType().StartsWith(TEXT("image")))
+			{
+				Notify(TEXT("No map image is published for this level."));
+				return;
+			}
+			const FString Out = BF6_MapDecalCachePath(Level);
+			IFileManager::Get().MakeDirectory(*FPaths::GetPath(Out), true);
+			if (!FFileHelper::SaveArrayToFile(Resp->GetContent(), *Out))
+			{
+				Notify(TEXT("Could not save the map image."));
+				return;
+			}
+			if (g_ss.CurrentLevel == Level) BF6_MapDecalSpawn(Level, Out);
+		});
+		Req->ProcessRequest();
+	}
+
 	void OpenSavesFolder()
 	{
 		IFileManager::Get().MakeDirectory(*BF6_SavesRoot(), true);

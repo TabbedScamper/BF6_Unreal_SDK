@@ -323,6 +323,12 @@ namespace BF6Api
 	int32 SetOutlinerMode(bool bKeepTree);   // returns how many objects were re-filed
 	void OpenExportsFolder();              // Explorer on the .spatial.json folder
 	void OpenSavesFolder();                // Explorer on saves/<custom map>/<level>.json
+	// The map-image decal, matching Godot's terrain_decal: the official
+	// top-down map picture draped over the low-poly context. A real actor -
+	// grab it with the gizmo to realign, and the shift is remembered per map.
+	// State: 0 off, 1 hidden, 2 downloading, 3 shown.
+	int32 MapDecalState();
+	void  ToggleMapDecal();
 	// ObjId registry: every gameplay object's script-facing id in one list.
 	// Duplicate/unset ids silently break modes, so the registry flags them.
 	struct FObjIdRow { TWeakObjectPtr<AActor> Actor; FString Name; FString Type; int32 Id = -1; };

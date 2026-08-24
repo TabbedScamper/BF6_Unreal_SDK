@@ -3147,6 +3147,25 @@ public:
 								BF6_MiniToast(TEXT("Back to the map's own lighting."));
 							}) ]
 					]
+					// The official top-down map image, draped over the low-poly
+					// context - the Godot SDK's terrain decal, matched. It is a
+					// real actor: select it and shift it with the gizmo to
+					// realign, and the shift is remembered for this map.
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Map image"),
+							TEXT("Drapes the official top-down map picture over the low-poly terrain and assets, like the Godot SDK's terrain decal. Downloaded once, then cached. Select the MapImage actor and move it with the gizmo if it needs realigning - the shift is remembered.")))
+						[ MakeToolButton_Dynamic(TAttribute<FText>::CreateLambda([]
+							{
+								switch (BF6Api::MapDecalState())
+								{
+								case 2:  return FText::FromString(TEXT("Map image: downloading..."));
+								case 3:  return FText::FromString(TEXT("Map image: shown"));
+								case 1:  return FText::FromString(TEXT("Map image: hidden"));
+								default: return FText::FromString(TEXT("Map image: off"));
+								}
+							}), []{ BF6Api::ToggleMapDecal(); }) ]
+					]
 				]
 			]
 		];

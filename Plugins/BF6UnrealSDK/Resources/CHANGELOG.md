@@ -1,5 +1,13 @@
 # BF6 Unreal SDK version history
 
+## 0.7.1 (2026-08-23)
+
+**The map image**
+
+- The official top-down map picture, draped over the low-poly terrain and assets - the Godot SDK's terrain decal, matched. Toggle it from the Display/Sun panel; the first press downloads the tile for the current map and caches it, and if your SDK install already has tiles from Godot's own button, those are used without downloading anything.
+- It lands on the map context only. Placed objects never catch it, so a road stripe cannot paint itself across the roof of something you built.
+- It is a real actor named after the map. Select it and shift it with the gizmo if it needs realigning, and the shift is remembered for that map.
+
 ## 0.7.0 (2026-08-23)
 
 **Two-way Godot**
