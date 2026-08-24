@@ -1422,10 +1422,16 @@ public:
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
 					[
+						// The SHAPE label sits on its own line. Sharing the row left
+						// five buttons fighting a 74-pixel label inside a 320-pixel
+						// panel, and DRAW - the last one - clipped clean off the
+						// right edge, which read as the feature not existing.
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 2)
+						[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("SHAPE"))) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[
 						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
-						[ SNew(SBox).WidthOverride(74.f)
-							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("SHAPE"))) ] ]
 						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("CIRCLE"), 0) ]
 						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("SQUARE"), 1) ]
 						+ SHorizontalBox::Slot().AutoWidth()[ ShapeBtn(TEXT("RING"), 2) ]
@@ -1451,6 +1457,7 @@ public:
 									.ColorAndOpacity_Lambda([]{ return FSlateColor(BF6Api::GetScatterShape() == 3 ? BF6Theme::Accent : BF6Theme::TextDim); })
 									.Text(FText::FromString(TEXT("DRAW..."))) ]
 							]
+						]
 						]
 					]
 					// The one thing everybody asks while painting: the sliders look
@@ -4260,6 +4267,17 @@ public:
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,8,0)
 					[ MakeToolButton(TEXT("< Maps"), [this]{ OnChooseMap.ExecuteIfBound(); }) ]
+					// The way BACK to a closed Scene tree. The tab has an X like any
+					// dock tab, and a creator who clicks it had no road home short
+					// of knowing Unreal's Window menu - the panel just seemed gone.
+					// TryInvokeTab focuses an open tab, so pressing this when the
+					// tree is already up simply brings it forward: never wrong.
+					+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,8,0)
+					[
+						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Scene tree"),
+							TEXT("Opens the Scene panel, or brings it forward if it is already open. The same panel comes back if you close it by its tab.")))
+						[ MakeToolButton(TEXT("Scene"), []{ BF6Api::OpenOutlinerTab(); }) ]
+					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 					[
 						SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(8,5))

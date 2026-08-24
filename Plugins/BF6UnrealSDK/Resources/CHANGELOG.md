@@ -1,5 +1,12 @@
 # BF6 Unreal SDK version history
 
+## 0.7.2 (2026-08-23)
+
+**Two things the tool was hiding**
+
+- The DRAW scatter shape is back on screen. It existed the whole time, but the shape row was wider than its panel and the last button clipped clean off the edge - which read as the feature not existing. The SHAPE label has its own line now and all five shapes fit: circle, square, ring, paint, and draw.
+- A Scene button next to Maps, bottom left. Closing the Scene panel by its tab used to leave no visible way back; now one press reopens it, and pressing it while the panel is already open just brings it forward.
+
 ## 0.7.1 (2026-08-23)
 
 **The map image**
