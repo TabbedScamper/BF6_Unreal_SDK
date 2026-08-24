@@ -156,6 +156,15 @@ BF6_API bf6_mesh* bf6_read_mesh(bf6_ctx*, const char* res_name, int lod);
 BF6_API bf6_mesh* bf6_read_mesh_scoped(bf6_ctx*, const char* res_name, int lod,
                               const char* placing_bundle, const char* variation);
 
+/* DOES THIS VARIATION CHANGE ANYTHING FOR THIS MESH? 1 when any of the mesh's
+ * section keys derives a resolving record in the placing bundle's depot, else
+ * 0. The question exists because splitting instance groups by variation is
+ * not free - every extra group is another component and another mesh build -
+ * so a renderer splits only where the split is EARNED, which is the rule the
+ * reference plugin measured its way to. Cached on the context. */
+BF6_API int bf6_variation_live(bf6_ctx*, const char* res_name,
+                               const char* placing_bundle, const char* variation);
+
 /* ---------------------------------------------------------------- material */
 typedef enum {
     BF6_TEX_ALBEDO = 0,
