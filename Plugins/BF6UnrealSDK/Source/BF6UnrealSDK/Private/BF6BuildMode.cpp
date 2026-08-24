@@ -5049,7 +5049,7 @@ namespace
 	// context the pie opened with, plus HQSpawns: the sub-ring that asks WHICH
 	// of an object's link fields a run should fill, and which of its volume
 	// fields an area should be made for.
-	enum class EBF6PieMode { Place, Objects, Props, VolEdit, HQSpawns, HQVolumes };
+	enum class EBF6PieMode { Place, Objects, Props, VolEdit, HQSpawns, HQVolumes, AddonSub };
 	EBF6PieMode                   GPieMode = EBF6PieMode::Place;
 	TWeakObjectPtr<AActor>        GPieTarget;
 	FString                       GPieTargetType;
@@ -5157,6 +5157,21 @@ static void BF6Pie_Attach()
 		}
 		Items.Add(TEXT("< BACK"));
 		Subs.Add(TEXT("back to the HQ"));
+		break;
+	}
+
+	case EBF6PieMode::AddonSub:
+	{
+		// AN ADD-ON'S PAGE, drawn by the wheel so it reads as the tool. The
+		// sub line is read live on every attach - which is every toggle - so
+		// a pill's state answers right on the ring.
+		for (const BF6Ext::FPieSubEntry& E : BF6ExtInternal::AddonSubEntries())
+		{
+			Items.Add(E.Label.ToUpper());
+			Subs.Add(E.Sub ? E.Sub() : FString());
+		}
+		Items.Add(TEXT("< BACK"));
+		Subs.Add(TEXT("back to the wheel"));
 		break;
 	}
 
@@ -6433,7 +6448,8 @@ static void BF6Pie_Confirm()
 		// Nothing highlighted: the hub. On a step-in ring that means BACK - to the
 		// ring it came from, not a rebuild of the same one, which is what made the
 		// hub look dead. Anywhere else it is still cancel.
-		if (Mode == EBF6PieMode::Objects || Mode == EBF6PieMode::Props)
+		if (Mode == EBF6PieMode::Objects || Mode == EBF6PieMode::Props
+			|| Mode == EBF6PieMode::AddonSub)
 		{
 			GPieMode = EBF6PieMode::Place;
 			GPieCenter = Center;
@@ -6481,6 +6497,32 @@ static void BF6Pie_Confirm()
 		for (const BF6Api::FLinkField& K : BF6Api::LinkArrayFields(HQ))
 			if (Pick == K.Label) { BF6_StartHQSpawnRun(HQ, K); return; }
 		// anything else on this ring is BACK, handled above
+		return;
+	}
+
+	if (Mode == EBF6PieMode::AddonSub)
+	{
+		if (Pick == TEXT("< BACK"))
+		{
+			GPieMode = EBF6PieMode::Place;
+			GPieCenter = Center;
+			BF6Pie_Attach();
+			return;
+		}
+		for (const BF6Ext::FPieSubEntry& E : BF6ExtInternal::AddonSubEntries())
+			if (E.Label.Equals(Pick, ESearchCase::IgnoreCase))
+			{
+				if (E.OnPick) E.OnPick();
+				// A toggle holds the wheel open and repaints, so its Sub line
+				// answers; an action closed with the wheel like any pick.
+				if (!E.bCloses)
+				{
+					GPieMode = EBF6PieMode::AddonSub;
+					GPieCenter = Center;
+					BF6Pie_Attach();
+				}
+				return;
+			}
 		return;
 	}
 
@@ -8187,6 +8229,13 @@ namespace BF6Api
 	// Add-on panels go up the same way the tool's own do, so the radial knows a
 	// popup is open and the menu stack dismisses it on a click away. A raw
 	// PushMenu from an add-on fights the wheel for the mouse.
+	void OpenAddonSubRing(const FVector2D& Center)
+	{
+		GPieMode = EBF6PieMode::AddonSub;
+		GPieCenter = Center;
+		BF6Pie_Attach();
+	}
+
 	void PushAddonPopup(TSharedRef<SWidget> Content, FVector2D ScreenPos)
 	{
 		BF6_PushTransient(Content, ScreenPos);

@@ -37,7 +37,7 @@ namespace
 
 namespace BF6Ext
 {
-	int32 ApiVersion() { return 1; }
+	int32 ApiVersion() { return 2; }   // 2: OpenPieSubRing
 
 	void RegisterPieEntry(const FPieEntry& Entry)
 	{
@@ -104,6 +104,16 @@ namespace BF6Ext
 		BF6Api::PushAddonPopup(Content, ScreenPos);
 	}
 
+	// The one live sub-ring. One is enough: a wheel shows one page, and the
+	// entries are copied so the add-on's array can be a temporary.
+	static TArray<FPieSubEntry> GSubEntries;
+
+	void OpenPieSubRing(const TArray<FPieSubEntry>& Entries, FVector2D ScreenCenter)
+	{
+		GSubEntries = Entries;
+		BF6Api::OpenAddonSubRing(ScreenCenter);
+	}
+
 	void Notify(const FString& Message) { BF6Api::Toast(Message); }
 
 	int32 SetLowPolyMapHidden(bool bHidden)
@@ -133,6 +143,8 @@ namespace BF6Ext
 namespace BF6ExtInternal
 {
 	const TArray<BF6Ext::FPieEntry>& PieEntries() { return GEntries; }
+
+	const TArray<BF6Ext::FPieSubEntry>& AddonSubEntries() { return BF6Ext::GSubEntries; }
 
 	// Called from the pie's dispatch after its own cases. Returns true when an
 	// add-on owned that label, so the tool stops looking. The comparison ignores

@@ -13,6 +13,10 @@ namespace BF6ExtInternal
 	// Offered a label the tool did not recognise. True when an add-on took it.
 	bool DispatchPie(const FString& Label, const FVector2D& Center);
 
+	// The sub-ring an add-on most recently opened; the wheel reads these while
+	// in its add-on mode. Owned by BF6Extension.cpp.
+	const TArray<BF6Ext::FPieSubEntry>& AddonSubEntries();
+
 	void BroadcastMapOpened(const FString& Level, const FString& Save);
 	void BroadcastMapClosing(const FString& Level);
 }

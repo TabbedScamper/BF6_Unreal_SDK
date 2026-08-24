@@ -329,6 +329,10 @@ namespace BF6Api
 	int32 ConfirmAttachPick(AActor* Target);   // returns how many attached; ends the mode
 	void  CancelAttachPick();
 	int32   GroupSelectionUnderNode();
+	// Reopen the wheel at Center showing the add-on sub-ring the extension
+	// layer holds (BF6ExtInternal::AddonSubEntries). The seam's OpenPieSubRing
+	// lands here.
+	void    OpenAddonSubRing(const FVector2D& Center);
 	// Viewport-only quick hides for zone walls and node markers (both on).
 	bool  VolumesShown();
 	bool  NodesShown();

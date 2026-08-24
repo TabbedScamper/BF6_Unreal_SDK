@@ -67,6 +67,28 @@ namespace BF6Ext
 	BF6UNREALSDK_API void RegisterPieEntry(const FPieEntry& Entry);
 	BF6UNREALSDK_API void UnregisterPieEntry(FName Id);
 
+	// ---- a sub-ring on the tool's own wheel --------------------------------
+	//
+	// One page of an add-on's pills, drawn by the wheel itself: same geometry,
+	// same hub, same confirmation, so the add-on's controls read as the
+	// tool's. Sub is read LIVE - it is where a toggle answers ("on", "still",
+	// "3 built") - and a toggle (bCloses false) runs its OnPick and the wheel
+	// REBUILDS in place so that answer shows immediately. An action
+	// (bCloses true) closes the wheel like any other pick. The tool appends
+	// < BACK itself; do not add one.
+	struct FPieSubEntry
+	{
+		FString              Label;    // uppercase reads right on the ring
+		TFunction<FString()> Sub;      // the small line under it, read live
+		TFunction<void()>    OnPick;
+		bool                 bCloses = false;
+	};
+
+	// Call from a front-ring pill's OnPick, handing it the ScreenCenter the
+	// pick gave you: the wheel reopens there showing these entries.
+	BF6UNREALSDK_API void OpenPieSubRing(const TArray<FPieSubEntry>& Entries,
+	                                     FVector2D ScreenCenter);
+
 	// ---- what the tool is doing --------------------------------------------
 
 	// "MP_Badlands", or empty when no map is open.
