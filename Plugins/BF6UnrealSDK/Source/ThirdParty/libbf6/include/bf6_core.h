@@ -354,6 +354,31 @@ typedef struct {
  * context and stay valid until the next bf6_open_level. */
 BF6_API int bf6_level_decals(bf6_ctx*, const char* level, bf6_decal* out, int out_max);
 
+/* ------------------------------------------------------------------- water */
+/* The level's water surfaces, from its own water entities: flat planes at an
+ * absolute height, with the colours the level's depot record authors for them.
+ *
+ * A consumer draws each as a horizontal plane of size[0] x size[1] metres
+ * centred at (center[0], height, center[1]) in the GAME's coordinates. Where
+ * the record carried no colour, shallow[0] is negative and a preset is the
+ * honest fallback. is_ocean says which shader family the level binds - the
+ * ocean variant authors ONE colour and the darker "deep" is absent by design
+ * (a consumer derives depth by darkening, and writing the same colour into
+ * both would flatten the gradient while still looking like mined data). */
+typedef struct {
+    float   center[2];     /* world X, Z of the plane's centre               */
+    float   size[2];       /* metres                                        */
+    float   height;        /* world Y of the surface                        */
+    float   shallow[3];    /* linear; [0] < 0 when the record had no colour */
+    float   deep[3];       /* linear; [0] < 0 when absent (always on ocean) */
+    int32_t is_ocean;      /* 0/1                                           */
+} bf6_water;
+
+/* Requires bf6_open_level for this level first (the scan needs the mounted
+ * archives, the type schema and the walk's root). Same convention as
+ * bf6_level_instances: returns the count, fills out[] to out_max. */
+BF6_API int bf6_level_water(bf6_ctx*, const char* level, bf6_water* out, int out_max);
+
 /* -------------------------------------------------------------------- memory */
 /* Free anything this API returned (bf6_mesh*, bf6_terrain*, ...). The bf6_ctx*
  * itself is freed by bf6_close(), not this. */
