@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Branding/BF6_Unreal_SDK.png" alt="BF6 Unreal SDK" width="320">
+</p>
+
 # BF6 Unreal SDK
 
 Build Battlefield 6 Portal maps inside Unreal Engine.
