@@ -194,6 +194,15 @@ struct bf6_material_desc {
      * SMOOTHNESS. A consumer has to mask from a different place for the two,
      * so the record says which. */
     int32_t                alpha_from_albedo; /* 0/1 */
+    /* The far-LOD impostor's "_nsm" packing on the NORMAL binding, from the
+     * recovered Aftermath M_Vista pixel shader: RG is the tangent normal
+     * (reconstruct Z), B is WETNESS response and A is SMOOTHNESS. It is not a
+     * metallic map, and roughness comes from 1 - A. When this is set, light
+     * the surface with specular INDEPENDENT of albedo, the way the game's
+     * separate G-buffer outputs do - a baseColor * (diffuse + specular)
+     * composition makes the sheet's authentic dark texels impossible to
+     * light and reads as corruption. */
+    int32_t                normal_is_nsm; /* 0/1 */
 };
 
 /* ---------------------------------------------------------------- textures */
