@@ -388,6 +388,39 @@ typedef struct {
  * bf6_level_instances: returns the count, fills out[] to out_max. */
 BF6_API int bf6_level_water(bf6_ctx*, const char* level, bf6_water* out, int out_max);
 
+/* The ocean simulation's INPUTS - the authored sea state. The wave field
+ * itself is a runtime GPU simulation and nothing on disk holds it; these are
+ * the numbers that drive it, read from WaterOceanSimulationEntityData in the
+ * level's schematic partitions (the flagged instance wins, else the first -
+ * tungsten's only instance is NOT flagged, so "flagged only" loses the most
+ * oceanic map in the game).
+ *
+ * Units, as far as the corpus settles them: wind_angle is radians with an
+ * UNRESOLVED axis convention; wind_speed is a normalised authoring scalar
+ * (0.01 calm, 0.07 windy, 0.30+ the D-Day sea), NOT m/s. The distribution is
+ * wave ENERGY BY DIRECTION: control points over x 0..1 = a full turn around
+ * wind_angle, y = relative energy. */
+typedef struct {
+    float   wind_angle;
+    float   wind_speed;
+    float   choppiness;
+    float   tile_dimension;
+    float   min_wavelength;
+    float   large_wave_reduction;
+    float   wave_thickness;
+    int32_t foam_enable;
+    float   foam_threshold;
+    float   foam_max;
+    int32_t enabled;          /* 1 = the flagged instance; 0 = first fallback */
+    int32_t dist_count;       /* 0, 5, 9 or 13 control points */
+    float   dist_x[13];       /* ascending, last implicitly 1.0              */
+    float   dist_y[13];
+} bf6_water_sim;
+
+/* Requires bf6_open_level. Returns 1 and fills out when the level has a sim
+ * entity, else 0. */
+BF6_API int bf6_level_water_sim(bf6_ctx*, const char* level, bf6_water_sim* out);
+
 /* -------------------------------------------------------------------- memory */
 /* Free anything this API returned (bf6_mesh*, bf6_terrain*, ...). The bf6_ctx*
  * itself is freed by bf6_close(), not this. */
