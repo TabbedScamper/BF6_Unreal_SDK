@@ -1729,6 +1729,14 @@ public:
 	void Construct(const FArguments&)
 	{
 		SetVisibility(EVisibility::HitTestInvisible);
+		// CLIPPED, on purpose. This widget paints screen-space dots and markers
+		// at whatever pixel a 3D point projects to, and Slate does not settle
+		// sibling overlap by paint order alone - a high layer offset here lands
+		// ON TOP of the object library that slides up over the same pixels, so
+		// zone points showed through the shelf. Clipping to our own bounds ends
+		// it: when the library takes the bottom of the screen, our geometry no
+		// longer includes those pixels and nothing of ours can draw there.
+		SetClipping(EWidgetClipping::ClipToBounds);
 		ChildSlot[ SNullWidget::NullWidget ];
 	}
 
@@ -1758,6 +1766,12 @@ public:
 			{
 				Title = TEXT("EDITING GROUP");
 				Hint = TEXT("Enter keeps  -  Esc reverts");
+			}
+			else if (BF6Api::IsAttachPicking())
+			{
+				Col = FLinearColor(0.72f, 0.45f, 1.f);
+				Title = TEXT("ATTACH  -  PICK THE PARENT");
+				Hint = TEXT("Click the object the selection should hang under - any loose object or node  -  Esc cancels");
 			}
 			else if (BF6Api::IsPickPlacing())
 			{
@@ -3575,9 +3589,13 @@ public:
 		Refresh();
 	}
 
+	// the spotlight belongs to the panel: when it goes, the map comes back
+	virtual ~SBF6LintPanel() override { BF6Api::ClearLintSpotlight(); }
+
 private:
 	TSharedPtr<SVerticalBox> Rows;
 	TSharedPtr<STextBlock> Summary;
+	int32 Filter = -1;   // -1 all, else the severity to show
 
 	void Refresh()
 	{
@@ -3594,8 +3612,39 @@ private:
 					nWarn, nWarn == 1 ? TEXT("") : TEXT("s"),
 					nAdv, nAdv == 1 ? TEXT("y") : TEXT("ies"))));
 		Rows->ClearChildren();
+
+		// the FILTER row: one kind of issue at a time, because forty advisories
+		// bury the two problems
+		{
+			TSharedRef<SHorizontalBox> Chips = SNew(SHorizontalBox);
+			auto Chip = [this, &Chips](const TCHAR* Label, int32 Sev)
+			{
+				Chips->AddSlot().AutoWidth().Padding(0, 0, 10, 0)
+				[
+					SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(4, 2))
+					.OnClicked_Lambda([this, Sev]{ Filter = (Filter == Sev) ? -1 : Sev; Refresh(); return FReply::Handled(); })
+					[ SNew(STextBlock).Font(FontBold(9))
+						.ColorAndOpacity_Lambda([this, Sev]{ return FSlateColor(Filter == Sev ? BF6Theme::Accent : BF6Theme::TextDim); })
+						.Text(FText::FromString(Label)) ]
+				];
+			};
+			Chips->AddSlot().AutoWidth().Padding(0, 0, 10, 0)
+			[
+				SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(4, 2))
+				.OnClicked_Lambda([this]{ Filter = -1; Refresh(); return FReply::Handled(); })
+				[ SNew(STextBlock).Font(FontBold(9))
+					.ColorAndOpacity_Lambda([this]{ return FSlateColor(Filter == -1 ? BF6Theme::Accent : BF6Theme::TextDim); })
+					.Text(FText::FromString(TEXT("ALL"))) ]
+			];
+			Chip(TEXT("PROBLEMS"), 0);
+			Chip(TEXT("WARNINGS"), 1);
+			Chip(TEXT("ADVICE"), 2);
+			Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 6)[ Chips ];
+		}
+
 		for (const BF6Api::FLintItem& I : Items)
 		{
+			if (Filter >= 0 && I.Severity != Filter) continue;
 			const TCHAR* Chip = I.Severity == 0 ? TEXT("PROBLEM") : I.Severity == 1 ? TEXT("WARNING") : TEXT("ADVICE");
 			const FLinearColor ChipCol = I.Severity == 0 ? BF6Theme::Accent : I.Severity == 1 ? BF6Theme::Text : BF6Theme::TextDim;
 			TWeakObjectPtr<AActor> Wk = I.Actor;
@@ -3615,7 +3664,10 @@ private:
 			Rows->AddSlot().AutoHeight().Padding(0, 2)
 			[
 				SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 3)).HAlign(HAlign_Fill)
-				.OnClicked_Lambda([Wk]{ BF6Api::SelectOnly(Wk.Get()); return FReply::Handled(); })
+				// SNAP AND SPOTLIGHT: fly to the finding and ghost everything
+				// else, so the wrong object is the only one you can see. The
+				// map comes back when the panel closes.
+				.OnClicked_Lambda([Wk]{ BF6Api::LintSpotlight(Wk.Get()); return FReply::Handled(); })
 				[ Row ]
 			];
 		}
@@ -4266,7 +4318,15 @@ public:
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,8,0)
-					[ MakeToolButton(TEXT("< Maps"), [this]{ OnChooseMap.ExecuteIfBound(); }) ]
+					[ MakeToolButton(TEXT("< Maps"), [this]
+						{
+							// leaving CLOSES the session - after the same warning the
+							// selector has always given, so unsaved work is never
+							// dropped silently
+							if (!ConfirmLeaveSession()) return;
+							BF6Api::CloseSession();
+							OnChooseMap.ExecuteIfBound();
+						}) ]
 					// The way BACK to a closed Scene tree. The tab has an X like any
 					// dock tab, and a creator who clicks it had no road home short
 					// of knowing Unreal's Window menu - the panel just seemed gone.
@@ -4366,6 +4426,9 @@ private:
 // scrollable viewer. SDK entries come from the baked archive history in the
 // plugin plus locally generated diffs for updates installed on this machine.
 // ---------------------------------------------------------------------------
+// NEW FEATURES: opens on what is newest - the latest tool version and the
+// latest SDK change - with the full archives one tab away. The map-screen
+// button wears Battlefield's orange unlock dot until this has been opened.
 class SBF6HistoryPopup : public SCompoundWidget
 {
 public:
@@ -4374,24 +4437,16 @@ public:
 
 	void Construct(const FArguments&)
 	{
-		TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
-		TArray<FString> Lines;
-		BF6Api::VersionHistoryText().ParseIntoArrayLines(Lines, false);
-		for (const FString& L : Lines)
+		BF6Api::MarkHistorySeen();   // the dot's job is done
+
+		auto TabBtn = [this](const TCHAR* Label, int32 Which)
 		{
-			if (L.StartsWith(TEXT("# ")))
-				Body->AddSlot().AutoHeight().Padding(0, 14, 0, 4)
-				[ SNew(STextBlock).Font(FontBold(14)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(L.Mid(2).ToUpper())) ];
-			else if (L.StartsWith(TEXT("## ")))
-				Body->AddSlot().AutoHeight().Padding(0, 10, 0, 2)
-				[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(L.Mid(3))) ];
-			else if (L.StartsWith(TEXT("- ")))
-				Body->AddSlot().AutoHeight().Padding(10, 1, 0, 1)
-				[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(L)) ];
-			else if (!L.TrimStartAndEnd().IsEmpty())
-				Body->AddSlot().AutoHeight().Padding(0, 1)
-				[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(L)) ];
-		}
+			return SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(8, 3))
+				.OnClicked_Lambda([this, Which]{ Tab = Which; Rebuild(); return FReply::Handled(); })
+				[ SNew(STextBlock).Font(FontBold(10))
+					.ColorAndOpacity_Lambda([this, Which]{ return FSlateColor(Tab == Which ? BF6Theme::Accent : BF6Theme::TextDim); })
+					.Text(FText::FromString(Label)) ];
+		};
 
 		ChildSlot
 		[
@@ -4403,16 +4458,62 @@ public:
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
 					[
 						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
-						[ SNew(STextBlock).Font(FontBold(14)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("VERSION HISTORY"))) ]
-						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
-						[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("the tool, and every Portal SDK release - click away to close"))) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 14, 0)
+						[ SNew(STextBlock).Font(FontBold(14)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("NEW FEATURES"))) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ TabBtn(TEXT("WHAT'S NEW"), 0) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ TabBtn(TEXT("TOOL HISTORY"), 1) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ TabBtn(TEXT("SDK HISTORY"), 2) ]
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center).Padding(10, 0, 0, 0)
+						[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("click away to close"))) ]
 					]
 					+ SVerticalBox::Slot().FillHeight(1)
-					[ SNew(SScrollBox) + SScrollBox::Slot()[ Body ] ]
+					[ SNew(SScrollBox) + SScrollBox::Slot()[ SAssignNew(Host, SBox) ] ]
 				]
 			]
 		];
+		Rebuild();
+	}
+
+private:
+	int32 Tab = 0;
+	TSharedPtr<SBox> Host;
+
+	// the same light markdown rendering the old popup used, as a reusable step
+	static TSharedRef<SWidget> RenderMd(const FString& Md)
+	{
+		TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+		TArray<FString> Lines;
+		Md.ParseIntoArrayLines(Lines, false);
+		for (const FString& Ln : Lines)
+		{
+			if (Ln.StartsWith(TEXT("# ")))
+				Body->AddSlot().AutoHeight().Padding(0, 14, 0, 4)
+				[ SNew(STextBlock).Font(FontBold(14)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(Ln.Mid(2))) ];
+			else if (Ln.StartsWith(TEXT("## ")))
+				Body->AddSlot().AutoHeight().Padding(0, 10, 0, 2)
+				[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Ln.Mid(3))) ];
+			else if (Ln.StartsWith(TEXT("- ")))
+				Body->AddSlot().AutoHeight().Padding(10, 1, 0, 1)
+				[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Ln.Mid(2))) ];
+			else if (!Ln.TrimStartAndEnd().IsEmpty())
+				Body->AddSlot().AutoHeight().Padding(0, 1)
+				[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(Ln)) ];
+		}
+		return Body;
+	}
+
+	void Rebuild()
+	{
+		if (!Host.IsValid()) return;
+		FString Md;
+		switch (Tab)
+		{
+		case 1:  Md = BF6Api::ToolHistoryText(); break;
+		case 2:  Md = TEXT("# Portal SDK version history\n") + BF6Api::SdkHistoryText(); break;
+		default: Md = TEXT("# New in this tool\n") + BF6Api::LatestToolNotes()
+		            + TEXT("\n# Newest Portal SDK change\n") + BF6Api::LatestSdkNotes(); break;
+		}
+		Host->SetContent(RenderMd(Md));
 	}
 };
 
@@ -4425,7 +4526,6 @@ public:
 		SLATE_EVENT(FOnOpen, OnOpen)
 		SLATE_EVENT(FSimpleDelegate, OnImport)
 		SLATE_EVENT(FSimpleDelegate, OnSdkSetup)
-		SLATE_EVENT(FSimpleDelegate, OnReturn)   // back to the active build session
 		SLATE_EVENT(FSimpleDelegate, OnChanged)  // a save was deleted: rebuild me
 	SLATE_END_ARGS()
 
@@ -4434,7 +4534,6 @@ public:
 		OnOpen = InArgs._OnOpen;
 		OnImport = InArgs._OnImport;
 		OnSdkSetup = InArgs._OnSdkSetup;
-		OnReturn = InArgs._OnReturn;
 		OnChanged = InArgs._OnChanged;
 		SavesSig = BF6Api::SavesFingerprint();
 
@@ -4466,12 +4565,6 @@ public:
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
 					[ SNew(STextBlock).Font(FontBold(30)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("CHOOSE MAPS"))) ]
 					+ SHorizontalBox::Slot().FillWidth(1)[ SNew(SSpacer) ]
-					// back to the active build session (ESC does the same)
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
-					[
-						SNew(SBox).Visibility(BF6Api::CurrentLevel().IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
-						[ MakePrimaryButton(TEXT("Return to build"), [this]{ OnReturn.ExecuteIfBound(); }) ]
-					]
 					// Import lives on this screen: ONE button, both formats
 					// (.spatial.json or a Godot .tscn). It detects the map from
 					// the file and opens straight into build mode.
@@ -4486,8 +4579,20 @@ public:
 					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
 					[
-						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Version history"), TEXT("What changed in every version of this tool, and in every Portal SDK release EA has shipped - including what each SDK update added or removed on this machine.")))
-						[ MakeToolButton(TEXT("History"), []{ BF6_PushTransient(SNew(SBF6HistoryPopup), FSlateApplication::Get().GetCursorPos()); }) ]
+						SNew(SOverlay)
+						+ SOverlay::Slot()
+						[
+							SNew(SBox).ToolTip(BF6_MakeHint(TEXT("New features"), TEXT("What changed in the newest tool version and the newest SDK release EA shipped, with the full history of both one tab away.")))
+							[ MakeToolButton(TEXT("New Features"), []{ BF6_PushTransient(SNew(SBF6HistoryPopup), FSlateApplication::Get().GetCursorPos()); }) ]
+						]
+						// the unlock dot, Battlefield style: unread notes wear
+						// orange on the corner until the panel is opened once
+						+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Top).Padding(0, 1, 1, 0)
+						[
+							SNew(SBox).WidthOverride(9.f).HeightOverride(9.f)
+							.Visibility_Lambda([]{ return BF6Api::HistoryHasNews() ? EVisibility::HitTestInvisible : EVisibility::Collapsed; })
+							[ SNew(SImage).Image(PieHub()).ColorAndOpacity(FSlateColor(BF6Theme::Accent)) ]
+						]
 					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
 					[ MakeToolButton(FString::Printf(TEXT("v%s - Check for updates"), *BF6Api::PluginVersion()), []{ BF6Api::CheckForUpdates(true); }) ]
@@ -4540,7 +4645,6 @@ private:
 	FOnOpen OnOpen;
 	FSimpleDelegate OnImport;
 	FSimpleDelegate OnSdkSetup;
-	FSimpleDelegate OnReturn;
 	FSimpleDelegate OnChanged;
 	uint32 SavesSig = 0;
 	double NextCheck = 0.0;
@@ -4918,7 +5022,6 @@ private:
 			.OnOpen_Lambda([](FString Level, FString Save){ if (ConfirmLeaveSession()) BF6Api::EnterBuild(Level, Save); })
 			.OnImport_Lambda([this]{ if (ConfirmLeaveSession() && BF6Api::ImportSpatial()) ShowBuild(); })
 			.OnSdkSetup_Lambda([this]{ ShowSetup(); })
-			.OnReturn_Lambda([this]{ ShowBuild(); })
 			.OnChanged_Lambda([this]{ RebuildSelector(); })
 		);
 	}
@@ -5126,6 +5229,7 @@ static void BF6Pie_Attach()
 		Items.Add(TEXT("SELECT SIMILAR")); Subs.Add(TEXT("every copy"));
 		Items.Add(TEXT("MULTIPLY"));       Subs.Add(TEXT("rows, grids, circles"));
 		Items.Add(TEXT("SCATTER"));        Subs.Add(TEXT("live editor"));
+		Items.Add(TEXT("ATTACH"));         Subs.Add(TEXT("parent it under anything"));
 		Items.Add(TEXT("GROUPING"));       Subs.Add(TEXT("group, block, edit"));
 		break;
 	}
@@ -5154,6 +5258,179 @@ static void BF6Pie_Attach()
 // Space over the viewport: pick the pie's mode from context (selection / zone
 // edit in progress), remember the world spot under the crosshair, and open the
 // pie centred on the viewport with the cursor warped to neutral.
+// ---------------------------------------------------------------------------
+// ADD TO NODE: pick the destination by looking at it, not from a cold list.
+//
+// The right-click menu already had "Move to node", a flat submenu of names -
+// fine for three nodes, useless for thirty when the names are "Node3D_14".
+// This panel is the link picker's manners applied to parenting: every node
+// listed with how much it already holds, an arrow that flies you to it
+// WITHOUT committing, and one click on the name to attach the selection,
+// world positions kept.
+// ---------------------------------------------------------------------------
+class SBF6NodePickPanel : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SBF6NodePickPanel) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		TSharedRef<SVerticalBox> Rows = SNew(SVerticalBox);
+		const int32 N = BF6Api::TreeNodeCount();
+
+		Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 2)
+		[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("ATTACH"))) ];
+		Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
+		[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
+			.Text(FText::FromString(N > 0
+				? TEXT("Pick the parent in the world, click a node below, or search anything by name. World positions are kept either way; the arrow flies you there without committing.")
+				: TEXT("Pick any loose object in the world as the parent, search one by name below, or place a Node from the object library first."))) ];
+
+		// the fastest answer: point at the parent. Works for ANY loose object,
+		// not just nodes - Godot parents object to object, and so do we.
+		Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 6)
+		[
+			MakePrimaryButton(TEXT("Click the parent in the world..."), []
+			{
+				BF6Api::BeginAttachPick();
+				BF6Api::HideTransientMenus();
+				if (BF6Api::IsAttachPicking())
+					BF6_MiniToast(TEXT("Click the object to attach the selection to. Any loose object or node works. Esc cancels."));
+			})
+		];
+
+		// the way OUT of a node, in the same place as the way in - and dressed
+		// as the button it is, not a stray line of text
+		Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
+		[
+			SNew(SButton).ButtonStyle(&GhostButtonStyle()).ContentPadding(FMargin(16, 8)).HAlign(HAlign_Center)
+			.ToolTip(BF6_MakeHint(TEXT("Back to the map root"), TEXT("Detaches the selection from whatever node holds it. Nothing moves - only the tree changes.")))
+			.OnClicked_Lambda([]
+			{
+				const int32 n = BF6Api::DetachSelectionToRoot();
+				BF6_MiniToast(n > 0 ? FString::Printf(TEXT("%d detached to the map root."), n)
+				                    : FString(TEXT("Nothing in the selection was under a node.")));
+				BF6Api::HideTransientMenus();
+				return FReply::Handled();
+			})
+			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("DETACH TO MAP ROOT"))) ]
+		];
+
+		// name search across EVERYTHING attach could take as a parent - typing
+		// "Team1_HQ" beats flying to it. Enter attaches to the top match.
+		Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 6)
+		[
+			SNew(SSearchBox)
+			.HintText(FText::FromString(TEXT("Search anything by name...")))
+			.OnTextChanged_Lambda([this](const FText& T){ Query = T.ToString(); Rebuild(); })
+			.OnTextCommitted_Lambda([this](const FText& T, ETextCommit::Type C)
+			{
+				if (C != ETextCommit::OnEnter) return;
+				Query = T.ToString();
+				Rebuild();
+				if (First.IsEmpty()) return;
+				const FString Nm = First;
+				const int32 n = BF6Api::AttachSelectionToName(Nm);
+				BF6_MiniToast(n > 0 ? FString::Printf(TEXT("%d moved under %s."), n, *Nm)
+				                    : FString(TEXT("Nothing could move there - an object cannot go under its own child.")));
+				BF6Api::HideTransientMenus();
+			})
+		];
+
+		Rows->AddSlot().AutoHeight()[ SAssignNew(ListBox, SVerticalBox) ];
+		Rebuild();
+
+		ChildSlot
+		[
+			SNew(SBox).WidthOverride(300.f)
+			[
+				SNew(SBorder).BorderImage(PanelBrush()).Padding(12.f)
+				[ SNew(SBox).MaxDesiredHeight(380.f)[ SNew(SScrollBox) + SScrollBox::Slot()[ Rows ] ] ]
+			]
+		];
+	}
+
+private:
+	FString Query;
+	FString First;                       // top match, what Enter attaches to
+	TSharedPtr<SVerticalBox> ListBox;
+
+	// One list, two sources: no query shows the nodes (the panel's old list),
+	// a query shows every attachable object whose name carries the words.
+	void Rebuild()
+	{
+		if (!ListBox.IsValid()) return;
+		ListBox->ClearChildren();
+		First.Reset();
+
+		auto AddRow = [this](const FString& Nm, TFunction<void()> OnPick, TFunction<void()> OnFly)
+		{
+			ListBox->AddSlot().AutoHeight().Padding(0, 1)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+				[
+					SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(4, 3))
+					.OnClicked_Lambda([OnPick]{ if (OnPick) OnPick(); return FReply::Handled(); })
+					[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Nm)) ]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 3))
+					.ToolTipText(FText::FromString(TEXT("Fly there and look - nothing is moved")))
+					.OnClicked_Lambda([OnFly]{ if (OnFly) OnFly(); return FReply::Handled(); })
+					[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT(">"))) ]
+				]
+			];
+		};
+
+		if (Query.TrimStartAndEnd().IsEmpty())
+		{
+			const int32 N = BF6Api::TreeNodeCount();
+			for (int32 i = 0; i < N; i++)
+			{
+				const FString Nm = BF6Api::TreeNodeName(i);
+				if (First.IsEmpty()) First = Nm;
+				AddRow(Nm,
+					[i, Nm]
+					{
+						const int32 n = BF6Api::AttachSelectionToNode(i);
+						BF6_MiniToast(n > 0 ? FString::Printf(TEXT("%d moved under %s."), n, *Nm)
+						                    : FString(TEXT("Nothing could move there - a node cannot go under its own child.")));
+						BF6Api::HideTransientMenus();
+					},
+					[i]{ BF6Api::FocusTreeNode(i); });
+			}
+			return;
+		}
+
+		TArray<FString> Names;
+		const int32 Total = BF6Api::AttachCandidates(Query, Names, 25);
+		for (const FString& Nm : Names)
+		{
+			if (First.IsEmpty()) First = Nm;
+			AddRow(Nm,
+				[Nm]
+				{
+					const int32 n = BF6Api::AttachSelectionToName(Nm);
+					BF6_MiniToast(n > 0 ? FString::Printf(TEXT("%d moved under %s."), n, *Nm)
+					                    : FString(TEXT("Nothing could move there - an object cannot go under its own child.")));
+					BF6Api::HideTransientMenus();
+				},
+				[Nm]{ BF6Api::FocusByLinkName(Nm); });
+		}
+		if (Total > Names.Num())
+			ListBox->AddSlot().AutoHeight().Padding(4, 4, 0, 0)
+			[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+				.Text(FText::FromString(FString::Printf(TEXT("%d more - keep typing to narrow it"), Total - Names.Num()))) ];
+		if (Total == 0)
+			ListBox->AddSlot().AutoHeight().Padding(4, 4, 0, 0)
+			[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+				.Text(FText::FromString(TEXT("Nothing loose matches that name."))) ];
+	}
+};
+
 // Make (or open) the volume for ONE of an owner's volume fields.
 //
 // Both doors - the single-field shortcut and the sub-ring - come through here,
@@ -5301,6 +5578,82 @@ public:
 		const float PanelW = FMath::Clamp(NameW + TypeTagW + 230.f, 420.f, 680.f);
 
 		TSharedRef<SVerticalBox> List = SNew(SVerticalBox);
+		// ---- TRANSFORM, the Godot way: metres, parent-relative ------------
+		//
+		// The one workflow this panel could not do: "put this 10 above its
+		// parent". The engine's Details panel can, in centimetres, behind a
+		// Window menu, with a Relative/World toggle waiting to teleport the
+		// object for anyone who has it flipped. Here it is one row: metres,
+		// Unreal's axes (Z is up), relative to the parent whenever there is
+		// one - the parent is your zero, exactly as in Godot's inspector.
+		{
+			TWeakObjectPtr<AActor> Wk = Target;
+			auto AxisBox = [Wk](int32 Kind, int32 Axis) -> TSharedRef<SWidget>
+			{
+				// Kind: 0 position (m), 1 rotation (deg), 2 scale
+				auto Read = [Wk, Kind, Axis]() -> FText
+				{
+					BF6Api::FXformM X;
+					if (!BF6Api::GetXformM(Wk.Get(), X)) return FText::GetEmpty();
+					const FVector& V = Kind == 0 ? X.Pos : (Kind == 1 ? X.Rot : X.Scale);
+					return FText::FromString(FString::Printf(TEXT("%.2f"), V[Axis]));
+				};
+				// The axis letter in the engine's own gizmo colours, so the row
+				// reads at a glance and matches the arrows in the viewport.
+				static const FLinearColor AxisCol[3] = {
+					FLinearColor(0.855f, 0.070f, 0.102f),   // X, the gizmo's red
+					FLinearColor(0.375f, 0.622f, 0.081f),   // Y, the gizmo's green
+					FLinearColor(0.098f, 0.331f, 0.767f) }; // Z, the gizmo's blue
+				static const TCHAR* AxisChar[3] = { TEXT("X"), TEXT("Y"), TEXT("Z") };
+				return SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 3, 0)
+				[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(AxisCol[Axis])).Text(FText::FromString(AxisChar[Axis])) ]
+				+ SHorizontalBox::Slot().AutoWidth()
+				[
+				SNew(SBox).WidthOverride(56.f).Padding(FMargin(0, 0, 6, 0))
+				[
+					SNew(SEditableTextBox).Font(FontReg(9))
+					.Text_Lambda(Read)
+					.OnTextCommitted_Lambda([Wk, Kind, Axis](const FText& T, ETextCommit::Type How)
+					{
+						if (How != ETextCommit::OnEnter && How != ETextCommit::OnUserMovedFocus) return;
+						AActor* A = Wk.Get(); if (!A) return;
+						const double V = FCString::Atod(*T.ToString());
+						if (Kind == 0)      BF6Api::SetXformPosM(A, Axis, V);
+						else if (Kind == 1) BF6Api::SetXformRotDeg(A, Axis, V);
+						else                BF6Api::SetXformScale(A, Axis, V);
+					})
+				]
+				];
+			};
+			auto XRow = [&AxisBox](const TCHAR* Label, int32 Kind) -> TSharedRef<SWidget>
+			{
+				return SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
+					[ SNew(SBox).WidthOverride(64.f)
+						[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(Label)) ] ]
+					+ SHorizontalBox::Slot().AutoWidth()[ AxisBox(Kind, 0) ]
+					+ SHorizontalBox::Slot().AutoWidth()[ AxisBox(Kind, 1) ]
+					+ SHorizontalBox::Slot().AutoWidth()[ AxisBox(Kind, 2) ];
+			};
+			List->AddSlot().AutoHeight().Padding(0, 0, 0, 2)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+				[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("TRANSFORM"))) ]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[ SNew(STextBlock).Font(FontReg(8)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+					.Text_Lambda([Wk]
+					{
+						BF6Api::FXformM X;
+						const bool bRel = BF6Api::GetXformM(Wk.Get(), X) && X.bRelative;
+						return FText::FromString(bRel ? TEXT("metres, relative to parent, Z up") : TEXT("metres, world, Z up"));
+					}) ]
+			];
+			List->AddSlot().AutoHeight().Padding(0, 1)[ XRow(TEXT("Position"), 0) ];
+			List->AddSlot().AutoHeight().Padding(0, 1)[ XRow(TEXT("Rotation"), 1) ];
+			List->AddSlot().AutoHeight().Padding(0, 1, 0, 6)[ XRow(TEXT("Scale"), 2) ];
+		}
 		for (const BF6Api::FPropDef& D : Defs)
 		{
 			const BF6Api::FPropDef Def = D;
@@ -5528,7 +5881,8 @@ public:
 		SCompoundWidget::Tick(Geo, CurTime, Dt);
 		FString Ty;
 		AActor* A = BF6Api::IsEditing() ? BF6Api::SelectedGameplayActor(Ty) : nullptr;
-		if (A && BF6Api::PropsForType(Ty).Num() == 0) A = nullptr;   // nothing to show
+		// No gate on having Portal fields: the TRANSFORM section is the floor,
+		// and a plain node is exactly the object whose position matters most.   // nothing to show
 
 		// REBUILT ONLY WHEN THE TARGET CHANGES. The rows carry live text boxes,
 		// and replacing them every frame would take the caret out of one the
@@ -5650,7 +6004,7 @@ static void BF6_BuildPortalSection(UToolMenu* Menu)
 			{
 				FString Ty;
 				AActor* A = BF6Api::SelectedGameplayActor(Ty);
-				return A != nullptr && BF6Api::PropsForType(Ty).Num() > 0;
+				return A != nullptr;   // every object has a transform, so the panel always has something to say
 			})));
 
 	Sec.AddMenuEntry(TEXT("BF6Colour"),
@@ -6224,6 +6578,11 @@ static void BF6Pie_Confirm()
 			// no pop-out: the live panel docks on the right and the scatter
 			// appears immediately, re-forming as the sliders move
 			BF6Api::BeginScatterLive();
+			return;
+		}
+		if (Pick == TEXT("ATTACH"))
+		{
+			BF6_PushTransient(SNew(SBF6NodePickPanel), Center);
 			return;
 		}
 		if (Pick == TEXT("GROUPING"))
@@ -7012,6 +7371,12 @@ public:
 				BF6_MiniToast(TEXT("Cancelled - the spawns from this run are gone. Enter keeps them next time."));
 				return true;
 			}
+			if (BF6Api::IsAttachPicking())
+			{
+				BF6Api::CancelAttachPick();
+				BF6_MiniToast(TEXT("Attach cancelled - nothing changed."));
+				return true;
+			}
 			if (BF6Api::IsPickPlacing())
 			{
 				BF6Api::CancelPickPlace();
@@ -7072,12 +7437,6 @@ public:
 				&& BF6Api::HasSelection())
 			{
 				BF6Api::ClearSelection();
-				return true;
-			}
-			// on the map screen with a session running: ESC returns to the build
-			if (GRoot.IsValid() && !GRoot->IsBuildScreen() && !BF6Api::CurrentLevel().IsEmpty() && !GTransientMenu.IsValid())
-			{
-				GRoot->ShowBuild();
 				return true;
 			}
 		}
@@ -7366,6 +7725,23 @@ public:
 			// The door throttles the words itself, so every click still gets
 			// the light - which is the half that answers "did it hear me".
 			BF6Api::RefuseReadOnly(TEXT("Read-only base - press Create in the bottom right, or resume a custom level from < Maps."));
+		}
+
+		// attach pick: the click names the parent
+		if (E.GetEffectingButton() == EKeys::LeftMouseButton && BF6Api::IsAttachPicking()
+			&& !BF6_CursorOverSlateUI(App, E.GetScreenSpacePosition()))
+		{
+			AActor* T = BF6Api::ActorUnderCursor();
+			if (!T) { BF6_MiniToast(TEXT("Nothing under the cursor - click the object that should become the parent, or Esc.")); return true; }
+			const int32 n = BF6Api::ConfirmAttachPick(T);
+			if (n > 0)
+			{
+				FString Nm = T->GetActorLabel(); Nm.RemoveFromStart(TEXT("BF6_"));
+				BF6_MiniToast(FString::Printf(TEXT("%d attached under %s - it now moves with it."), n, *Nm));
+			}
+			// a refused target already explained itself; the mode survives a
+			// miss so the creator can simply click again
+			return true;
 		}
 
 		// assign mode: clicking a candidate marker (de)selects that target

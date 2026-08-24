@@ -1,5 +1,37 @@
 # BF6 Unreal SDK version history
 
+## 0.7.3 (2026-08-24)
+
+**Attach: build the scene tree without touching the tree**
+
+- Parent to node is now ATTACH, and it parents to anything loose, not just nodes. Pick the parent by clicking it in the world: the screen border says ATTACH - PICK THE PARENT while the mode is live, any loose object or node takes the selection, and Esc backs out. Objects inside a group or block are refused as parents, with the reason said out loud.
+- A search bar in the ATTACH panel finds the parent by name across everything on the map that can take children - type a name and attach to it without flying there. Nodes rank first, the arrow flies you to a match without committing, and Enter attaches to the top match.
+- DETACH TO MAP ROOT is a proper button now instead of a line of grey text.
+- A Node can be placed straight from the object library, so the whole tree can be assembled in the viewport.
+- Ctrl+Z undoes attaches and detaches - the whole family: click-the-parent, the panel list, the search, detach, and group-under-node.
+
+**Coordinates in the attributes panel**
+
+- Every selected object now shows its transform: position in metres, rotation in degrees, scale - X, Y and Z labelled in the gizmo's own colours. Values are relative to the parent, so putting a child 10 m above its node is typing 10 into Z. Objects with no other attributes, nodes included, still get the section.
+
+**The map screen**
+
+- Going back to < Maps now closes the open level, after the usual warning if there is unsaved progress. Nothing is held open in the background anymore: what the map screen shows is what is, and any map can be deleted from it. The Return to build button went with it.
+
+**New features, not history**
+
+- The History panel is now NEW FEATURES: the newest tool and SDK changes up front, with TOOL HISTORY and SDK HISTORY tabs behind them. Unread changes put a small orange dot on the button corner - the same language Battlefield uses for unlocks - and opening the panel clears it.
+
+**Validate finds it, then shows you**
+
+- The checks panel grew a severity filter: ALL, PROBLEMS, WARNINGS, ADVICE.
+- Clicking a finding flies to it and ghosts everything else, so the one object with the problem is unmistakable. Closing the panel brings the world back.
+
+**An action ends by saying so**
+
+- Finishing an attach, a detach, a spawn run, or placing a bundle used to leave the old selection lit, which read as the action not having happened. Now the selection states the result: attaches and detaches clear it, a placed bundle comes in selected, an ended spawn run hands the selection back to its HQ, and grouping under a new node selects the node.
+- Volume and path points no longer draw through the object library when it is pinned open.
+
 ## 0.7.2 (2026-08-23)
 
 **Two things the tool was hiding**

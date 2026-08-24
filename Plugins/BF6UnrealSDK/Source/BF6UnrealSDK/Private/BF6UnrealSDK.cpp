@@ -1078,6 +1078,8 @@ namespace BF6Api
 {
 	const FSlateBrush* GetModelThumb(const FString& Mesh)
 	{
+		// the Node row has no model on purpose; its card is the Godot icon
+		if (Mesh.IsEmpty()) return NodeSymbolBrush(TEXT("Node3D"));
 		if (Mesh.IsEmpty()) return nullptr;
 		if (const TSharedPtr<FSlateBrush>* B = g_thumbs.Brushes.Find(Mesh)) return B->Get();
 		if (g_thumbs.Known.Contains(Mesh)) return nullptr;   // queued or failed
@@ -3951,6 +3953,20 @@ static void BF6_LoadPlaceables(const FString& Level)
 	// it, so its types must resolve meshes and budget costs too
 	const int an = FMath::Min(g_listp(g_ctx, "", "", Buf.GetData(), kMax), kMax);
 	BF6_FillRows(Buf.GetData(), an, g_allGlobal, true);
+
+	// THE NODE, first in the shelf. It is the scene tree's building block, and
+	// making it placeable is what lets a creator build the whole tree in the
+	// editor: place a node where the group belongs, attach things to it by
+	// pointing. No mesh - the card wears the Godot node icon instead.
+	{
+		TSharedPtr<FPlaceableRow> NodeRow = MakeShared<FPlaceableRow>();
+		NodeRow->Type = TEXT("Node3D");
+		NodeRow->Directory = TEXT("Gameplay");
+		NodeRow->Mesh = FString();
+		NodeRow->PhysicsCost = 0;
+		g_ss.AllItems.Insert(NodeRow, 0);
+		g_allGlobal.Insert(NodeRow, 0);
+	}
 }
 
 static void BF6_LoadBudgetMax(const FString& Level)
@@ -6235,6 +6251,66 @@ namespace BF6Api
 			LAdd.Num() ? *FString::Printf(TEXT(", new map %s"), *BF6_JoinCapped(LAdd, 3)) : TEXT("")));
 	}
 
+	// The first section of a "## version" markdown file - everything from the
+	// first heading to the second. This is what NEW FEATURES opens on: the
+	// latest, not the archive.
+	static FString BF6_FirstSection(const FString& Md)
+	{
+		int32 First = Md.Find(TEXT("\n## "));
+		if (First == INDEX_NONE) return Md;
+		First += 1;   // start at the heading itself
+		const int32 Second = Md.Find(TEXT("\n## "), ESearchCase::CaseSensitive, ESearchDir::FromStart, First + 4);
+		return Second == INDEX_NONE ? Md.Mid(First) : Md.Mid(First, Second - First);
+	}
+
+	FString ToolHistoryText()
+	{
+		FString S;
+		FFileHelper::LoadFileToString(S, *(g_pluginDir / TEXT("Resources/CHANGELOG.md")));
+		return S;
+	}
+
+	FString SdkHistoryText()
+	{
+		FString Out, S;
+		// locally generated updates first (SDKs newer than the baked history)
+		TArray<FString> Changes;
+		IFileManager::Get().FindFiles(Changes, *(BF6_SdkHistoryDir() / TEXT("changes_*.md")), true, false);
+		Changes.Sort([](const FString& A2, const FString& B2){ return BF6_VersionNewer(A2, B2); });
+		for (const FString& C : Changes)
+			if (FFileHelper::LoadFileToString(S, *(BF6_SdkHistoryDir() / C))) Out += S;
+		if (FFileHelper::LoadFileToString(S, *(g_pluginDir / TEXT("Resources/sdkhistory/SDK-HISTORY.md"))))
+		{
+			S.ReplaceInline(TEXT("# Portal SDK version history\n"), TEXT(""));
+			Out += S;
+		}
+		return Out;
+	}
+
+	FString LatestToolNotes() { return BF6_FirstSection(ToolHistoryText()); }
+	FString LatestSdkNotes()  { return BF6_FirstSection(SdkHistoryText()); }
+
+	// The unlock dot. Battlefield marks new unlocks with an orange dot on the
+	// button's corner; ours means "this version has notes you have not read".
+	// Cleared the moment the panel opens, remembered across sessions.
+	static int32 GHistNews = -1;   // -1 unknown, 0 seen, 1 news
+	bool HistoryHasNews()
+	{
+		if (GHistNews < 0)
+		{
+			FString Seen;
+			GConfig->GetString(TEXT("BF6UnrealSDK"), TEXT("HistorySeenVersion"), Seen, GEditorPerProjectIni);
+			GHistNews = (Seen == PluginVersion()) ? 0 : 1;
+		}
+		return GHistNews == 1;
+	}
+	void MarkHistorySeen()
+	{
+		GHistNews = 0;
+		GConfig->SetString(TEXT("BF6UnrealSDK"), TEXT("HistorySeenVersion"), *PluginVersion(), GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
+
 	FString VersionHistoryText()
 	{
 		FString Out, S;
@@ -6707,6 +6783,28 @@ namespace BF6Api
 	}
 
 	void OpenMapWorld(const FString& Level, const FString& SaveName) { BF6_OpenMapWorldImpl(Level, SaveName); }
+
+	// Close the open session outright. Leaving for the map screen used to keep
+	// the whole session running behind the selector, which meant a "Return to
+	// build" button to explain, a map that could not be deleted because it was
+	// secretly still open, and a creator never quite sure what state they were
+	// in. Now the map screen means what it looks like: nothing is open.
+	// The terrain is deliberately left standing - reopening the same map is
+	// the common loop, and the scenery is identical every time.
+	void CloseSession()
+	{
+		if (g_ss.CurrentLevel.IsEmpty()) return;
+		BF6Api::BF6_MapDecalStash();
+		BF6ExtInternal::BroadcastMapClosing(g_ss.CurrentLevel);
+		ClearActorsWithTag(kPlacedTag);
+		ClearActorsWithTag(kBaseTag);
+		ClearActorsWithTag(kGroupTag);
+		g_ss.CurrentLevel.Empty();
+		g_ss.CurrentSave.Empty();
+		g_ss.bEditing = false;
+		BF6_RecomputeBudget();
+		RefreshSceneTree();
+	}
 	void ExportSpatial()
 	{
 		// Minified = smallest for the Portal upload cap, but every object gets a
@@ -7889,6 +7987,37 @@ namespace BF6Api
 		BF6_Redraw();
 	}
 
+	// ---- the lint spotlight -----------------------------------------------
+	//
+	// Clicking a Validate row used to just select the object, which on a full
+	// map means "somewhere in that skyline is your problem". Now the view
+	// flies to it and everything else goes translucent, so the one object that
+	// is wrong is the one object you can see - until the panel closes and the
+	// map comes back.
+	static TArray<FBF6Ghosted> GLintGhost;
+
+	void ClearLintSpotlight()
+	{
+		if (GLintGhost.Num() > 0) BF6_GhostRestoreSet(GLintGhost);
+	}
+
+	void LintSpotlight(AActor* A)
+	{
+		ClearLintSpotlight();   // one spotlight at a time; re-clicks move it
+		if (!A) return;
+		TSet<AActor*> Keep;
+		Keep.Add(A);
+		// its branch stays lit too: half the findings are about a RELATIONSHIP
+		// (a spawner and its spawns), and ghosting the children would hide the
+		// evidence
+		TArray<AActor*> Kids;
+		A->GetAttachedActors(Kids, true, true);
+		for (AActor* K : Kids) Keep.Add(K);
+		BF6_GhostAllExcept(Keep, GLintGhost);
+		SelectOnly(A);
+		FocusSelection();
+	}
+
 	// ---- collision overlay (a VIEW aid, never exported) ----
 	// Ported from the Godot high-poly tool. This is NOT the game's real
 	// collision and must never be described as such - the true shapes live in
@@ -8441,6 +8570,7 @@ namespace BF6Api
 		if (!Child || !Owner || Child == Owner) return;
 		if (Child->GetAttachParentActor()) return;   // never steal one already placed in a tree
 		Child->Modify();
+		if (USceneComponent* RC = Child->GetRootComponent()) RC->Modify();   // undo needs the component
 		Child->AttachToActor(Owner, FAttachmentTransformRules::KeepWorldTransform);
 	}
 
@@ -8589,7 +8719,18 @@ namespace BF6Api
 				SetActorProp(HQ, GHQRun.Field, FString::Join(Names, TEXT(",")));
 			}
 		}
+		AActor* Owner = GHQRun.HQ.Get();
 		GHQRun = FBF6HQSpawnRun();
+		// The run was an edit OF the HQ, so the selection goes back to the HQ
+		// either way - the same hand-back assign mode does when it ends.
+		// Anything else left the last spawn (or nothing at all) selected, which
+		// read as the run not being over.
+		if (GEditor)
+		{
+			GEditor->SelectNone(false, true, false);
+			if (Owner) GEditor->SelectActor(Owner, true, true);
+			else GEditor->NoteSelectionChange();
+		}
 		return n;
 	}
 
@@ -9014,7 +9155,8 @@ namespace BF6Api
 		if (!W) return false;
 		for (TActorIterator<AActor> It(W); It; ++It)
 		{
-			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)) continue;
+			// kGroupTag too: the attach search flies to nodes with this
+			if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag) && !It->Tags.Contains(kGroupTag)) continue;
 			FString Nm = It->GetActorLabel();
 			Nm.RemoveFromStart(TEXT("BF6_"));
 			if (Nm != Name) continue;
@@ -9088,6 +9230,22 @@ namespace BF6Api
 	{
 		if (!g_ss.bEditing) { BF6Api::RefuseReadOnly(TEXT("Objects can only be placed on a custom map. Name one and press Create, bottom right.")); return nullptr; }
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+
+		// A NODE is placeable like any object, so the whole tree can be built
+		// from the library without ever opening the Scene panel: place a node,
+		// then ATTACH things under it by pointing at them.
+		if (Type == TEXT("Node3D") && World)
+		{
+			FScopedTransaction Tx(FText::FromString(TEXT("Place Node")));
+			World->GetCurrentLevel()->Modify();   // spawns are only undoable with the level marked
+			AActor* A = BF6_SpawnTreeNode(World, FString(), FString(), FTransform(WorldPos));
+			if (!A) return nullptr;
+			BF6_SetPrettyLabel(A, TEXT("Node3D"));
+			FString Key = A->GetActorLabel(); Key.RemoveFromStart(TEXT("BF6_"));
+			A->Tags.Add(FName(*(FString(TEXT("gpath:")) + Key)));
+			if (GEditor) { GEditor->SelectNone(false, true, false); GEditor->SelectActor(A, true, true); }
+			return A;
+		}
 
 		// volumes have no mesh - they're built, not loaded
 		if (Type == TEXT("OBBVolume") && World)
@@ -9733,6 +9891,117 @@ namespace BF6Api
 		return Nm;
 	}
 
+	// ---- attach pick: parenting by pointing --------------------------------
+	//
+	// The tree can drag-parent and the wheel can list nodes, but the fastest
+	// statement of "this goes under that" is looking at THAT and clicking it.
+	// The selection is captured when the mode begins, so clicking the target
+	// cannot deselect the things being attached.
+	struct FBF6AttachPick
+	{
+		bool bActive = false;
+		TArray<TWeakObjectPtr<AActor>> Movers;
+	};
+	static FBF6AttachPick GAttachPick;
+
+	bool IsAttachPicking() { return GAttachPick.bActive; }
+
+	void BeginAttachPick()
+	{
+		GAttachPick = FBF6AttachPick();
+		TArray<AActor*> Sel; SelectionTargets(Sel);
+		if (Sel.Num() == 0) { Notify(TEXT("Select what you want to attach first.")); return; }
+		for (AActor* A : Sel) GAttachPick.Movers.Add(A);
+		GAttachPick.bActive = true;
+	}
+
+	void CancelAttachPick() { GAttachPick = FBF6AttachPick(); }
+
+	int32 ConfirmAttachPick(AActor* Target)
+	{
+		if (!GAttachPick.bActive) return 0;
+		if (!Target) return 0;
+
+		// only OUR objects can parent, and never something riding a group or
+		// block: the group's click-selects-all lock would fight every later
+		// attempt to select the parent on its own
+		const bool bOurs = Target->Tags.Contains(kPlacedTag) || Target->Tags.Contains(kBaseTag) || Target->Tags.Contains(kGroupTag);
+		if (!bOurs || Target->Tags.Contains(kHandleTag) || Target->Tags.Contains(kContextTag)) return 0;
+		if (Target->GroupActor != nullptr)
+		{
+			Notify(TEXT("That object is inside a group or block - it cannot take children. Pick something loose, or a node."));
+			return 0;
+		}
+
+		FScopedTransaction Tx(FText::FromString(TEXT("Attach to object")));
+		int32 n = 0;
+		for (const TWeakObjectPtr<AActor>& Wk : GAttachPick.Movers)
+		{
+			AActor* A = Wk.Get();
+			if (!A || A == Target) continue;
+			// no cycles: the target must not hang under anything being moved
+			bool bCycle = false;
+			for (AActor* Up = Target; Up; Up = Up->GetAttachParentActor())
+				if (Up == A) { bCycle = true; break; }
+			if (bCycle) continue;
+			A->Modify();
+			if (USceneComponent* RC = A->GetRootComponent()) RC->Modify();   // undo needs the component
+			A->AttachToActor(Target, FAttachmentTransformRules::KeepWorldTransform);
+			n++;
+		}
+		GAttachPick = FBF6AttachPick();
+		if (n > 0)
+		{
+			RefreshSceneTree();
+			// The attach is done. Leaving the movers selected read as the mode
+			// still waiting for another click - an empty selection is the
+			// visible "finished", and the toast already says what happened.
+			ClearSelection();
+		}
+		return n;
+	}
+
+	// Fly the view to node i without selecting it - the same look-before-you-
+	// commit courtesy the link picker gives its candidates.
+	void FocusTreeNode(int32 i)
+	{
+		TArray<AActor*> Nodes; BF6_CollectNodes(Nodes);
+		if (!Nodes.IsValidIndex(i) || !Nodes[i]) return;
+		FLevelEditorViewportClient* VC = BF6_ViewportToFly();
+		if (!VC) return;
+		FVector Org, Ext;
+		Nodes[i]->GetActorBounds(false, Org, Ext);
+		const double Span = FMath::Max3((double)Ext.X * 2.0, (double)Ext.Y * 2.0, 800.0);
+		const FRotator Look(-35.f, VC->GetViewRotation().Yaw, 0.f);
+		VC->SetViewLocation(Org - Look.Vector() * (Span * 1.6));
+		VC->SetViewRotation(Look);
+		VC->Invalidate();
+	}
+
+	// Detach the selection back to the map root, world positions kept - the
+	// inverse of Move to node, so a wrong drop is one click to undo by hand.
+	int32 DetachSelectionToRoot()
+	{
+		if (!GEditor) return 0;
+		TArray<AActor*> Sel; SelectionTargets(Sel);
+		FScopedTransaction Tx(FText::FromString(TEXT("Detach from node")));
+		int32 n = 0;
+		for (AActor* A : Sel)
+		{
+			if (!A || !A->GetAttachParentActor()) continue;
+			A->Modify();
+			if (USceneComponent* RC = A->GetRootComponent()) RC->Modify();   // undo needs the component
+			A->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+			n++;
+		}
+		if (n > 0)
+		{
+			RefreshSceneTree();
+			ClearSelection();   // same "finished" statement as an attach
+		}
+		return n;
+	}
+
 	int32 AttachSelectionToNode(int32 i)
 	{
 		if (!GEditor) return 0;
@@ -9753,10 +10022,105 @@ namespace BF6Api
 				if (Up == A) { bCycle = true; break; }
 			if (bCycle) continue;
 			A->Modify();
+			// Ctrl+Z must undo the attach, and the attachment is a property of
+			// the ROOT COMPONENT - Modify() on the actor alone records nothing
+			// the undo system can put back.
+			if (USceneComponent* RC = A->GetRootComponent()) RC->Modify();
 			A->AttachToActor(Node, FAttachmentTransformRules::KeepWorldTransform);
 			n++;
 		}
-		if (n > 0) RefreshSceneTree();
+		if (n > 0)
+		{
+			RefreshSceneTree();
+			ClearSelection();   // same "finished" statement as an attach
+		}
+		return n;
+	}
+
+	// ---- attach search: find the parent by name ----------------------------
+	//
+	// The panel's list only holds nodes, but attach takes ANY loose object -
+	// and on a real map "the thing called Team1_HQ" is faster to type than to
+	// fly to. Same target rules as clicking it in the world.
+	static bool BF6_AttachableTarget(AActor* A)
+	{
+		if (!A) return false;
+		const bool bOurs = A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag) || A->Tags.Contains(kGroupTag);
+		if (!bOurs || A->Tags.Contains(kHandleTag) || A->Tags.Contains(kContextTag)) return false;
+		if (A->GroupActor != nullptr) return false;   // group members cannot parent
+		return true;
+	}
+
+	static AActor* BF6_AttachSearchFind(const FString& Name)
+	{
+		if (Name.IsEmpty() || !GEditor) return nullptr;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return nullptr;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			FString Nm = It->GetActorLabel();
+			Nm.RemoveFromStart(TEXT("BF6_"));
+			if (Nm == Name) return *It;
+		}
+		return nullptr;
+	}
+
+	int32 AttachCandidates(const FString& Query, TArray<FString>& OutNames, int32 Max)
+	{
+		OutNames.Reset();
+		if (!GEditor) return 0;
+		UWorld* W = GEditor->GetEditorWorldContext().World();
+		if (!W) return 0;
+		TArray<FString> Toks;
+		Query.ParseIntoArrayWS(Toks);
+		TArray<AActor*> Sel; SelectionTargets(Sel);
+		// Nodes first: they exist to be parents, so with equal claim on the
+		// words they outrank a prop that merely shares them.
+		TArray<FString> Nodes, Rest;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			AActor* A = *It;
+			if (!BF6_AttachableTarget(A) || Sel.Contains(A)) continue;
+			FString Nm = A->GetActorLabel();
+			Nm.RemoveFromStart(TEXT("BF6_"));
+			bool bAll = true;
+			for (const FString& T : Toks)
+				if (!Nm.Contains(T)) { bAll = false; break; }
+			if (!bAll) continue;
+			(A->Tags.Contains(kGroupTag) ? Nodes : Rest).Add(Nm);
+		}
+		Nodes.Sort(); Rest.Sort();
+		const int32 Total = Nodes.Num() + Rest.Num();
+		for (const FString& N : Nodes) { if (OutNames.Num() >= Max) break; OutNames.Add(N); }
+		for (const FString& N : Rest)  { if (OutNames.Num() >= Max) break; OutNames.Add(N); }
+		return Total;
+	}
+
+	int32 AttachSelectionToName(const FString& Name)
+	{
+		if (!GEditor) return 0;
+		AActor* Target = BF6_AttachSearchFind(Name);
+		if (!Target || !BF6_AttachableTarget(Target)) return 0;
+		TArray<AActor*> Sel; SelectionTargets(Sel);
+		FScopedTransaction Tx(FText::FromString(TEXT("Attach to object")));
+		int32 n = 0;
+		for (AActor* A : Sel)
+		{
+			if (!A || A == Target) continue;
+			bool bCycle = false;
+			for (AActor* Up = Target; Up; Up = Up->GetAttachParentActor())
+				if (Up == A) { bCycle = true; break; }
+			if (bCycle) continue;
+			A->Modify();
+			if (USceneComponent* RC = A->GetRootComponent()) RC->Modify();   // undo needs the component
+			A->AttachToActor(Target, FAttachmentTransformRules::KeepWorldTransform);
+			n++;
+		}
+		if (n > 0)
+		{
+			RefreshSceneTree();
+			ClearSelection();   // same "finished" statement as an attach
+		}
 		return n;
 	}
 
@@ -9771,8 +10135,16 @@ namespace BF6Api
 		AActor* Node = AddTreeNode();
 		if (!Node) return 0;
 		for (AActor* A : Sel)
-			if (A != Node) A->AttachToActor(Node, FAttachmentTransformRules::KeepWorldTransform);
+			if (A != Node)
+			{
+				A->Modify();
+				if (USceneComponent* RC = A->GetRootComponent()) RC->Modify();   // undo needs the component
+				A->AttachToActor(Node, FAttachmentTransformRules::KeepWorldTransform);
+			}
 		RefreshSceneTree();
+		// The node is what this action made, so the node is what stays
+		// selected - same as placing one from the library.
+		if (GEditor) { GEditor->SelectNone(false, true, false); GEditor->SelectActor(Node, true, true); }
 		return Sel.Num();
 	}
 
@@ -12685,6 +13057,67 @@ namespace BF6Api
 
 	int32 PruneDeadLinks() { return BF6_PruneDeadLinks(); }
 
+	// ---- the transform block in the attributes panel ----------------------
+	//
+	// Typing "10" into Z should mean ten METRES above the parent, the way it
+	// does in Godot's inspector - not a thousand centimetres of world
+	// coordinate in a Details panel two menus away. Metres because that is the
+	// hand our creators arrive with; Unreal's axes because this is Unreal and
+	// the gizmo, the maps and every other number here already speak them.
+	bool GetXformM(AActor* A, FXformM& Out)
+	{
+		if (!A) return false;
+		const bool bRel = A->GetAttachParentActor() != nullptr;
+		const FVector L = bRel ? A->GetRootComponent()->GetRelativeLocation() : A->GetActorLocation();
+		const FRotator R = bRel ? A->GetRootComponent()->GetRelativeRotation() : A->GetActorRotation();
+		Out.Pos = L / 100.0;
+		Out.Rot = FVector(R.Roll, R.Pitch, R.Yaw);
+		Out.Scale = A->GetActorRelativeScale3D();
+		Out.bRelative = bRel;
+		return true;
+	}
+
+	// One axis at a time, because that is how typing works: each commit reads
+	// the live transform and replaces only the number that changed, so two
+	// fields edited in a row cannot clobber each other.
+	void SetXformPosM(AActor* A, int32 Axis, double Metres)
+	{
+		if (!A || Axis < 0 || Axis > 2) return;
+		const bool bRel = A->GetAttachParentActor() != nullptr;
+		FScopedTransaction Tx(FText::FromString(TEXT("Set position")));
+		A->Modify();
+		FVector L = bRel ? A->GetRootComponent()->GetRelativeLocation() : A->GetActorLocation();
+		L[Axis] = Metres * 100.0;
+		if (bRel) A->GetRootComponent()->SetRelativeLocation(L); else A->SetActorLocation(L);
+		BF6_NotePivotMoved();
+		BF6_Redraw();
+	}
+
+	void SetXformRotDeg(AActor* A, int32 Axis, double Degrees)
+	{
+		if (!A || Axis < 0 || Axis > 2) return;
+		const bool bRel = A->GetAttachParentActor() != nullptr;
+		FScopedTransaction Tx(FText::FromString(TEXT("Set rotation")));
+		A->Modify();
+		FRotator R = bRel ? A->GetRootComponent()->GetRelativeRotation() : A->GetActorRotation();
+		if (Axis == 0) R.Roll = Degrees; else if (Axis == 1) R.Pitch = Degrees; else R.Yaw = Degrees;
+		if (bRel) A->GetRootComponent()->SetRelativeRotation(R); else A->SetActorRotation(R);
+		BF6_NotePivotMoved();
+		BF6_Redraw();
+	}
+
+	void SetXformScale(AActor* A, int32 Axis, double InScale)
+	{
+		if (!A || Axis < 0 || Axis > 2) return;
+		FScopedTransaction Tx(FText::FromString(TEXT("Set scale")));
+		A->Modify();
+		FVector Sc = A->GetActorRelativeScale3D();
+		Sc[Axis] = FMath::Max(0.0001, InScale);
+		A->SetActorRelativeScale3D(Sc);
+		BF6_NotePivotMoved();
+		BF6_Redraw();
+	}
+
 	static FString BF6_LinkName(AActor* A)
 	{
 		FString Nm = A->GetActorLabel();
@@ -13888,11 +14321,13 @@ namespace BF6Api
 		// the actors, so Ctrl+Z left the whole bundle standing.
 		BW->GetCurrentLevel()->Modify();
 
+		FString RootNm;   // the piece's top actor, selected once it stands
 		if (Key == TEXT("HQ1") || Key == TEXT("HQ2"))
 		{
 			const int32 Team = (Key == TEXT("HQ2")) ? 2 : 1;
 			const int32 Id = BF6_NextObjId(301, 99);
-			BF6_WizHqBundle(Team, World, Id, FString::Printf(TEXT("Team%d_HQ_%d"), Team, Id));
+			RootNm = FString::Printf(TEXT("Team%d_HQ_%d"), Team, Id);
+			BF6_WizHqBundle(Team, World, Id, RootNm);
 		}
 		else if (Key == TEXT("FLAG"))
 		{
@@ -13901,12 +14336,13 @@ namespace BF6Api
 			// A is 200 - so the letter follows from the id rather than a counter
 			// that would restart at A after a reload.
 			const FString Letter = FString::Chr((TCHAR)(TEXT('A') + FMath::Clamp(Id - 200, 0, 25)));
-			BF6_WizFlagBundle(World, Id, TEXT("CapturePoint_") + Letter);
+			RootNm = BF6_WizFlagBundle(World, Id, TEXT("CapturePoint_") + Letter);
 		}
 		else if (Key == TEXT("SECTOR"))
 		{
 			const int32 Id = BF6_NextObjId(100, 99);
 			const FString Nm = FString::Printf(TEXT("Sector_%d"), Id - 99);
+			RootNm = Nm;
 			BF6_WizSector(World, Id, Nm, TArray<FString>());
 			// A sector with no area covers nothing, so it gets the one field it
 			// cannot work without and the creator shapes it.
@@ -13921,11 +14357,22 @@ namespace BF6Api
 		{
 			// MCOM owns nothing - it has no link fields at all - so the bundle is
 			// the object, and pretending otherwise would be theatre.
-			BF6_WizSpawn(TEXT("MCOM"), World, 0, FString::Printf(TEXT("MCOM_%d"), BF6_NextObjId(400, 99) - 399));
+			RootNm = FString::Printf(TEXT("MCOM_%d"), BF6_NextObjId(400, 99) - 399);
+			BF6_WizSpawn(TEXT("MCOM"), World, 0, RootNm);
 		}
 		else return false;
 
 		BF6_RecomputeBudget();
+		// The new piece is the result, so the new piece is what ends up
+		// selected - the same statement placing a single object makes. Whatever
+		// was selected before the wheel opened has nothing to do with what just
+		// landed, and leaving it lit made the placement look like a no-op.
+		if (GEditor)
+			if (AActor* Root = BF6_FindByLinkName(RootNm))
+			{
+				GEditor->SelectNone(false, true, false);
+				GEditor->SelectActor(Root, true, true);
+			}
 		return true;
 	}
 
@@ -14555,6 +15002,8 @@ static void BF6_HookTransBuffer()
 static void BF6_RepairAfterUndo()
 {
 	if (!GEditor) return;
+	// an undone attach or detach changed the tree's shape; refile it
+	BF6Api::MarkSceneTreeDirty();
 	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
 	const double RepairT0 = FPlatformTime::Seconds();
 	for (TActorIterator<AActor> It(W); It; ++It)

@@ -80,6 +80,7 @@ namespace BF6Api
 	// Load a map's world context (terrain/assets/base setup) + set session state.
 	// SaveName empty = read-only base preview; non-empty = editable custom map.
 	void    OpenMapWorld(const FString& Level, const FString& SaveName);
+	void    CloseSession();                // back to nothing-open; terrain stays for a fast reopen
 	// Place a placeable by type at a world position; tagged + budget-counted.
 	AActor* PlaceType(const FString& Type, const FVector& WorldPos);
 	// Place in front of the camera; re-placing before the first was touched
@@ -141,6 +142,16 @@ namespace BF6Api
 	// The attribute list as a DOCKED panel, for under the Scene tree. As a
 	// popup it opened at the screen edge the tree lives on and fell off it.
 	TSharedRef<SWidget> MakeAttributesPanel();
+
+	// The transform, the way a Godot hand expects to read it: METRES, relative
+	// to the parent when the object is attached (the parent is your 0,0,0),
+	// world otherwise - but on UNREAL's axes, so Z is up. Rotation is degrees
+	// as X=roll, Y=pitch, Z=yaw, matching the engine's own Details panel.
+	struct FXformM { FVector Pos = FVector::ZeroVector; FVector Rot = FVector::ZeroVector; FVector Scale = FVector::OneVector; bool bRelative = false; };
+	bool GetXformM(AActor* A, FXformM& Out);
+	void SetXformPosM(AActor* A, int32 Axis, double Metres);
+	void SetXformRotDeg(AActor* A, int32 Axis, double Degrees);
+	void SetXformScale(AActor* A, int32 Axis, double Scale);
 	void RemoveInputHandler();
 	void HideTransientMenus();   // dismiss the category object popup
 	bool IsBuildOverlayActive();
@@ -299,6 +310,24 @@ namespace BF6Api
 	int32   TreeNodeCount();
 	FString TreeNodeName(int32 i);
 	int32   AttachSelectionToNode(int32 i);
+	void    FocusTreeNode(int32 i);        // fly to it, select nothing
+	int32   DetachSelectionToRoot();       // undo a wrong drop, world kept
+	// Search across everything attach could take as a parent - any loose
+	// object, not just nodes. Returns the TOTAL match count; OutNames holds
+	// at most Max of them, nodes first.
+	int32   AttachCandidates(const FString& Query, TArray<FString>& OutNames, int32 Max);
+	int32   AttachSelectionToName(const FString& Name);
+	// (flying to a match reuses FocusByLinkName, declared with the link chips)
+
+	// ATTACH PICK: click the parent instead of finding it in a list. Begin
+	// captures the selection; the next click on a valid object parents the
+	// whole selection under it, world positions kept. Objects inside a
+	// group or block are refused as targets - a group member cannot serve
+	// as a parent without fighting the group's own selection lock.
+	void  BeginAttachPick();
+	bool  IsAttachPicking();
+	int32 ConfirmAttachPick(AActor* Target);   // returns how many attached; ends the mode
+	void  CancelAttachPick();
 	int32   GroupSelectionUnderNode();
 	// Viewport-only quick hides for zone walls and node markers (both on).
 	bool  VolumesShown();
@@ -348,6 +377,9 @@ namespace BF6Api
 	// The scene tree's warning badges: the lint result, cached by actor.
 	bool LintMarkFor(AActor* A, uint8& OutSeverity, FString& OutMessage);
 	void RefreshLintIfStale(double MaxAgeSeconds);
+	// Fly to a finding and ghost everything else until the panel closes.
+	void LintSpotlight(AActor* A);
+	void ClearLintSpotlight();
 	bool ReverseVolumeWinding(AActor* Vol);
 	// Simple multiplication from the selected placed object: flush rows/grids
 	// (spacing defaults to the object's own footprint) and circles facing the
@@ -655,6 +687,12 @@ namespace BF6Api
 	// version history: the tool's changelog + every Portal SDK release
 	// (baked from the community archive, extended locally on each update)
 	FString VersionHistoryText();
+	FString ToolHistoryText();             // the full changelog
+	FString SdkHistoryText();              // every SDK release, newest first
+	FString LatestToolNotes();             // just the newest version's section
+	FString LatestSdkNotes();              // just the newest SDK change
+	bool    HistoryHasNews();              // the orange unlock dot
+	void    MarkHistorySeen();
 	void  FetchUploadLimits();                  // refresh the per-map/experience upload byte limits
 
 	// ---- versioning + updates (GitHub releases, staged like the Godot plugin) ----
