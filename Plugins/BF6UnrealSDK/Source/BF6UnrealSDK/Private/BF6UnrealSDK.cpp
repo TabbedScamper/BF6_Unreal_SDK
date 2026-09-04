@@ -6,6 +6,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/ScopeExit.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/IConsoleManager.h"
 #include "Serialization/MemoryReader.h"
@@ -120,6 +121,7 @@ THIRD_PARTY_INCLUDES_END
 DEFINE_LOG_CATEGORY(LogBF6);   // declared in BF6Internal.h
 
 typedef bf6_ctx*  (*bf6_open_fn)(const char*, char*, int);
+typedef int       (*bf6_abi_version_fn)(void);
 typedef void      (*bf6_close_fn)(bf6_ctx*);
 typedef int       (*bf6_catalogue_fn)(bf6_ctx*, const char*, bf6_cat_entry*, int);
 typedef bf6_mesh* (*bf6_read_mesh_fn)(bf6_ctx*, const char*, int);
@@ -786,7 +788,7 @@ static void BF6_BuildRayIndex(AActor* Owner, UProceduralMeshComponent* M)
 	Ix->Stamp.SetNumZeroed(NT);
 	GRayIndexes.Add(Ix);
 
-	UE_LOG(LogBF6, Warning, TEXT("ray index for %s: %d tris, %dx%d cells (%.0f cm), %.1f MB in %.2fs"),
+	UE_LOG(LogBF6, Display, TEXT("ray index for %s: %d tris, %dx%d cells (%.0f cm), %.1f MB in %.2fs"),
 		*Owner->GetActorLabel(), NT, Ix->NX, Ix->NY, Ix->CX,
 		(Ix->V.Num() * 12 + Ix->Tri.Num() * 4 + Ix->CellTri.Num() * 4 + Ix->CellStart.Num() * 4 + Ix->Stamp.Num() * 4) / 1048576.f,
 		FPlatformTime::Seconds() - T0);
@@ -894,7 +896,7 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 		for (int32 s = 0; s < Mesh->GetNumSections(); s++) Mesh->SetMaterial(s, Mat);
 	Mesh->SetVisibility(true, true);
 	BF6_GroupContextUnderStatic(Label.Left(Label.Find(TEXT("_"), ESearchCase::CaseSensitive, ESearchDir::FromEnd)));
-	UE_LOG(LogBF6, Warning, TEXT("Loaded context %s: %d section(s) - %.2fs reading, %.2fs building (collision cook included)."),
+	UE_LOG(LogBF6, Display, TEXT("Loaded context %s: %d section(s) - %.2fs reading, %.2fs building (collision cook included)."),
 		*Label, Mesh->GetNumSections(), CtxDecode, CtxBuild);
 	return Actor;
 }
@@ -902,7 +904,7 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 // Path to a placeable's SDK low-poly model (e.g. "AAGun_01" -> .../objmodels/AAGun_01.bf6mesh).
 static FString ObjModelPath(const FString& MeshName)
 {
-	return FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/objmodels"), MeshName + TEXT(".bf6mesh"));
+	return FPaths::Combine(BF6_DataDir(), TEXT("objmodels"), MeshName + TEXT(".bf6mesh"));
 }
 
 // Place a placeable using the SDK's shipped low-poly model (complete, fast, matches
@@ -2293,7 +2295,7 @@ static bool SaveSession(const FString& Level, const FString& Name)
 	// the resume list never shows doubles
 	const FString Old = BF6_SessionPathOld(Level, Name);
 	if (FPaths::FileExists(Old)) IFileManager::Get().Delete(*Old);
-	UE_LOG(LogBF6, Warning, TEXT("Saved %d object(s) to %s"), Objs.Num(), *Path);
+	UE_LOG(LogBF6, Display, TEXT("Saved %d object(s) to %s"), Objs.Num(), *Path);
 	return true;
 }
 
@@ -2561,10 +2563,10 @@ static void LoadSession(const FString& Level, const FString& Name)
 	}
 	// the tree the creator authored, rebuilt from the keys the save kept
 	if (BF6_KeepGodotTree()) BF6_RebuildTreeFromTags();
-	UE_LOG(LogBF6, Warning, TEXT("Loaded %d object(s) from %s"), n, *Path);
-	UE_LOG(LogBF6, Warning, TEXT("  load: %.2fs total - %.2fs reading models (%d of %d already cached), %.2fs building meshes"),
+	UE_LOG(LogBF6, Display, TEXT("Loaded %d object(s) from %s"), n, *Path);
+	UE_LOG(LogBF6, Display, TEXT("  load: %.2fs total - %.2fs reading models (%d of %d already cached), %.2fs building meshes"),
 		FPlatformTime::Seconds() - LoadT0, GMeshDecodeSec, GMeshCacheHits, GMeshCalls, GMeshBuildSec);
-	UE_LOG(LogBF6, Warning, TEXT("  load detail: %.2fs naming, %.2fs spawning, %.2fs file checks, %.2fs outliner"),
+	UE_LOG(LogBF6, Display, TEXT("  load detail: %.2fs naming, %.2fs spawning, %.2fs file checks, %.2fs outliner"),
 		GLabelSec, GSpawnSec, GStatSec, GFolderSec);
 }
 
@@ -2636,7 +2638,7 @@ private:
 	const FSlateBrush* LoadCardBrush(const FString& PngFile)
 	{
 		if (PngFile.IsEmpty()) return nullptr;
-		const FString Path = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/maps"), PngFile);
+		const FString Path = FPaths::Combine(BF6_DataDir(), TEXT("maps"), PngFile);
 		if (!FPaths::FileExists(Path)) return nullptr;
 		UTexture2D* Tex = FImageUtils::ImportFileAsTexture2D(Path);
 		if (!Tex) return nullptr;
@@ -2840,7 +2842,7 @@ private:
 
 	FString MeshPath(const FString& Suffix) const
 	{
-		return FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/mapmesh"), CurrentLevel + Suffix);
+		return FPaths::Combine(BF6_DataDir(), TEXT("mapmesh"), CurrentLevel + Suffix);
 	}
 
 	void LoadTerrainContext()
@@ -2859,7 +2861,7 @@ private:
 		if (!GEditor) return;
 		UWorld* World = GEditor->GetEditorWorldContext().World();
 		if (!World) return;
-		const FString Path = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/basesetup"), CurrentLevel + TEXT(".base.json"));
+		const FString Path = FPaths::Combine(BF6_DataDir(), TEXT("basesetup"), CurrentLevel + TEXT(".base.json"));
 		FString In;
 		if (!FFileHelper::LoadFileToString(In, *Path)) { UE_LOG(LogBF6, Warning, TEXT("no base setup for %s"), *CurrentLevel); return; }
 		TSharedPtr<FJsonObject> Root;
@@ -2945,7 +2947,7 @@ private:
 			BaseObjects.Add(oid, bo);
 			oid++; spawned++;
 		}
-		UE_LOG(LogBF6, Warning, TEXT("Base setup loaded for %s: %d objects."), *CurrentLevel, spawned);
+		UE_LOG(LogBF6, Display, TEXT("Base setup loaded for %s: %d objects."), *CurrentLevel, spawned);
 	}
 
 	FReply OnLoadAssets()
@@ -3029,7 +3031,7 @@ private:
 		TArray<TSharedPtr<FJsonValue>> Dynamic;
 
 		// --- base setup (Godot-native: reformat .base.json, compose world pos) ---
-		const FString BasePath = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/basesetup"), CurrentLevel + TEXT(".base.json"));
+		const FString BasePath = FPaths::Combine(BF6_DataDir(), TEXT("basesetup"), CurrentLevel + TEXT(".base.json"));
 		FString In; TSharedPtr<FJsonObject> BaseRoot;
 		if (FFileHelper::LoadFileToString(In, *BasePath))
 		{
@@ -3254,7 +3256,7 @@ private:
 		}
 
 		const int32 Hooked = BF6_ApplyTreeMetadata(StaticArr);
-		if (Hooked > 0) UE_LOG(LogBF6, Warning, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
+		if (Hooked > 0) UE_LOG(LogBF6, Display, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
 		Notify(FString::Printf(TEXT("Imported %d objects into %s (%d volumes, %d markers). Editable now."), spawned, *CurrentLevel, volumes, markers));
 		UE_LOG(LogBF6, Warning, TEXT("Imported spatial.json: %d objects (%d volumes, %d markers) from %s"), spawned, volumes, markers, *File);
 		return FReply::Handled();
@@ -3305,7 +3307,7 @@ private:
 	void LoadBudgetMax()
 	{
 		BudgetMax = -1;
-		const FString Path = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/FbExportData/level_info.json"));
+		const FString Path = FPaths::Combine(BF6_DataDir(), TEXT("FbExportData/level_info.json"));
 		FString In;
 		if (!FFileHelper::LoadFileToString(In, *Path)) return;
 		TSharedPtr<FJsonObject> Root;
@@ -3477,9 +3479,9 @@ struct FBF6SessionState
 static FBF6SessionState g_ss;
 
 static FString BF6_MapMeshPath(const FString& Level, const FString& Suffix)
-{ return FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/mapmesh"), Level + Suffix); }
+{ return FPaths::Combine(BF6_DataDir(), TEXT("mapmesh"), Level + Suffix); }
 static FString BF6_BaseJsonPath(const FString& Level)
-{ return FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/basesetup"), Level + TEXT(".base.json")); }
+{ return FPaths::Combine(BF6_DataDir(), TEXT("basesetup"), Level + TEXT(".base.json")); }
 
 static FString BF6_ResolveMeshForType(const FString& Type)
 {
@@ -3995,7 +3997,7 @@ static void BF6_LoadPlaceables(const FString& Level)
 static void BF6_LoadBudgetMax(const FString& Level)
 {
 	g_ss.BudgetMax = -1;
-	const FString Path = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/FbExportData/level_info.json"));
+	const FString Path = FPaths::Combine(BF6_DataDir(), TEXT("FbExportData/level_info.json"));
 	FString In; if (!FFileHelper::LoadFileToString(In, *Path)) return;
 	TSharedPtr<FJsonObject> Root; TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
 	if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid()) return;
@@ -4241,11 +4243,11 @@ static void BF6_LoadBaseSetup(const FString& Level)
 	if (BF6_KeepGodotTree())
 	{
 		const int32 Hooked = BF6_RebuildTreeFromTags();
-		if (Hooked > 0) UE_LOG(LogBF6, Warning, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
+		if (Hooked > 0) UE_LOG(LogBF6, Display, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
 	}
 	// a fresh map: look at the play area rather than wherever the editor was
 	BF6Api::FrameCombatArea();
-	UE_LOG(LogBF6, Warning, TEXT("Base setup loaded for %s: %d objects."), *Level, spawned);
+		UE_LOG(LogBF6, Display, TEXT("Base setup loaded for %s: %d objects."), *Level, spawned);
 }
 
 
@@ -5326,7 +5328,7 @@ static bool BF6_ImportTscnFile(const FString& File)
 	if (BF6_KeepGodotTree())
 	{
 		const int32 Hooked = BF6_RebuildTreeFromTags();
-		if (Hooked > 0) UE_LOG(LogBF6, Warning, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
+		if (Hooked > 0) UE_LOG(LogBF6, Display, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
 	}
 	Notify(FString::Printf(TEXT("Imported Godot scene '%s' onto %s: %d objects%s. Editable now."),
 		*g_ss.CurrentSave, *Level, spawned,
@@ -5525,7 +5527,7 @@ static bool BF6_ImportSpatialDialog()
 	}
 	BF6_RecomputeBudget();
 	const int32 Hooked = BF6_ApplyTreeMetadata(StaticArr);
-	if (Hooked > 0) UE_LOG(LogBF6, Warning, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
+	if (Hooked > 0) UE_LOG(LogBF6, Display, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
 	Notify(FString::Printf(TEXT("Imported '%s' onto %s: %d objects. Editable now."), *g_ss.CurrentSave, *Level, spawned));
 	return true;
 }
@@ -6862,7 +6864,7 @@ namespace BF6Api
 		TSharedPtr<FSlateBrush> Brush;
 		if (Png && *Png)
 		{
-			const FString Path = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/maps"), FString(Png));
+			const FString Path = FPaths::Combine(BF6_DataDir(), TEXT("maps"), FString(Png));
 			if (FPaths::FileExists(Path))
 				if (UTexture2D* Tex = FImageUtils::ImportFileAsTexture2D(Path))
 				{
@@ -12434,7 +12436,7 @@ namespace BF6Api
 		// saving (or GC runs) is the "Illegal call to StaticFindObjectFast()
 		// while serializing" FATAL from the crash dumps - a click during the
 		// save dialog fired this through the input processor
-		if (GIsSavingPackage || IsGarbageCollecting()) return nullptr;
+		if (UE::IsSavingPackage() || IsGarbageCollecting()) return nullptr;
 		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
 		if (!VC || !VC->Viewport) return nullptr;
 		FIntPoint MP;
@@ -12458,7 +12460,7 @@ namespace BF6Api
 	{
 		// same serialization guard as ActorUnderCursor: never render hit
 		// proxies while saving or collecting garbage
-		if (GIsSavingPackage || IsGarbageCollecting()) return false;
+		if (UE::IsSavingPackage() || IsGarbageCollecting()) return false;
 		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
 		if (!VC || !VC->Viewport) return false;
 		// the transform gizmo: its hover state is refreshed by the editor on
@@ -13865,7 +13867,7 @@ namespace BF6Api
 		static FString LastSig;
 		if (Sig == LastSig) return;
 		LastSig = Sig;
-		if (ByMessage.Num() == 0) { UE_LOG(LogBF6, Warning, TEXT("validate: all clear")); return; }
+		if (ByMessage.Num() == 0) { UE_LOG(LogBF6, Display, TEXT("validate: all clear")); return; }
 		ByMessage.ValueSort([](int32 A, int32 B){ return A > B; });
 		UE_LOG(LogBF6, Warning, TEXT("validate: %d flagged object(s), %d distinct issue(s):"), GLintMarks.Num(), ByMessage.Num());
 		int32 Shown = 0;
@@ -15316,6 +15318,75 @@ void FBF6UnrealSDKModule::StartupModule()
 	g_pluginDir = IPluginManager::Get().FindPlugin(TEXT("BF6UnrealSDK"))->GetBaseDir();
 	BF6_LoadCatOverrides();   // the user's "move to category" choices
 
+	// One-time storage migrations must happen before anything creates the new
+	// directory. Older builds first wrote user state to Saved/BF6HighPoly, then
+	// wrote multi-gigabyte SDK conversion caches inside the plugin's Source/
+	// tree. Preserve both, but make Saved/BF6UnrealSDK/sdkdata the sole runtime
+	// location from this point forward.
+	{
+		const FString OldProductDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6") TEXT("HighPoly"));
+		const FString NewProductDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"));
+		if (IFileManager::Get().DirectoryExists(*OldProductDir)
+			&& !IFileManager::Get().DirectoryExists(*NewProductDir))
+		{
+			if (IFileManager::Get().Move(*NewProductDir, *OldProductDir))
+			{
+				UE_LOG(LogBF6, Display, TEXT("migrated legacy Saved data to %s"), *NewProductDir);
+			}
+			else
+			{
+				UE_LOG(LogBF6, Warning, TEXT("could not migrate legacy Saved data from %s"), *OldProductDir);
+			}
+		}
+
+		const FString LegacyData = g_pluginDir / TEXT("Source/ThirdParty/libbf6/data");
+		const FString NewData = BF6_DataDir();
+		IFileManager::Get().MakeDirectory(*NewData, true);
+
+		auto MoveGeneratedDir = [&](const TCHAR* Name)
+		{
+			const FString From = LegacyData / Name;
+			const FString To = NewData / Name;
+			if (!IFileManager::Get().DirectoryExists(*From)
+				|| IFileManager::Get().DirectoryExists(*To)) return;
+			if (IFileManager::Get().Move(*To, *From))
+			{
+				UE_LOG(LogBF6, Display, TEXT("migrated generated SDK data: %s"), Name);
+			}
+			else
+			{
+				UE_LOG(LogBF6, Warning, TEXT("could not migrate generated SDK data: %s"), Name);
+			}
+		};
+		auto CopySeedDir = [&](const TCHAR* Name)
+		{
+			const FString From = LegacyData / Name;
+			const FString To = NewData / Name;
+			if (!IFileManager::Get().DirectoryExists(*From)
+				|| IFileManager::Get().DirectoryExists(*To)) return;
+			if (!FPlatformFileManager::Get().GetPlatformFile().CopyDirectoryTree(*To, *From, true))
+				UE_LOG(LogBF6, Warning, TEXT("could not seed SDK data: %s"), Name);
+		};
+
+		// These directories were generated and git-ignored; moving avoids a
+		// multi-gigabyte duplicate. The small catalogue/base data may still be a
+		// tracked compatibility seed, so copy it and leave the source untouched.
+		MoveGeneratedDir(TEXT("objmodels"));
+		MoveGeneratedDir(TEXT("mapmesh"));
+		MoveGeneratedDir(TEXT("sdkhistory"));
+		CopySeedDir(TEXT("FbExportData"));
+		CopySeedDir(TEXT("basesetup"));
+		const FString LegacyStamp = LegacyData / TEXT("sdk.version.json");
+		const FString NewStamp = NewData / TEXT("sdk.version.json");
+		if (FPaths::FileExists(LegacyStamp) && !FPaths::FileExists(NewStamp))
+		{
+			if (IFileManager::Get().Copy(*NewStamp, *LegacyStamp) != COPY_OK)
+			{
+				UE_LOG(LogBF6, Warning, TEXT("could not seed sdk.version.json"));
+			}
+		}
+	}
+
 	// Seed the bundled data the SDK import can NOT produce: the map cards'
 	// thumbnails (official Portal site tiles) and the gameplay marker meshes.
 	// They ship in Resources/ and copy into the data dir if missing - fresh
@@ -15343,16 +15414,25 @@ void FBF6UnrealSDKModule::StartupModule()
 			BF6Api::BF6_SnapshotSdkHistory(Root);
 	}
 
-	// One-time migration: saves/exports from before the plugin was renamed.
+	FString DllPath = FPaths::Combine(g_pluginDir, TEXT("Binaries/Win64/bf6_core.dll"));
+	if (!FPaths::FileExists(DllPath))
 	{
-		const FString OldDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6") TEXT("HighPoly"));
-		const FString NewDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"));
-		if (IFileManager::Get().DirectoryExists(*OldDir) && !IFileManager::Get().DirectoryExists(*NewDir))
-			IFileManager::Get().Move(*NewDir, *OldDir);
+		// Development fallback before UBT has staged the package. A packaged
+		// plugin never relies on Source/ThirdParty at runtime.
+		DllPath = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/bin/Win64/bf6_core.dll"));
 	}
-	const FString DllPath = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/bin/Win64/bf6_core.dll"));
 	DllHandle = FPlatformProcess::GetDllHandle(*DllPath);
 	if (!DllHandle) { UE_LOG(LogBF6, Error, TEXT("could not load bf6_core.dll")); return; }
+	const bf6_abi_version_fn RuntimeAbi = (bf6_abi_version_fn)
+		FPlatformProcess::GetDllExport(DllHandle, TEXT("bf6_abi_version"));
+	if (!RuntimeAbi || RuntimeAbi() != BF6_ABI_VERSION)
+	{
+		UE_LOG(LogBF6, Error, TEXT("bf6_core ABI mismatch: plugin header=%d runtime=%d"),
+			BF6_ABI_VERSION, RuntimeAbi ? RuntimeAbi() : -1);
+		FPlatformProcess::FreeDllHandle(DllHandle);
+		DllHandle = nullptr;
+		return;
+	}
 	g_open    = (bf6_open_fn)            FPlatformProcess::GetDllExport(DllHandle, TEXT("bf6_open"));
 	g_close   = (bf6_close_fn)           FPlatformProcess::GetDllExport(DllHandle, TEXT("bf6_close"));
 	g_cat     = (bf6_catalogue_fn)       FPlatformProcess::GetDllExport(DllHandle, TEXT("bf6_catalogue"));
@@ -15380,14 +15460,22 @@ void FBF6UnrealSDKModule::StartupModule()
 	if (!g_ctx) { UE_LOG(LogBF6, Warning, TEXT("bf6_open failed: %hs"), err); }
 	else
 	{
-		UE_LOG(LogBF6, Warning, TEXT("libbf6 opened the install: %d resources."), g_cat(g_ctx, "", nullptr, 0));
+		UE_LOG(LogBF6, Display, TEXT("libbf6 opened the install: %d resources."), g_cat(g_ctx, "", nullptr, 0));
 		if (g_loadp)
 		{
-			const FString FbDir = FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data/FbExportData"));
-			char perr[256] = {0};
-			const int np = g_loadp(g_ctx, TCHAR_TO_UTF8(*FbDir), perr, sizeof(perr));
-			if (np > 0) { UE_LOG(LogBF6, Warning, TEXT("SDK placeables loaded: %d objects across %d levels. Open Window > Tools > BF6 Objects."), np, g_lvlcnt ? g_lvlcnt(g_ctx) : 0); }
-			else { UE_LOG(LogBF6, Warning, TEXT("bf6_load_placeables failed: %hs"), perr); }
+			const FString FbDir = FPaths::Combine(BF6_DataDir(), TEXT("FbExportData"));
+			if (!FPaths::FileExists(FbDir / TEXT("asset_types.json"))
+				|| !FPaths::FileExists(FbDir / TEXT("level_info.json")))
+			{
+				UE_LOG(LogBF6, Display, TEXT("SDK placeable catalogue is not installed yet; Portal SDK setup is pending."));
+			}
+			else
+			{
+				char perr[256] = {0};
+				const int np = g_loadp(g_ctx, TCHAR_TO_UTF8(*FbDir), perr, sizeof(perr));
+				if (np > 0) { UE_LOG(LogBF6, Display, TEXT("SDK placeables loaded: %d objects across %d levels. Open Window > Tools > BF6 Objects."), np, g_lvlcnt ? g_lvlcnt(g_ctx) : 0); }
+				else { UE_LOG(LogBF6, Warning, TEXT("bf6_load_placeables failed: %hs"), perr); }
+			}
 		}
 	}
 
@@ -15408,6 +15496,16 @@ void FBF6UnrealSDKModule::StartupModule()
 	IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
 	auto EnterFullScreen = []()
 	{
+		// The raw-water lab is an intentionally empty Unreal world.  The SDK
+		// module still supplies its install discovery and extension seam, but its
+		// map selector/viewport overlay would cover the lab we are trying to
+		// inspect.  Keep the process and viewport alive; skip only the full map UI.
+		if (FParse::Param(FCommandLine::Get(), TEXT("bf6waterlab")))
+		{
+			FGlobalTabmanager::Get()->SetApplicationTitle(
+				FText::FromString(TEXT("BF6 Raw Water Lab")));
+			return;
+		}
 		// The outliner becomes OURS: same tab, same dock, SDK contents. Done
 		// here rather than at module startup because the level editor - and so
 		// its tab manager - does not exist that early.

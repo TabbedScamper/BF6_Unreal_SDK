@@ -4,7 +4,7 @@
 #   powershell -File deploy_pending.ps1
 #
 $ErrorActionPreference = "Stop"
-$proj   = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\BF6_High_Poly.uproject"
+$proj   = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\BF6_Unreal_SDK.uproject"
 $tp     = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\Plugins\BF6UnrealSDK\Source\ThirdParty\libbf6\bin\Win64"
 $bin    = "C:\Users\mwalt\Documents\Unreal Projects\BF6_High_Poly\Plugins\BF6UnrealSDK\Binaries\Win64"
 $ue     = "C:\Program Files\Epic Games\UE_5.8"
@@ -18,7 +18,7 @@ if (Test-Path "$tp\bf6_core.dll.pending") {
     New-Item -ItemType Directory -Force -Path $bin | Out-Null
     Copy-Item "$tp\bf6_core.dll.pending" "$bin\bf6_core.dll" -Force
     Remove-Item "$tp\bf6_core.dll.pending" -Force
-    Write-Host "DLL swapped in (184832 bytes expected)." -ForegroundColor Green
+    Write-Host "DLL swapped in; the plugin will reject an ABI mismatch at startup." -ForegroundColor Green
 }
 
 # 2. rebuild the editor module (picks up the new BF6UnrealSDK.cpp + Build.cs)

@@ -24,7 +24,7 @@ public class BF6UnrealSDK : ModuleRules
 			"SlateCore",
 			"InputCore",
 			"WorkspaceMenuStructure",   // the Window > Tools menu group
-			"ImageWrapper",             // decode the map thumbnail PNGs for Slate
+			"ImageWrapper",             // decode the map thumbnail images for Slate
 			"HTTP"                      // update check + download from GitHub releases
 		});
 
@@ -50,23 +50,17 @@ public class BF6UnrealSDK : ModuleRules
 		string ThirdParty = Path.Combine(ModuleDirectory, "..", "ThirdParty", "libbf6");
 		PublicIncludePaths.Add(Path.Combine(ThirdParty, "include"));
 
-		// Stage bf6_core.dll next to the plugin's binaries so GetDllHandle finds
-		// it after a packaged build too.
+		// Stage bf6_core.dll in the plugin's own binary directory. Runtime loads
+		// this exact path first; Source/ThirdParty is only a development-package
+		// input and is not present in an installed/packaged plugin.
 		string DllName = "bf6_core.dll";
 		string DllSrc = Path.Combine(ThirdParty, "bin", "Win64", DllName);
-		RuntimeDependencies.Add(Path.Combine("$(BinaryOutputDir)", DllName), DllSrc);
+		RuntimeDependencies.Add(Path.Combine("$(PluginDir)", "Binaries", "Win64", DllName), DllSrc);
 
-		// The SDK's placeable catalogue (level_info.json + asset_types.json). The
-		// module reads these at runtime from the plugin folder to build the
-		// per-map object list, so they must ride along with a packaged build.
-		string FbData = Path.Combine(ThirdParty, "data", "FbExportData");
-		RuntimeDependencies.Add(Path.Combine(FbData, "level_info.json"));
-		RuntimeDependencies.Add(Path.Combine(FbData, "asset_types.json"));
-
-		// The map thumbnail PNGs shown in the browser's card grid.
-		string MapDir = Path.Combine(ThirdParty, "data", "maps");
-		if (Directory.Exists(MapDir))
-			foreach (string png in Directory.GetFiles(MapDir, "*.png"))
-				RuntimeDependencies.Add(png);
+		// Portal-SDK catalogues and converted meshes are generated into the
+		// project's Saved/BF6UnrealSDK/sdkdata directory at runtime. They are not
+		// build inputs and must not be staged out of Source/ThirdParty. Static map
+		// thumbnails and gameplay marker meshes live in the plugin's Resources/
+		// directory, which the plugin packager already carries as plugin content.
 	}
 }

@@ -162,7 +162,22 @@ function Invoke-Compile {
   Write-Host "`nCOMPILE (single-file, editor may stay open)" -ForegroundColor Cyan
   $targets = @()
   if ($Files) {
-    foreach ($f in $Files) { $targets += (Join-Path $Private (Split-Path $f -Leaf)) }
+    # -Files takes a BARE NAME, and an add-on file does not live under the
+    # tool Private directory. Resolving a name against nothing but $Private
+    # handed UBT a path that does not exist, and UBT answers that by compiling
+    # nothing and still reporting success.
+    foreach ($f in $Files) {
+      $leaf = Split-Path $f -Leaf
+      $hit = Join-Path $Private $leaf
+      if (-not (Test-Path $hit) -and (Test-Path $AddOns)) {
+        $found = Get-ChildItem $AddOns -Filter $leaf -Recurse |
+                 Where-Object { $_.FullName -notlike '*\Intermediate\*' } |
+                 Select-Object -First 1
+        if ($found) { $hit = $found.FullName }
+      }
+      if (-not (Test-Path $hit)) { Note 'FAIL' $leaf 0 'no such source file' ; continue }
+      $targets += $hit
+    }
   } else {
     $targets = @(Get-ChildItem $Private -Filter *.cpp | ForEach-Object { $_.FullName })
     if (Test-Path $AddOns) {
@@ -175,7 +190,7 @@ function Invoke-Compile {
   foreach ($t in $targets) {
     $nm = Split-Path $t -Leaf
     $log = Join-Path $env:TEMP ("bf6check_" + $nm + ".log")
-    & $UBT $Target Win64 Development -Project="$Project" -SingleFile="$t" -NoHotReload > $log
+    & $UBT $Target Win64 Development -Project="$Project" -SingleFile="$t" -NoHotReload -NoHotReloadFromIDE > $log
     $code = $LASTEXITCODE
     $errs = @(Select-String -Path $log -Pattern 'error [A-Z]+\d+' -AllMatches)
 

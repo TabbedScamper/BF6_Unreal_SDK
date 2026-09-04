@@ -101,6 +101,25 @@ namespace BF6Ext
 	// On foot rather than flying. An overlay may want a different budget here.
 	BF6UNREALSDK_API bool    IsWalking();
 
+	// Open one of the SDK's map sessions through the tool's normal loader. This
+	// exists for deterministic add-on benches and automation: it performs the
+	// same validation, context load, save restore and map-open broadcasts as a
+	// click on the map card. Empty SaveName opens the read-only base map.
+	BF6UNREALSDK_API void    OpenMap(const FString& Level, const FString& SaveName);
+	BF6UNREALSDK_API void    ShowBuildOverlay();
+
+	// The exact Display/Sun -> Map image control.  State values match the
+	// workspace button: 0 off, 1 hidden, 2 downloading, 3 shown.  SetVisible
+	// is idempotent so automation never has to guess which way a toggle moves.
+	BF6UNREALSDK_API int32   MapImageState();
+	BF6UNREALSDK_API void    SetMapImageVisible(bool bVisible);
+
+	// Apply only validator fixes explicitly marked safe by the SDK (currently
+	// polygon winding), then persist the current editable save when requested.
+	// Returns the number of distinct actors changed; read-only base previews are
+	// never modified.
+	BF6UNREALSDK_API int32   FixSafeValidationIssues(bool bSave);
+
 	// A map finished loading (Level, SaveName), and the map is being torn down.
 	// Both fire on the game thread. Closing fires before the actors go.
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FBF6MapOpened, const FString&, const FString&);
@@ -156,4 +175,12 @@ namespace BF6Ext
 	// The surface point straight ahead of the camera, on terrain or on a placed
 	// object. False when there is no viewport or nothing was hit.
 	BF6UNREALSDK_API bool  WorldAheadOfCamera(FVector& OutWorld);
+
+	// The exact level viewport carrying the BF6 workspace overlay. Generic
+	// editor viewport globals can point at hidden preview clients, so add-ons
+	// and MCP automation must use this seam when camera/clipmap agreement
+	// matters.
+	BF6UNREALSDK_API bool GetBuildViewportCamera(FVector& OutLocation, FRotator& OutRotation);
+	BF6UNREALSDK_API bool SetBuildViewportCamera(const FVector& Location, const FRotator& Rotation);
+	BF6UNREALSDK_API bool RedrawBuildViewport();
 }

@@ -20,18 +20,16 @@ Build/
 Plugins/**/Binaries/
 Plugins/**/Intermediate/
 
-# ---- bulk data packs (generated from the SDK / distributed separately) ----
-# The repo ships the small catalogue data (FbExportData, basesetup, maps,
-# gameplay) so a fresh clone boots the map selector. The mesh packs are
-# multi-GB and are produced by the extraction pipeline from a local Portal SDK
-# (or downloaded as a release data pack):
-#   objmodels/  - all SDK low-poly object models (.bf6mesh, ~2.7 GB)
-#   mapmesh/    - per-map low-poly terrain + assets meshes (~4.4 GB)
+# ---- legacy generated SDK data -------------------------------------------
+# Current builds write Portal-SDK-derived caches to
+# Saved/BF6UnrealSDK/sdkdata (covered by Saved/ above). Keep these old Source/
+# ignores until every pre-migration checkout has launched once; startup moves
+# them into Saved without duplicating the multi-GB packs.
 Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/objmodels/
 Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/mapmesh/
 
-# per-user SDK history snapshots (generated at import; the baked seed ships in
-# Plugins/BF6UnrealSDK/Resources/sdkhistory instead)
+# Per-user SDK history from old builds. The baked history remains a Resource;
+# mutable snapshots now live under Saved with the other generated data.
 Plugins/BF6UnrealSDK/Source/ThirdParty/libbf6/data/sdkhistory/
 
 # local fresh-install test backups

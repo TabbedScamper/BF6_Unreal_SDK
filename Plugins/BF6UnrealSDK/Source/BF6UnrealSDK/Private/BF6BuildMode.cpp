@@ -8166,6 +8166,70 @@ void BF6Api::ShowSdkSetup()     { if (GRoot.IsValid()) GRoot->ShowSetup(); }
 
 bool BF6Api::IsBuildOverlayActive() { return GRoot.IsValid() && GRoot->IsBuildScreen(); }
 
+bool BF6Ext::GetBuildViewportCamera(FVector& OutLocation, FRotator& OutRotation)
+{
+	// The client considered "current" is the one the user can actually see.
+	// GRootViewport is the widget the overlay attached to at startup, but a
+	// restored editor layout can replace its perspective client afterwards.
+	if (GCurrentLevelEditingViewportClient)
+	{
+		OutLocation = GCurrentLevelEditingViewportClient->GetViewLocation();
+		OutRotation = GCurrentLevelEditingViewportClient->GetViewRotation();
+		return true;
+	}
+	if (!GRootViewport.IsValid()) return false;
+	FLevelEditorViewportClient& Client = GRootViewport->GetLevelViewportClient();
+	OutLocation = Client.GetViewLocation();
+	OutRotation = Client.GetViewRotation();
+	return true;
+}
+
+bool BF6Ext::SetBuildViewportCamera(const FVector& Location, const FRotator& Rotation)
+{
+	UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	TSet<FEditorViewportClient*> Updated;
+	auto Apply = [&](FEditorViewportClient* Client)
+	{
+		if (!Client || Updated.Contains(Client) || !Client->IsPerspective()) return;
+		if (EditorWorld && Client->GetWorld() != EditorWorld) return;
+		Updated.Add(Client);
+		Client->SetRealtime(true);
+		Client->SetViewLocation(Location);
+		Client->SetViewRotation(Rotation);
+		Client->Invalidate(true, true);
+		if (Client->Viewport) Client->Viewport->InvalidateDisplay();
+	};
+
+	// Current first: this is normally the renderer on screen. Then include the
+	// startup overlay client and every same-world perspective client so a Slate
+	// focus/layout change cannot redirect the visible frame between MCP calls.
+	Apply(GCurrentLevelEditingViewportClient);
+	if (GRootViewport.IsValid()) Apply(&GRootViewport->GetLevelViewportClient());
+	if (GEditor)
+		for (FEditorViewportClient* Client : GEditor->GetAllViewportClients()) Apply(Client);
+	return Updated.Num() > 0;
+}
+
+bool BF6Ext::RedrawBuildViewport()
+{
+	UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	TSet<FEditorViewportClient*> Updated;
+	auto Redraw = [&](FEditorViewportClient* Client)
+	{
+		if (!Client || Updated.Contains(Client) || !Client->IsPerspective()) return;
+		if (EditorWorld && Client->GetWorld() != EditorWorld) return;
+		Updated.Add(Client);
+		Client->SetRealtime(true);
+		Client->Invalidate(true, true);
+		if (Client->Viewport) Client->Viewport->InvalidateDisplay();
+	};
+	Redraw(GCurrentLevelEditingViewportClient);
+	if (GRootViewport.IsValid()) Redraw(&GRootViewport->GetLevelViewportClient());
+	if (GEditor)
+		for (FEditorViewportClient* Client : GEditor->GetAllViewportClients()) Redraw(Client);
+	return Updated.Num() > 0;
+}
+
 // The read-only pulse. Re-firing RESTARTS it rather than stacking, which is
 // what makes it safe to call from every refused click without a throttle of
 // its own - a creator hammering the map gets one continuous pulse, not a

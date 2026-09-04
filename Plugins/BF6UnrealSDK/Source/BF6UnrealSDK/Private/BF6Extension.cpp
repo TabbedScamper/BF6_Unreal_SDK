@@ -37,7 +37,7 @@ namespace
 
 namespace BF6Ext
 {
-	int32 ApiVersion() { return 2; }   // 2: OpenPieSubRing
+	int32 ApiVersion() { return 5; }   // 5: exact Display/Sun map-image control
 
 	void RegisterPieEntry(const FPieEntry& Entry)
 	{
@@ -61,6 +61,54 @@ namespace BF6Ext
 	FString CurrentSave()  { return BF6Api::CurrentSave(); }
 	bool    IsEditing()    { return BF6Api::IsEditing(); }
 	bool    IsWalking()    { return BF6Api::IsWalking(); }
+	void    OpenMap(const FString& Level, const FString& SaveName)
+	{
+		// EnterBuild is the SDK's complete non-interactive open path: it reads
+		// the base/save and switches the viewport root from CHOOSE MAPS to the
+		// build overlay.  Calling OpenMapWorld alone left a correctly built
+		// level hidden behind the startup selector, which made extension-driven
+		// benches look as though the map had never opened.
+		BF6Api::EnterBuild(Level, SaveName);
+	}
+
+	void    ShowBuildOverlay()
+	{
+		BF6Api::ShowBuildOverlay();
+	}
+
+	int32   MapImageState()
+	{
+		return BF6Api::MapDecalState();
+	}
+
+	void    SetMapImageVisible(bool bVisible)
+	{
+		const int32 State = BF6Api::MapDecalState();
+		if ((bVisible && (State == 0 || State == 1)) ||
+			(!bVisible && State == 3))
+		{
+			BF6Api::ToggleMapDecal();
+		}
+	}
+
+	int32 FixSafeValidationIssues(bool bSave)
+	{
+		if (!BF6Api::IsEditing()) return 0;
+		const TArray<BF6Api::FLintItem> Items = BF6Api::RunLint();
+		TSet<AActor*> FixedActors;
+		for (const BF6Api::FLintItem& Item : Items)
+		{
+			AActor* Actor = Item.Actor.Get();
+			if (!Item.bWindingFix || !Actor || FixedActors.Contains(Actor)) continue;
+			if (BF6Api::ReverseVolumeWinding(Actor)) FixedActors.Add(Actor);
+		}
+		if (FixedActors.Num() > 0)
+		{
+			BF6Api::RunLint();
+			if (bSave) BF6Api::SaveCurrent(true);
+		}
+		return FixedActors.Num();
+	}
 
 	FString GameInstallDir() { return BF6Api::GameInstallDir(); }
 	FString SdkRoot()        { return BF6Api::StoredSdkRoot(); }

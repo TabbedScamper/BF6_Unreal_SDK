@@ -1,5 +1,6 @@
 {
 	"FileVersion": 3,
+	"DisableEnginePluginsByDefault": true,
 	"EngineAssociation": "5.8",
 	"Category": "",
 	"Description": "",
@@ -12,12 +13,16 @@
 	],
 	"Plugins": [
 		{
-			"Name": "GameFeatures",
+			"Name": "BF6UnrealSDK",
+			"Enabled": true
+		},
+		{
+			"Name": "BF6HighPoly",
 			"Enabled": true
 		},
 		{
 			"Name": "ModelingToolsEditorMode",
-			"Enabled": true,
+			"Enabled": false,
 			"TargetAllowList": [
 				"Editor"
 			]
@@ -27,7 +32,7 @@
 			"Enabled": true
 		},
 		{
-			"Name": "AllToolsets",
+			"Name": "ACLPlugin",
 			"Enabled": true
 		}
 	]

@@ -33,7 +33,7 @@ void Notify(const FString& Msg);
 // of the running tool, and because it touched almost nothing else: only
 // g_pluginDir, Notify and the log category cross the seam.
 
-// Where the generated packs live.
+// Where generated Portal-SDK packs live (under Project/Saved, never Source/).
 FString BF6_DataDir();
 int32   BF6_CountFiles(const FString& Dir, const TCHAR* Pattern);
 FString BF6_ReadSdkVersion(const FString& JsonPath);

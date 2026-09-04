@@ -26,7 +26,15 @@
 #include "Dom/JsonObject.h"
 #include "Internationalization/Regex.h"
 
-FString BF6_DataDir() { return FPaths::Combine(g_pluginDir, TEXT("Source/ThirdParty/libbf6/data")); }
+// Generated Portal-SDK caches are project/user state, not C++ source and not
+// third-party library inputs. Keeping them under Source/ made a normal SDK
+// import write several gigabytes into the plugin tree and let stale converted
+// files look like shipped decoder data. The import remains reproducible from
+// the user's Portal SDK; only its cache location changes.
+FString BF6_DataDir()
+{
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK/sdkdata"));
+}
 
 FBF6Import g_imp;
 
