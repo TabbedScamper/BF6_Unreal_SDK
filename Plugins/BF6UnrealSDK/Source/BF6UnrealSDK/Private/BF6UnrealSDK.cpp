@@ -3890,13 +3890,36 @@ static int32 BF6_ApplyTreeMetadata(const TArray<TSharedPtr<FJsonValue>>* StaticA
 			if (!Row->Parent.IsEmpty() && TagValue(A, TEXT("gtree:")).IsEmpty())
 				A->Tags.Add(FName(*(FString(TEXT("gtree:")) + Row->Parent)));
 	}
-	// and the empty parents, which have no object of their own in the file
+	// and the empty parents, which have no object of their own in the file.
+	//
+	// ONLY THE ONES THAT ARE NOT ALREADY THERE. LoadBaseSetup spawns a tree
+	// node for every Godot pivot/camera in the base scene BEFORE this runs, and
+	// a session saved after a .tscn import carries those same paths in its tree
+	// metadata. Spawning them again gave two nodes per pivot, and because the
+	// second took the same pretty label, Unreal uniquified it - which reads as
+	// "it duplicated my nodes and renamed the originals". Keyed on gpath, which
+	// is the node's identity, not on the label, which is cosmetic.
+	TSet<FString> ExistingNodePaths;
+	for (TActorIterator<AActor> It(W); It; ++It)
+		if (It->Tags.Contains(kGroupTag))
+		{
+			const FString P = TagValue(*It, TEXT("gpath:"));
+			if (!P.IsEmpty()) ExistingNodePaths.Add(P);
+		}
+	int32 Reused = 0;
 	for (const TPair<FString, FTreeRow>& KV : Rows)
 	{
 		if (!KV.Value.bGroup) continue;
+		if (ExistingNodePaths.Contains(KV.Key)) { ++Reused; continue; }
 		if (AActor* GA = BF6_SpawnTreeNode(W, KV.Key, KV.Value.Parent, KV.Value.Xf))
+		{
 			BF6_SetPrettyLabel(GA, KV.Key);
+			ExistingNodePaths.Add(KV.Key);   // the file may name one twice
+		}
 	}
+	if (Reused > 0)
+		UE_LOG(LogBF6, Display,
+			TEXT("tree: %d node(s) already in the world were reused rather than duplicated"), Reused);
 	return BF6_RebuildTreeFromTags();
 }
 
@@ -4284,9 +4307,26 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 	// Emit one property value with the SDK schema's type: bools and numbers as
 	// such, link types (volume refs / spawn-point arrays) as minified ids. Raw
 	// Godot NodePath/ExtResource values from the shipped scenes are skipped.
-	auto EmitTyped = [&](const TSharedPtr<FJsonObject>& e, const BF6Api::FPropDef& D, const FString& V)
+	auto EmitTyped = [&](const TSharedPtr<FJsonObject>& e, const BF6Api::FPropDef& D, const FString& Raw)
 	{
+		FString V = Raw;
 		if (V.IsEmpty() || V.Contains(TEXT("NodePath")) || V.Contains(TEXT("ExtResource"))) return;
+		// SELECTIONS ARE NAMES, AND GODOT STORES THE INDEX. LoadBaseSetup and the
+		// .tscn import both convert index -> option name when they SEED an actor,
+		// so a live actor already reads "Team2". The base.json fallback below did
+		// not, so any base object with no live actor exported its raw index:
+		// TEAM_2_HQ shipped Team "2", which matches no selection name, and Portal
+		// fell back to the default Team1 - both HQs ended up on team 1.
+		// Guarded on IsNumeric so an already-converted name is never re-indexed
+		// ("Team2" would otherwise Atoi to 0 and become TeamNeutral).
+		if (D.Type == TEXT("selection") && V.IsNumeric())
+		{
+			const int32 Idx = FCString::Atoi(*V);
+			if (D.Options.IsValidIndex(Idx)) V = D.Options[Idx];
+			else UE_LOG(LogBF6, Warning,
+				TEXT("export: '%s' selection index %d is outside its %d option(s) - emitting it raw"),
+				*D.Name, Idx, D.Options.Num());
+		}
 		const bool bLink = D.Type.Contains(TEXT("Volume")) || D.Type.Contains(TEXT("Array[")) || D.Type.Contains(TEXT("Path")) || D.Type.Contains(TEXT("SpawnPoint"));
 		if (bLink)
 		{
@@ -4326,7 +4366,27 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 			FString L = It->GetActorLabel();
 			L.RemoveFromStart(TEXT("BF6_"));
 			LiveByName.Add(L, *It);
+			// Unreal uniquifies labels, so a base setup shipping the same name
+			// twice (MP_Aftermath_Portal has CapturePointArea and PlayerSpawner
+			// three times each) lands as Name, Name1, Name_2... Register the
+			// stripped stem too, or every copy but the first looks deleted.
+			FString Stem = L;
+			while (Stem.Len() > 1 && FChar::IsDigit(Stem[Stem.Len() - 1])) Stem.LeftChopInline(1);
+			Stem.RemoveFromEnd(TEXT("_"));
+			if (!Stem.IsEmpty() && Stem != L && !LiveByName.Contains(Stem)) LiveByName.Add(Stem, *It);
 		}
+	// DELETING A BASE OBJECT MUST REMOVE IT FROM THE EXPORT. The base entries
+	// below are read from base.json on disk, and a missing live actor used to
+	// mean only "not moved, use the shipped transform" - so an HQ the creator
+	// deleted in the editor still shipped in the .spatial.json, and the map got
+	// it twice. LoadBaseSetup spawns a kBaseTag actor for every base entry
+	// except the engine node types the exporter already skips, so once any base
+	// actor exists, a name with no actor is a deletion.
+	//
+	// Guarded on the map being loaded at all: exporting with nothing loaded
+	// must not silently strip the whole base setup.
+	const bool bBaseLoaded = LiveByName.Num() > 0;
+	int32 DeletedBaseSkipped = 0;
 
 	TArray<TSharedPtr<FJsonValue>> Dynamic;
 	FString In; TSharedPtr<FJsonObject> BaseRoot;
@@ -4377,14 +4437,41 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 				else UE_LOG(LogBF6, Warning, TEXT("export: base '%s' superseded by a placed object with the same name"), *nm);
 				continue;
 			}
-			BaseEmitted.Add(nm);
+			if (bBaseLoaded && !LiveByName.Contains(nm))
+			{
+				// deleted in the editor - honour that rather than re-emitting it
+				++DeletedBaseSkipped;
+				UE_LOG(LogBF6, Warning,
+					TEXT("export: base '%s' (%s) was deleted in the editor - not exported"),
+					*nm, *ty);
+				continue;
+			}
+			// (BaseEmitted is added below, under the emitted name, so the
+			// duplicate-name check can tell a repeat from the first copy)
 			// ACCUMULATED transform (parent pivots carry the deploy camera's
 			// aim), unless the actor was MOVED in the editor - then the live
 			// transform wins, converted like the placed-object path
 			double WB[9]; FVector gw;
 			BF6_GWorldOf(GMap, nm, WB, gw);
 			TSharedPtr<FJsonObject> e=MakeShared<FJsonObject>();
-			e->SetStringField(TEXT("name"), ShortName(nm)); e->SetStringField(TEXT("type"), ty);
+			// A base setup may ship the SAME name more than once (three
+			// CapturePointArea and three PlayerSpawner on MP_Aftermath_Portal).
+			// name and id both came from ShortName(nm), which memoizes, so every
+			// copy got one id and the Portal site rejected the experience over
+			// the collision. Give the repeats a suffix; the first keeps the
+			// authored name so existing links and scripts still resolve.
+			FString EmitName = nm;
+			if (BaseEmitted.Contains(nm))
+			{
+				int32 Copy = 2;
+				while (BaseEmitted.Contains(FString::Printf(TEXT("%s_%d"), *nm, Copy))) ++Copy;
+				EmitName = FString::Printf(TEXT("%s_%d"), *nm, Copy);
+				UE_LOG(LogBF6, Warning,
+					TEXT("export: base setup ships '%s' more than once - the repeat exports as '%s' so the ids stay unique"),
+					*nm, *EmitName);
+			}
+			BaseEmitted.Add(EmitName);
+			e->SetStringField(TEXT("name"), ShortName(EmitName)); e->SetStringField(TEXT("type"), ty);
 			AActor* Live = LiveByName.FindRef(nm);
 			if (Live)
 			{
@@ -4407,7 +4494,7 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 				e->SetObjectField(TEXT("front"), Vec(WB[2], WB[5], WB[8]));
 				e->SetObjectField(TEXT("position"), Vec(gw.X, gw.Y, gw.Z));
 			}
-			e->SetStringField(TEXT("id"), ShortName(nm));
+			e->SetStringField(TEXT("id"), ShortName(EmitName));
 			// zone polygon: the REAL spatial format wants GLOBAL Godot {x,y,z}
 			// vectors plus a height field (verified against shipped experiences).
 			// A reshaped loop from the point editor wins over the json.
@@ -4620,6 +4707,14 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 		}
 		if (Dups > 0)
 			Notify(FString::Printf(TEXT("Export warning: %d duplicate id(s) remain - the Portal site will reject this file. Please report this with the export attached."), Dups));
+	}
+
+	// Dropping base objects is a visible decision, so say so rather than
+	// letting the creator wonder whether the delete took.
+	if (DeletedBaseSkipped > 0)
+	{
+		UE_LOG(LogBF6, Warning, TEXT("export: %d base object(s) deleted in the editor were left out"), DeletedBaseSkipped);
+		Notify(FString::Printf(TEXT("%d base object(s) you deleted were left out of the export."), DeletedBaseSkipped));
 	}
 
 	TSharedPtr<FJsonObject> Root=MakeShared<FJsonObject>();
@@ -15167,9 +15262,38 @@ static void BF6_StripMeshesBeforeStockDelete()
 
 void FBF6UnrealSDKModule::StartupModule()
 {
+	// AUTO EXPOSURE OFF BY DEFAULT (user request, 2026-09-04). Eye adaptation
+	// makes the viewport re-brighten as you turn, so a creator judging a map's
+	// lighting is reading a moving target - and a dark interior looks correctly
+	// lit right up until it is exported. Done here rather than only in
+	// DefaultEngine.ini because a plugin-only update carries no project config,
+	// so an existing install would never receive an ini change.
+	//
+	// Deferred to post-engine-init: the renderer's cvars are not all registered
+	// when an editor module starts, and a FindConsoleVariable that misses is
+	// silent. Anyone who wants the engine behaviour back can set the cvar; this
+	// only chooses the default.
+	FCoreDelegates::GetOnPostEngineInit().AddStatic([]
+		{
+			if (IConsoleVariable* CV =
+				IConsoleManager::Get().FindConsoleVariable(TEXT("r.DefaultFeature.AutoExposure")))
+			{
+				if (CV->GetInt() != 0)
+				{
+					CV->Set(0, ECVF_SetByProjectSetting);
+					UE_LOG(LogBF6, Display,
+						TEXT("auto exposure disabled by default so viewport brightness is stable while building"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogBF6, Warning,
+					TEXT("r.DefaultFeature.AutoExposure not found - leaving eye adaptation at the engine default"));
+			}
+		});
 	g_postUndoHandle = FEditorDelegates::PostUndoRedo.AddStatic(&BF6_RepairAfterUndo);
 	BF6_HookTransBuffer();
-	FCoreDelegates::OnPostEngineInit.AddStatic(&BF6_HookTransBuffer);
+	FCoreDelegates::GetOnPostEngineInit().AddStatic(&BF6_HookTransBuffer);
 	g_preDeleteHandle = FEditorDelegates::OnDeleteActorsBegin.AddStatic(&BF6_StripMeshesBeforeStockDelete);
 	g_selChangedHandle = USelection::SelectionChangedEvent.AddStatic(&BF6_CancelSelectionOnBase);
 	g_postDeleteHandle = FEditorDelegates::OnDeleteActorsEnd.AddStatic([]
