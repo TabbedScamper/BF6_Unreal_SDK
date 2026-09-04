@@ -1,5 +1,28 @@
 # BF6 Unreal SDK version history
 
+## 0.8.0 (2026-09-04)
+
+**The export says what the editor shows**
+
+- Objects deleted from a base setup stayed in the export. The map's own default HQs were the visible case: gone from the editor, still in the JSON. The export now walks the live map, and anything the base shipped that is no longer there is left out and logged.
+- Both of those HQs also came out on team 1. Attributes chosen from a list were written as the position in the list rather than the value, so a team read as a number and Portal took the first one. Selections now export their actual value, and an index with no matching option says so in the log instead of going out silently.
+- A base setup that ships the same name more than once produced repeated ids, which collide on import. Repeats now get their own id, the way the editor already numbers duplicate labels.
+
+**Reopening a saved map leaves it as you left it**
+
+- Saving a Godot import, leaving, and coming back added a second copy of every node and renamed the originals. The tree metadata was rebuilt without checking what was already there. It now recognises the nodes already on the map and reuses them.
+
+**Auto exposure is off**
+
+- The viewport no longer rebalances its own brightness while you move. A dark corner stays dark and a bright one stays bright, so what you place is lit the way the map is lit.
+
+**Under the tool**
+
+- Portal SDK caches move out of the plugin's Source folder into Saved. An existing install moves its own data across on first launch, without duplicating the large packs.
+- The core reader was resynced: the ocean sim, ground coverage, terrain bake, the static texture table, the livery hash and the shadow section filter all come across on the current ABI.
+- Three editor log categories that emitted known, non-actionable notices are pinned to errors only. They were burying real project warnings. Nothing that is an actual error is hidden.
+- Add-ons and automated benches can now open a map session through the tool's own loader, read and set the build viewport camera, read the map image state, and apply the validator fixes marked safe. These were the seams add-ons had to reach around before.
+
 ## 0.7.3 (2026-08-24)
 
 **Attach: build the scene tree without touching the tree**
