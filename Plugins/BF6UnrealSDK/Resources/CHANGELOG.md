@@ -1,6 +1,6 @@
 # BF6 Unreal SDK version history
 
-## 0.8.0 (2026-09-04)
+## 0.7.4 (2026-09-04)
 
 **The export says what the editor shows**
 
