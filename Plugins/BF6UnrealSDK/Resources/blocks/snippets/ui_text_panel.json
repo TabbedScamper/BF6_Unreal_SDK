@@ -1,0 +1,407 @@
+{
+ "name": "User interface: a titled panel with one line of text",
+ "note": "Builds a container, tints it, drops a text widget in it and sets the size, colour and anchor. Every block and every field here appears in the reference project. Change the label with SetUITextLabel from any other rule.",
+ "blocks": {
+  "languageVersion": 0,
+  "blocks": [
+   {
+    "type": "ruleBlock",
+    "x": 40,
+    "y": 40,
+    "extraState": {
+     "isOngoingEvent": false
+    },
+    "fields": {
+     "NAME": "UI Panel",
+     "EVENTTYPE": "OnGameModeStarted"
+    },
+    "inputs": {
+     "ACTIONS": {
+      "block": {
+       "type": "AddUIContainer",
+       "inputs": {
+        "VALUE-0": {
+         "block": {
+          "type": "Text",
+          "fields": {
+           "TEXT": "{{TEXT:UI container name}}"
+          }
+         }
+        },
+        "VALUE-1": {
+         "block": {
+          "type": "CreateVector",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": 0
+             }
+            }
+           },
+           "VALUE-1": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": 85
+             }
+            }
+           },
+           "VALUE-2": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": 0
+             }
+            }
+           }
+          }
+         }
+        },
+        "VALUE-2": {
+         "block": {
+          "type": "CreateVector",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": 650
+             }
+            }
+           },
+           "VALUE-1": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": 100
+             }
+            }
+           },
+           "VALUE-2": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": 0
+             }
+            }
+           }
+          }
+         }
+        },
+        "VALUE-3": {
+         "block": {
+          "type": "UIAnchorItem",
+          "fields": {
+           "VALUE-0": "UIAnchor",
+           "VALUE-1": "TopCenter"
+          }
+         }
+        }
+       },
+       "next": {
+        "block": {
+         "type": "SetUIWidgetBgColor",
+         "inputs": {
+          "VALUE-0": {
+           "block": {
+            "type": "FindUIWidgetWithName",
+            "inputs": {
+             "VALUE-0": {
+              "block": {
+               "type": "Text",
+               "fields": {
+                "TEXT": "{{TEXT:UI container name}}"
+               }
+              }
+             }
+            }
+           }
+          },
+          "VALUE-1": {
+           "block": {
+            "type": "CreateVector",
+            "inputs": {
+             "VALUE-0": {
+              "block": {
+               "type": "Number",
+               "fields": {
+                "NUM": 0
+               }
+              }
+             },
+             "VALUE-1": {
+              "block": {
+               "type": "Number",
+               "fields": {
+                "NUM": 0
+               }
+              }
+             },
+             "VALUE-2": {
+              "block": {
+               "type": "Number",
+               "fields": {
+                "NUM": 0
+               }
+              }
+             }
+            }
+           }
+          }
+         },
+         "next": {
+          "block": {
+           "type": "SetUIWidgetBgAlpha",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "FindUIWidgetWithName",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "{{TEXT:UI container name}}"
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "Number",
+              "fields": {
+               "NUM": 0.6
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "AddUIText",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Text",
+                "fields": {
+                 "TEXT": "STATUS"
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "CreateVector",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 0
+                   }
+                  }
+                 },
+                 "VALUE-1": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 150
+                   }
+                  }
+                 },
+                 "VALUE-2": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 0
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-2": {
+               "block": {
+                "type": "CreateVector",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 400
+                   }
+                  }
+                 },
+                 "VALUE-1": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 130
+                   }
+                  }
+                 },
+                 "VALUE-2": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 0
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-3": {
+               "block": {
+                "type": "UIAnchorItem",
+                "fields": {
+                 "VALUE-0": "UIAnchor",
+                 "VALUE-1": "TopCenter"
+                }
+               }
+              },
+              "VALUE-4": {
+               "block": {
+                "type": "Message",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "Ready"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "SetUITextSize",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "FindUIWidgetWithName",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "STATUS"
+                     }
+                    }
+                   }
+                  }
+                 }
+                },
+                "VALUE-1": {
+                 "block": {
+                  "type": "Number",
+                  "fields": {
+                   "NUM": 28
+                  }
+                 }
+                }
+               },
+               "next": {
+                "block": {
+                 "type": "SetUITextColor",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "FindUIWidgetWithName",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Text",
+                       "fields": {
+                        "TEXT": "STATUS"
+                       }
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-1": {
+                   "block": {
+                    "type": "CreateVector",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 1
+                       }
+                      }
+                     },
+                     "VALUE-1": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 1
+                       }
+                      }
+                     },
+                     "VALUE-2": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 1
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 },
+                 "next": {
+                  "block": {
+                   "type": "SetUITextAnchor",
+                   "inputs": {
+                    "VALUE-0": {
+                     "block": {
+                      "type": "FindUIWidgetWithName",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "Text",
+                         "fields": {
+                          "TEXT": "STATUS"
+                         }
+                        }
+                       }
+                      }
+                     }
+                    },
+                    "VALUE-1": {
+                     "block": {
+                      "type": "UIAnchorItem",
+                      "fields": {
+                       "VALUE-0": "UIAnchor",
+                       "VALUE-1": "TopCenter"
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  ]
+ }
+}

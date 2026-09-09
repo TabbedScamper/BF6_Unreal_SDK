@@ -1,0 +1,36 @@
+// Generated loot preset for $LEVEL. Import the functions your mode needs.
+// SpawnLoot creates the base item. Attachments are applied after pickup.
+import { weaponPackage, replaceKnownPickup, watchLootPickup, type WeaponSlots } from './bf6-loot-runtime';
+export { cancelLootPickup } from './bf6-loot-runtime';
+
+export const loot$ID = {
+    objId: $ID,
+    item: mod.Weapons.$WEAPON,
+    attachments: [$ATTACHMENTS] as mod.WeaponAttachments[],
+    cardName: '$STEM',
+    titleName: '$STEM_title',
+    actionName: '$STEM_action',
+};
+
+export function spawnLoot$ID(): void {
+    mod.SpawnLoot(mod.GetLootSpawner(loot$ID.objId), loot$ID.item);
+}
+
+export function loot$IDPackage(): mod.WeaponPackage { return weaponPackage(loot$ID); }
+
+// Call from your inventory tracker after identifying the pickup's slot.
+export function applyLoot$IDPickup(player: mod.Player, slot: mod.InventorySlots): boolean {
+    return replaceKnownPickup(player, slot, loot$ID);
+}
+
+// Optional detector: arm from a proximity/buy interaction with known previous
+// slot contents. Duplicate/empty/unknown slots require the direct hook above.
+export function watchLoot$IDPickup(player: mod.Player, before: WeaponSlots, seconds = 20): Promise<boolean> {
+    return watchLootPickup(player, before, loot$ID, seconds);
+}
+
+// A card can be used by a buy station, proximity prompt or scrolling Gunmaster
+// list. Pass your own parent and unique name; the mode owns when it is shown.
+export function addLoot$IDImage(name: string, parent: mod.UIWidget, position: mod.Vector, size: mod.Vector): void {
+    mod.AddUIWeaponImage(name, position, size, mod.UIAnchor.Center, loot$ID.item, parent, loot$IDPackage());
+}

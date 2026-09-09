@@ -1,0 +1,1919 @@
+{
+ "v": 1,
+ "theme": "systems",
+ "builtAt": "2026-09-06T07:26:07.465Z",
+ "entries": [
+  {
+   "id": "systems-ai-spawner-basics",
+   "themes": [
+    "bots"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "Can someone explain how to use an AI spawner? I placed one, the object id is right, but SpawnAIFromAISpawner never produces a bot.",
+   "short": "Place an AI_Spawner with an object id, set the Portal bot count to 0, then call SpawnAIFromAISpawner on the spawner you fetch by that id.",
+   "answer": "An AI_Spawner is an object you place in the map editor and give an object id to, which is just a number you choose so that script can find it again. In script you fetch it with GetSpawner(id) and then call SpawnAIFromAISpawner on it, optionally passing a soldier class, a team and a name. The most common reason nothing appears is that the Portal web settings still have a bot count for that team, so the game filled the AI budget with its own backfill bots before your script ran; set the bot count for that team to 0. The second most common reason is that the spawner has too few AI spawn points assigned to it, which shows up in PortalLog as an OutOfAISpawnQuota exception on SpawnAIFromAISpawner. Bots do not take human slots, they use whatever is left of the server capacity after the reserved player slots, so a 64 player server leaves room for about 36 script bots. Backfill bots that the game adds on its own are not the same thing as spawner bots and do not obey the AI functions.",
+   "gotchas": [
+    "GetObjectPosition on a spawner comes back as 0,0,0. Place a small SpatialObject next to the spawner and read that position instead.",
+    "The Portal web bot count and your script both draw on the same AI budget, so leave the web count at 0 if you want to own the spawning.",
+    "Read PortalLog.txt after a test. OutOfAISpawnQuota means add more AI spawn points, not more spawners."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Spawn Bots",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "SpawnAIFromAISpawner",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "GetSpawner",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 9
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "SoldierClassItem",
+              "fields": {
+               "VALUE-0": "SoldierClass",
+               "VALUE-1": "Assault"
+              }
+             }
+            },
+            "VALUE-2": {
+             "block": {
+              "type": "GetTeam",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 2
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnGameModeStarted. Change the 9 to the object id you gave your AI_Spawner in the map editor, and the 2 to the team the bot should join."
+   },
+   "ts": {
+    "code": "const AI_SPAWNER_ID = 9;\n\nexport function OnGameModeStarted(): void {\n    const spawner = mod.GetSpawner(AI_SPAWNER_ID);\n\n    // Class and team are optional. Without them the bot takes the spawner defaults.\n    mod.SpawnAIFromAISpawner(spawner, mod.SoldierClass.Assault, mod.GetTeam(2));\n}",
+    "note": "AI_SPAWNER_ID is the object id you typed on the AI_Spawner in the map editor."
+   },
+   "sources": [
+    "Can anyone give me a simple explanation of how to use an AI spawner (scripts-blocks)",
+    "Does anyone know how to script AI bots directly instead of using the Portal (scripts-blocks)",
+    "Is there a limit to how many bots can be spawned by scripts (portal)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-ai-spawn-many",
+   "themes": [
+    "bots",
+    "timers"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "Is it possible to spawn several bots from one AI spawner in the same tick? My loop runs but only one bot ever appears.",
+   "short": "No. One spawner accepts one spawn per tick, so put a short wait between calls or spread the spawns across several spawners.",
+   "answer": "A tick is one server update, and Portal runs 30 of them per second. A single AI spawner will act on one SpawnAIFromAISpawner call per tick and silently drop the rest, so a tight loop over the same spawner produces exactly one bot. There are two fixes and you can use both. Put a wait of half a second or so between calls so each one lands on its own tick, and spread the work over several spawners each with its own object id. Each spawner also needs enough AI spawn points under it, otherwise you get an OutOfAISpawnQuota exception in PortalLog no matter how you pace the calls. Spawning a whole team this way takes a few seconds of real time, which is normally fine because it happens during the deploy screen.",
+   "gotchas": [
+    "Do not try to make up for the drop by calling the spawner more often. The extra calls cost server time and still only one lands per tick.",
+    "A bot you just asked for does not exist yet on the line after the call. Give it an order in OnSpawnerSpawned or OnPlayerDeployed, not straight after the spawn call."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Spawn Bot Wave",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "ForVariable",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "variableReferenceBlock",
+              "extraState": {
+               "isObjectVar": false
+              },
+              "fields": {
+               "OBJECTTYPE": "Global",
+               "VAR": {
+                "id": "sysSpawnIdx"
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "Number",
+              "fields": {
+               "NUM": 1
+              }
+             }
+            },
+            "VALUE-2": {
+             "block": {
+              "type": "Number",
+              "fields": {
+               "NUM": 5
+              }
+             }
+            },
+            "VALUE-3": {
+             "block": {
+              "type": "Number",
+              "fields": {
+               "NUM": 1
+              }
+             }
+            },
+            "DO": {
+             "block": {
+              "type": "SpawnAIFromAISpawner",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "GetSpawner",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "GetVariable",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "variableReferenceBlock",
+                       "extraState": {
+                        "isObjectVar": false
+                       },
+                       "fields": {
+                        "OBJECTTYPE": "Global",
+                        "VAR": {
+                         "id": "sysSpawnIdx"
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "next": {
+               "block": {
+                "type": "Wait",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 0.5
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     },
+     "variables": [
+      {
+       "name": "SpawnerIndex",
+       "id": "sysSpawnIdx",
+       "type": "Global"
+      }
+     ]
+    },
+    "note": "The loop counts SpawnerIndex from 1 up to but not including 5, so it spawns from spawners with object ids 1, 2, 3 and 4, waiting half a second after each one."
+   },
+   "ts": {
+    "code": "const AI_SPAWNER_IDS = [1, 2, 3, 4];\n\nexport async function OnGameModeStarted(): Promise<void> {\n    for (const id of AI_SPAWNER_IDS) {\n        mod.SpawnAIFromAISpawner(mod.GetSpawner(id), mod.SoldierClass.Assault, mod.GetTeam(2));\n\n        // One spawn per spawner per tick. The wait puts the next call on a later tick.\n        await mod.Wait(0.5);\n    }\n}",
+    "note": "The function has to be async so that await mod.Wait actually yields. Without await the loop finishes in one tick and you get one bot."
+   },
+   "sources": [
+    "Is it possible within the same tick to spawn multiple ai from a single AI spawner (scripts-blocks)",
+    "Hey everyone, I was curious if anyone was able to assist me with the basics of AI spawning (scripts-blocks)",
+    "Check the log if it says OutOfAISpawnQuota then add more AI spawn points (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-ai-standing-still",
+   "themes": [
+    "bots"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "My scripted bots spawn but just stand around at the spawner doing nothing. How do I make them play the game like normal bots?",
+   "short": "A spawner bot has no orders until you give it one. AIBattlefieldBehavior turns on the normal bot brain.",
+   "answer": "Bots that the game adds on its own already have orders. A bot you spawn from an AI_Spawner starts blank, so it stands where it landed until a behavior function tells it what to do. AIBattlefieldBehavior(player) hands it the standard bot brain, which is the one that pushes objectives and fights back. AIIdleBehavior(player) is the opposite and is what you want for a shooting range, where the bot should hold still and be shot at. Give the order after the bot has really deployed, which is what the OnSpawnerSpawned event is for; it fires with both the new bot and the spawner it came out of. Giving orders on the same tick as the spawn call does nothing because the bot does not exist yet.",
+   "gotchas": [
+    "Backfill bots the game itself adds are typed as human and will not answer to the AI behavior functions. Only spawner bots do.",
+    "Re-issuing a behavior every tick is expensive. Set it once when the bot deploys and change it only when something in your mode changes."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Bot Brain On",
+         "EVENTTYPE": "OnSpawnerSpawned"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "AIBattlefieldBehavior",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "EventPlayer"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "OnSpawnerSpawned gives you the new bot as Event Player. Swap AIBattlefieldBehavior for AIIdleBehavior if you want a stationary target."
+   },
+   "ts": {
+    "code": "export function OnSpawnerSpawned(eventPlayer: mod.Player, eventSpawner: mod.Spawner): void {\n    // Standard bot brain: the bot pushes objectives and fights back.\n    mod.AIBattlefieldBehavior(eventPlayer);\n\n    // For a shooting range use this instead:\n    // mod.AIIdleBehavior(eventPlayer);\n    console.log(`bot deployed from spawner ${mod.GetObjId(eventSpawner)}`);\n}",
+    "note": "console.log writes to PortalLog.txt, which is the only way to see what your script did on a live server."
+   },
+   "sources": [
+    "whats the status on implementing ai, does one need to write their own script for them (general)",
+    "Have you experimented with mod.AIBattlefieldBehavior (scripts-blocks)",
+    "Tried searching for an answer but no luck, I am trying to set all the bots in my experience to be idle (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-ai-move-to",
+   "themes": [
+    "bots"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "I cannot get a bot to walk to a point. Every time I use AIMoveToBehavior the bot decides it is stuck and kills itself.",
+   "short": "Feed AIMoveToBehavior a position read off a small SpatialObject you placed, and chain the next leg on OnAIMoveToSucceeded rather than re-issuing the order every tick.",
+   "answer": "AIMoveToBehavior takes a player and a Vector, which is a position in the world written as three numbers. The usual mistake is asking a spawner for its position, because GetObjectPosition on a spawner comes back as 0,0,0 and the bot then tries to walk to the middle of the map. What works is to drop a tiny SpatialObject in the map editor at each point you care about, give it an object id, and read GetObjectPosition(GetSpatialObject(id)). If the bot unspawns itself right away it means it could not find a path to where you sent it, so move the point somewhere a soldier could actually walk. Waypoint path objects and their events are unreliable in practice, so most people use SpatialObject positions instead. To patrol, wait for OnAIMoveToSucceeded and send the next leg from there; do not re-send the order on a timer, because a stream of move orders to a bot that has not finished the last one is the single fastest way to make the server stutter.",
+   "gotchas": [
+    "A bot that fails a move order twice is cheaper to unspawn and replace than to keep ordering around.",
+    "Give the bot a moment after it deploys before the first order. Three seconds is what people settle on.",
+    "AIMoveToBehavior works on air and ground vehicles too once the bot is in a seat, but the path it picks varies by map."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Patrol Next Leg",
+         "EVENTTYPE": "OnAIMoveToSucceeded"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "AIMoveToBehavior",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "EventPlayer"
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "GetObjectPosition",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "GetSpatialObject",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "Number",
+                    "fields": {
+                     "NUM": 302
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "This rule fires when a bot reaches its last destination and sends it to SpatialObject 302. Copy the rule with a different id to build a longer route."
+   },
+   "ts": {
+    "code": "// Object ids of small SpatialObjects placed along the route in the map editor.\nconst PATROL_IDS = [301, 302];\nlet nextLeg = 0;\n\nfunction sendToNextLeg(player: mod.Player): void {\n    const target = mod.GetObjectPosition(mod.GetSpatialObject(PATROL_IDS[nextLeg]));\n    nextLeg = (nextLeg + 1) % PATROL_IDS.length;\n    mod.AIMoveToBehavior(player, target);\n}\n\nexport async function OnSpawnerSpawned(eventPlayer: mod.Player): Promise<void> {\n    await mod.Wait(3);\n    sendToNextLeg(eventPlayer);\n}\n\nexport function OnAIMoveToSucceeded(eventPlayer: mod.Player): void {\n    sendToNextLeg(eventPlayer);\n}\n\nexport function OnAIMoveToFailed(eventPlayer: mod.Player): void {\n    // No path. Park the bot rather than hammering it with more orders.\n    mod.AIIdleBehavior(eventPlayer);\n}",
+    "note": "nextLeg is shared by every bot here for clarity. With more than one bot, keep a leg number per bot instead."
+   },
+   "sources": [
+    "I am unable to get an AI spawned from an AI spawner to move (scripts-blocks)",
+    "how did you script that to make the bot move back and forth (scripts-blocks)",
+    "Server Performs Badly if AI is given Subsequent Movement Commands (bug-reports)",
+    "the WaypointPath events in Portal are not working as intended (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-ai-stop-shooting",
+   "themes": [
+    "bots"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I stop bots shooting so I can build a shooting range? Taking their weapons away and restricting the fire input did not work.",
+   "short": "Use AIEnableShooting and AIEnableTargeting with false, on the bot, after it has deployed.",
+   "answer": "Removing equipment and restricting inputs are player controls and the bot brain simply ignores them, which is why those attempts fail. The two functions that do work are AIEnableShooting(player, false), which stops the bot pulling the trigger, and AIEnableTargeting(player, false), which stops it picking you as a target in the first place. Use both, because a bot with targeting still on will keep tracking you and will still knife you if you walk into it. Apply them once the bot has deployed, from OnPlayerDeployed or OnSpawnerSpawned, and guard the rule so it only touches bots and not human players. Pair them with AIIdleBehavior if you also want the bot to stay put.",
+   "gotchas": [
+    "Melee is not covered by AIEnableShooting. A disarmed bot will still knife a player who gets close.",
+    "These only affect bots spawned from an AI_Spawner. Backfill bots the game adds do not answer to them.",
+    "Bots take double damage compared to a human in some setups, so a range built with them will not match live time to kill."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Silence Bots",
+         "EVENTTYPE": "OnPlayerDeployed"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "If",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "GetSoldierState",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "EventPlayer"
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "SoldierStateBoolItem",
+                 "fields": {
+                  "VALUE-0": "SoldierStateBool",
+                  "VALUE-1": "IsAISoldier"
+                 }
+                }
+               }
+              }
+             }
+            },
+            "DO": {
+             "block": {
+              "type": "AIEnableShooting",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "EventPlayer"
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Boolean",
+                 "fields": {
+                  "BOOL": "FALSE"
+                 }
+                }
+               }
+              },
+              "next": {
+               "block": {
+                "type": "AIEnableTargeting",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "EventPlayer"
+                  }
+                 },
+                 "VALUE-1": {
+                  "block": {
+                   "type": "Boolean",
+                   "fields": {
+                    "BOOL": "FALSE"
+                   }
+                  }
+                 }
+                },
+                "next": {
+                 "block": {
+                  "type": "AIIdleBehavior",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "EventPlayer"
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "The If checks Is A I Soldier so the rule leaves human players alone."
+   },
+   "ts": {
+    "code": "export function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    if (!mod.GetSoldierState(eventPlayer, mod.SoldierStateBool.IsAISoldier)) return;\n\n    mod.AIEnableShooting(eventPlayer, false);\n    mod.AIEnableTargeting(eventPlayer, false);\n    mod.AIIdleBehavior(eventPlayer);\n}",
+    "note": "The early return is the guard: everything after it only runs for bots."
+   },
+   "sources": [
+    "Anybody know why I cannot completely empty bot ammo or restrict firing on spawn (scripts-blocks)",
+    "I want the AI bots to not shoot at human players and used AIEnableShooting (scripts-blocks)",
+    "Been trying to build a firing range but bots take double damage (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-ai-stay-after-death",
+   "themes": [
+    "bots"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "My spawner bots leave the server the moment they die instead of respawning. How do I keep the same bots for the whole round?",
+   "short": "You cannot keep them forever. AISetUnspawnOnDead false plus SetUnspawnDelayInSeconds buys at most 300 seconds, after which you have to spawn a replacement yourself.",
+   "answer": "AISetUnspawnOnDead(spawner, false) tells the spawner not to remove its bots the instant they die, and SetUnspawnDelayInSeconds(spawner, seconds) sets how long they hang around, with a default of 10 and a hard ceiling of 300. After that delay the bot leaves the server no matter what you set, so a persistent bot for a long round is not something the current API gives you. The honest answer is that you keep a replacement loop: when a bot leaves, spawn a new one from the same spawner. A replacement is a brand new player as far as the game is concerned, so its kills, deaths and name start from zero and can even reuse the id of the bot that just left. If those numbers matter to your mode, keep your own record of each bot in script and copy it onto the replacement, then push it to the scoreboard yourself.",
+   "gotchas": [
+    "The 300 second ceiling is per spawner and starts at the first death, not at the round start.",
+    "Whether a bot leaves on death also depends on the spawn mode. With a man down state they tend to stay; with instant death they leave.",
+    "OnPlayerLeaveGame fires for humans too, so count how many bots you actually have before spawning a replacement."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Keep Bots Longer",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "AISetUnspawnOnDead",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "GetSpawner",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 9
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "Boolean",
+              "fields": {
+               "BOOL": "FALSE"
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "SetUnspawnDelayInSeconds",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "GetSpawner",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 9
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 300
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "SpawnAIFromAISpawner",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "GetSpawner",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 9
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "Set both on the spawner before you spawn anything from it. 300 is the maximum the game accepts."
+   },
+   "ts": {
+    "code": "const AI_SPAWNER_ID = 9;\nconst BOTS_WANTED = 4;\n\nfunction countBots(): number {\n    const players = mod.AllPlayers();\n    let bots = 0;\n\n    for (let i = 0; i < mod.CountOf(players); i++) {\n        const player: mod.Player = mod.ValueInArray(players, i);\n        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) bots++;\n    }\n\n    return bots;\n}\n\nexport async function OnGameModeStarted(): Promise<void> {\n    const spawner = mod.GetSpawner(AI_SPAWNER_ID);\n\n    mod.AISetUnspawnOnDead(spawner, false);\n    mod.SetUnspawnDelayInSeconds(spawner, 300);\n\n    for (let i = 0; i < BOTS_WANTED; i++) {\n        mod.SpawnAIFromAISpawner(spawner);\n        await mod.Wait(0.5);\n    }\n}\n\nexport async function OnPlayerLeaveGame(eventNumber: number): Promise<void> {\n    await mod.Wait(1);\n    if (countBots() >= BOTS_WANTED) return;\n\n    mod.SpawnAIFromAISpawner(mod.GetSpawner(AI_SPAWNER_ID));\n}",
+    "note": "The count guard is what keeps a leaving human from triggering an extra bot."
+   },
+   "sources": [
+    "AISetUnspawnOnDead Has No Effect (bug-reports)",
+    "Allow persistent custom bots (feature-request)",
+    "I managed to fix the deaths not tracking for bots issue (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-ai-detect-and-match",
+   "themes": [
+    "bots",
+    "variables"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I tell which players are bots, and how do I know which spawner a particular bot came out of?",
+   "short": "GetSoldierState with SoldierStateBool.IsAISoldier says whether a player is a bot, and OnSpawnerSpawned is the only place that hands you the bot and its spawner together.",
+   "answer": "GetSoldierState(player, SoldierStateBool.IsAISoldier) returns true for a bot and false for a human, and it is the check to put at the top of any rule that should only touch bots. Matching a bot to the spawner it came from is a separate problem, because nothing on the player itself remembers where it spawned. The OnSpawnerSpawned event is the answer: it fires once per spawn with the new bot and the spawner side by side. Store the spawner id on the bot at that moment, using an object variable, which is a variable that lives on one object rather than on the whole match. Later, any rule that has the player can read the id back and know which spawner to respawn it from. Do not rely on the order of AllPlayers to keep bots lined up with spawners; a bot that respawns lands wherever there is room in that list.",
+   "gotchas": [
+    "Player ids are recycled. A replacement bot can be handed the id of the one that just left, so treat an id as a slot, not a name.",
+    "OnPlayerDeployed also fires for bots, but it does not tell you the spawner, so use it for behavior and OnSpawnerSpawned for bookkeeping."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Remember Spawner",
+         "EVENTTYPE": "OnSpawnerSpawned"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "SetVariable",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "variableReferenceBlock",
+              "extraState": {
+               "isObjectVar": true
+              },
+              "fields": {
+               "OBJECTTYPE": "Player",
+               "VAR": {
+                "id": "sysHomeSpawner"
+               }
+              },
+              "inputs": {
+               "OBJECT": {
+                "block": {
+                 "type": "EventPlayer"
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "GetObjId",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "EventSpawner"
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     },
+     "variables": [
+      {
+       "name": "HomeSpawner",
+       "id": "sysHomeSpawner",
+       "type": "Player"
+      }
+     ]
+    },
+    "note": "HomeSpawner is a Player scoped variable, so every bot gets its own copy. The block asks for the player to store it on, which is Event Player here."
+   },
+   "ts": {
+    "code": "// Object variables are addressed by index, the same numbering the blocks editor uses.\nconst HomeSpawnerPlayerVar = 0;\n\nexport function OnSpawnerSpawned(eventPlayer: mod.Player, eventSpawner: mod.Spawner): void {\n    mod.SetVariable(mod.ObjectVariable(eventPlayer, HomeSpawnerPlayerVar), mod.GetObjId(eventSpawner));\n}\n\nexport function OnPlayerDied(eventPlayer: mod.Player): void {\n    if (!mod.GetSoldierState(eventPlayer, mod.SoldierStateBool.IsAISoldier)) return;\n\n    const spawnerId: number = mod.GetVariable(mod.ObjectVariable(eventPlayer, HomeSpawnerPlayerVar));\n    console.log(`bot died, its spawner was ${spawnerId}`);\n}",
+    "note": "Converted block code uses this same shape, which is why the variable is a plain number index rather than a name."
+   },
+   "sources": [
+    "How should I approach correlating an ai player from OnPlayerDeployed when it is spawned via SpawnAIFromAISpawner (scripts-blocks)",
+    "has anybody figured out how to make a specific ai respawn on a specific spawner (scripts-blocks)",
+    "Anyone figure out how to control the behavior of backfill bots (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-vehicle-spawn-and-seat",
+   "themes": [
+    "vehicles"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "I call ForceVehicleSpawnerSpawn but it does not give me the vehicle back, so I cannot put a player in it. How is this meant to work?",
+   "short": "ForceVehicleSpawnerSpawn returns nothing. Catch the vehicle in the OnVehicleSpawned event and use ForcePlayerToSeat from there.",
+   "answer": "ForceVehicleSpawnerSpawn asks a vehicle spawner to produce a vehicle now, but it hands nothing back, so anything you assign from it is empty. The vehicle arrives a moment later through the OnVehicleSpawned event, which gives you the vehicle as Event Vehicle, and that is the handle you work with. Because the two are separate events, remember who asked for the vehicle: store that player in a variable just before you call the spawn, then read it back when the vehicle turns up. ForcePlayerToSeat(player, vehicle, seat) puts them in, with seat numbered from 0 for the driver or pilot. The same pattern is how you get a bot to fly or drive: spawn the bot, spawn the vehicle, force the bot into seat 0 and only then give it a move order.",
+   "gotchas": [
+    "The vehicle is not ready before OnVehicleSpawned fires, so do not try to seat anyone earlier.",
+    "GetObjectPosition on a vehicle or a vehicle spawner has been reported to come back as junk, so do not pick a player by distance to the vehicle. Remember the requester instead.",
+    "Bots will try to board a vehicle the moment it appears, so a vehicle meant for a player may already be taken."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Crew The Vehicle",
+         "EVENTTYPE": "OnVehicleSpawned"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "If",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Not",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "IsVehicleOccupied",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "EventVehicle"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            },
+            "DO": {
+             "block": {
+              "type": "ForcePlayerToSeat",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "GetVariable",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "variableReferenceBlock",
+                    "extraState": {
+                     "isObjectVar": false
+                    },
+                    "fields": {
+                     "OBJECTTYPE": "Global",
+                     "VAR": {
+                      "id": "sysPendingPilot"
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "EventVehicle"
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     },
+     "variables": [
+      {
+       "name": "PendingPilot",
+       "id": "sysPendingPilot",
+       "type": "Global"
+      }
+     ]
+    },
+    "note": "PendingPilot is set by whatever rule asked for the vehicle, for example an interact point rule that stores Event Player and then calls ForceVehicleSpawnerSpawn. This rule seats that player when the vehicle appears."
+   },
+   "ts": {
+    "code": "const VEHICLE_SPAWNER_ID = 2;\nlet pendingPilot: mod.Player | undefined;\n\nexport function OnPlayerInteract(eventPlayer: mod.Player): void {\n    // Remember who asked. The call below hands nothing back.\n    pendingPilot = eventPlayer;\n    mod.ForceVehicleSpawnerSpawn(mod.GetVehicleSpawner(VEHICLE_SPAWNER_ID));\n}\n\nexport function OnVehicleSpawned(eventVehicle: mod.Vehicle): void {\n    if (pendingPilot === undefined) return;\n    if (mod.IsVehicleOccupied(eventVehicle)) return;\n\n    mod.ForcePlayerToSeat(pendingPilot, eventVehicle, 0);\n    pendingPilot = undefined;\n}",
+    "note": "Seat 0 is the driver or pilot. Seat numbers run up from there in the order the vehicle lists them."
+   },
+   "sources": [
+    "I think your problem is that mod.ForceVehicleSpawnerSpawn does not return an ID of the vehicle it spawns (scripts-blocks)",
+    "Can someone tell me how I get an AI to jump into a certain vehicle (scripts-blocks)",
+    "Has anyone had issues with mod.GetObjectPosition on a vehicle or vehicle spawner (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-vehicle-seat-check",
+   "themes": [
+    "vehicles"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "GetPlayerVehicleSeat throws an error when the player is on foot, and I want to stop people taking the helicopter gunner seat. What is the safe way to do this?",
+   "short": "Only ask for the seat inside a vehicle event, and kick a player out of a seat you want to block with ForcePlayerExitVehicle.",
+   "answer": "GetPlayerVehicleSeat and GetVehicleFromPlayer only make sense for a player who is actually in a vehicle. The help text says the seat call returns -1 when they are not, but that is wrong: it raises a runtime error, and the developers have said they are moving both calls to return undefined instead. So do not poll them on every player. Ask inside OnPlayerEnterVehicleSeat, which fires with the player, the vehicle and the seat already known to be real. To block a seat, compare the seat number there and either move the player to another seat with ForcePlayerToSeat or throw them out with ForcePlayerExitVehicle. Input restrictions are not a reliable way to do this, which is why seat events are the route people settle on.",
+   "gotchas": [
+    "Seat numbers start at 0 for the driver or pilot, so the first gunner is usually seat 1.",
+    "Do not call GetPlayerVehicleSeat in an ongoing rule that runs for every player. Most of them are on foot and the call will error.",
+    "GetVehicleSeatCount tells you how many seats a vehicle has, which is how you keep a rule working across different vehicle types."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Block Gunner Seat",
+         "EVENTTYPE": "OnPlayerEnterVehicleSeat"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "If",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Equals",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "GetPlayerVehicleSeat",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "EventPlayer"
+                   }
+                  }
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 1
+                 }
+                }
+               }
+              }
+             }
+            },
+            "DO": {
+             "block": {
+              "type": "ForcePlayerExitVehicle",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "EventPlayer"
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "Inside this event the player really is in a vehicle, so the seat read is safe. Change the 1 to whichever seat you want to close."
+   },
+   "ts": {
+    "code": "const BLOCKED_SEAT = 1;\n\nexport function OnPlayerEnterVehicleSeat(eventPlayer: mod.Player, eventVehicle: mod.Vehicle): void {\n    const seat = mod.GetPlayerVehicleSeat(eventPlayer);\n    if (seat !== BLOCKED_SEAT) return;\n\n    // Prefer a free seat, otherwise put them back on the ground.\n    if (!mod.IsVehicleSeatOccupied(eventVehicle, 0)) {\n        mod.ForcePlayerToSeat(eventPlayer, eventVehicle, 0);\n        return;\n    }\n\n    mod.ForcePlayerExitVehicle(eventPlayer, eventVehicle);\n}",
+    "note": "Everything here runs inside the seat event, so the seat read never happens for a player on foot."
+   },
+   "sources": [
+    "mod.GetPlayerVehicleSeat() returning an error (portal-bug-reports)",
+    "anyone had success restricting players from specific vehicle seats (scripts-blocks)",
+    "could you just use the OnPlayerEnterVehicleSeat event and check if it is a restricted seat (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-vehicle-spawner-settings",
+   "themes": [
+    "vehicles"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I change what a vehicle spawner produces and how often, from script rather than in the map editor?",
+   "short": "SetVehicleSpawnerVehicleType, SetVehicleSpawnerRespawnTime and SetVehicleSpawnerAutoSpawn, applied once at the start of the match.",
+   "answer": "A vehicle spawner has three settings you will reach for. SetVehicleSpawnerVehicleType picks which vehicle it makes, SetVehicleSpawnerRespawnTime sets how many seconds after a loss before it makes another, and SetVehicleSpawnerAutoSpawn decides whether it produces vehicles on its own or only when your script asks. Apply them once when the match starts rather than every tick. In the blocks editor there is a neat way to cover every spawner on the map at once: an ongoing rule whose object type is VehicleSpawner runs for each spawner in turn and gives you it as Event Vehicle Spawner. If you create a vehicle spawner during play with SpawnObject rather than placing it in the editor, you cannot configure it on the same tick you made it; wait one second first, or the settings land on nothing.",
+   "gotchas": [
+    "An object created with SpawnObject is not ready to be configured in the same tick. Wait before you set anything on it.",
+    "The vehicle types you can ask for depend on the map. Asking for one the map does not support throws an error on screen.",
+    "Turning auto spawn off means nothing appears until your script calls ForceVehicleSpawnerSpawn."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": true
+        },
+        "fields": {
+         "NAME": "Vehicle Setup",
+         "EVENTTYPE": "Ongoing",
+         "OBJECTTYPE": "VehicleSpawner"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "SetVehicleSpawnerVehicleType",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "EventVehicleSpawner"
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "VehicleListItem",
+              "fields": {
+               "VALUE-0": "VehicleList",
+               "VALUE-1": "UH60"
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "SetVehicleSpawnerRespawnTime",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "EventVehicleSpawner"
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 30
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "SetVehicleSpawnerAutoSpawn",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "EventVehicleSpawner"
+                 }
+                },
+                "VALUE-1": {
+                 "block": {
+                  "type": "Boolean",
+                  "fields": {
+                   "BOOL": "TRUE"
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "An ongoing rule with object type VehicleSpawner and no condition runs once for every vehicle spawner on the map, which is exactly what setup wants."
+   },
+   "ts": {
+    "code": "const VEHICLE_SPAWNER_ID = 2;\n\nexport function OnGameModeStarted(): void {\n    const spawner = mod.GetVehicleSpawner(VEHICLE_SPAWNER_ID);\n\n    mod.SetVehicleSpawnerVehicleType(spawner, mod.VehicleList.UH60);\n    mod.SetVehicleSpawnerRespawnTime(spawner, 30);\n    mod.SetVehicleSpawnerAutoSpawn(spawner, true);\n}\n\n// A spawner made during play cannot be configured on the tick it was made.\nexport async function addSpawnerAt(position: mod.Vector): Promise<void> {\n    const spawner = mod.SpawnObject(\n        mod.RuntimeSpawn_Common.VehicleSpawner,\n        position,\n        mod.CreateVector(0, 0, 0)\n    ) as mod.VehicleSpawner;\n\n    await mod.Wait(1);\n\n    mod.SetVehicleSpawnerVehicleType(spawner, mod.VehicleList.UH60);\n    mod.SetVehicleSpawnerAutoSpawn(spawner, true);\n}",
+    "note": "The await mod.Wait(1) in the second function is not padding, it is the rule: a freshly spawned object is not configurable until the next tick."
+   },
+   "sources": [
+    "spawn the vehicle you want with mod.SetVehicleSpawnerVehicleType (Helicopter Race)",
+    "The Force spawn and the Autospawn you have in the code you could do in the properties of the VehicleSpawner object in Godot (scripts-blocks)",
+    "I can place an Apache in manually but if I place a vehiclespawner and set the Apache a Little Bird appears instead (godot-support)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-ongoing-vs-while",
+   "themes": [
+    "timers"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How bad is it to sit in a while loop with a short wait inside to keep checking a player state?",
+   "short": "Bad enough to avoid. Use the ongoing event functions, which the engine already calls for you every tick.",
+   "answer": "Portal gives you a set of ongoing functions that the engine calls on its own every tick, and a tick is one server update, thirty of them per second. OngoingGlobal runs once per tick for the match, OngoingPlayer runs once per tick for each player, and there are ongoing variants for vehicles, teams, capture points and the rest. A while loop with a wait inside is a second scheduler running alongside that one: you get one copy per player who deployed, they never end when the player dies, and the ones left behind keep the engine busy. Put your check in the matching ongoing function instead and the whole problem disappears. If you want something to happen at a slower rate than every tick, count ticks and act on every thirtieth rather than sleeping inside a loop. A loop that never yields at all, with no wait in it, will hang the server outright.",
+   "gotchas": [
+    "Ongoing functions are called for you. Never call one yourself.",
+    "Rebuilding a user interface every tick leaks memory. Build the widget once and change its text.",
+    "A wait inside an event function only pauses that one call, not the event, so other players still get their own calls."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": true
+        },
+        "fields": {
+         "NAME": "Prone Watch",
+         "EVENTTYPE": "Ongoing",
+         "OBJECTTYPE": "Player"
+        },
+        "inputs": {
+         "CONDITIONS": {
+          "block": {
+           "type": "conditionBlock",
+           "inputs": {
+            "CONDITION": {
+             "block": {
+              "type": "GetSoldierState",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "EventPlayer"
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "SoldierStateBoolItem",
+                 "fields": {
+                  "VALUE-0": "SoldierStateBool",
+                  "VALUE-1": "IsProne"
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         },
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayNotificationMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "Stay down"
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "EventPlayer"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "An ongoing rule with object type Player is the blocks form of OngoingPlayer. The condition is the check that used to sit inside the while loop."
+   },
+   "ts": {
+    "code": "let ticks = 0;\n\nexport function OngoingPlayer(eventPlayer: mod.Player): void {\n    if (!mod.GetSoldierState(eventPlayer, mod.SoldierStateBool.IsProne)) return;\n\n    mod.DisplayNotificationMessage(mod.Message(\"Stay down\"), eventPlayer);\n}\n\nexport function OngoingGlobal(): void {\n    ticks++;\n\n    // 30 ticks is one second. Everything below runs once per second.\n    if (ticks % 30 !== 0) return;\n\n    console.log(`seconds left: ${mod.GetMatchTimeRemaining()}`);\n}",
+    "note": "The tick counter is the standard way to slow something down without a loop or a wait."
+   },
+   "sources": [
+    "how bad is it to have a while loop to trigger stuff (scripts-blocks)",
+    "please do not put a while(true) loop in an OnGameModeStarted function, use OngoingGlobal (scripts-blocks)",
+    "Is there a recommended way to refresh UI objects, i.e. a match timer each second (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-ongoing-edge-trigger",
+   "themes": [
+    "timers",
+    "variables"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "My ongoing rule fires once and then never again, even though the condition is still true. What am I missing?",
+   "short": "An ongoing rule runs its actions when the condition changes from false to true, not for as long as it stays true.",
+   "answer": "An ongoing rule is edge triggered. The engine remembers what the condition was last tick and only runs the actions on the tick where it goes from false to true. A rule with no condition at all counts as true from the very first tick, so it runs exactly once and then never again, which is why it is the right shape for setup work and the wrong shape for anything repeating. To repeat, write a condition that keeps flipping. The usual trick is to take the match time, round it to whole seconds and test whether it divides evenly by the number of seconds you want between runs, so the condition is true for one second and false for the next. You can see the same machinery in converted script: each rule gets a condition state object and returns early when the value has not changed since last time.",
+   "gotchas": [
+    "Setting a variable inside the actions does not re-trigger the rule. Only the condition going false and then true again does that.",
+    "A rule with several conditions treats them as all having to be true, and the edge is on the combined result.",
+    "If you want something on every tick with no gating at all, use the script side ongoing function instead of a blocks rule."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": true
+        },
+        "fields": {
+         "NAME": "Every Two Seconds",
+         "EVENTTYPE": "Ongoing",
+         "OBJECTTYPE": "Global"
+        },
+        "inputs": {
+         "CONDITIONS": {
+          "block": {
+           "type": "conditionBlock",
+           "inputs": {
+            "CONDITION": {
+             "block": {
+              "type": "Equals",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Modulo",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "RoundToInteger",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "GetMatchTimeElapsed"
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-1": {
+                   "block": {
+                    "type": "Number",
+                    "fields": {
+                     "NUM": 2
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         },
+         "ACTIONS": {
+          "block": {
+           "type": "SetVariable",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "variableReferenceBlock",
+              "extraState": {
+               "isObjectVar": false
+              },
+              "fields": {
+               "OBJECTTYPE": "Global",
+               "VAR": {
+                "id": "sysHeartbeat"
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "Add",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "GetVariable",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "variableReferenceBlock",
+                    "extraState": {
+                     "isObjectVar": false
+                    },
+                    "fields": {
+                     "OBJECTTYPE": "Global",
+                     "VAR": {
+                      "id": "sysHeartbeat"
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 1
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     },
+     "variables": [
+      {
+       "name": "Heartbeat",
+       "id": "sysHeartbeat",
+       "type": "Global"
+      }
+     ]
+    },
+    "note": "The condition is true for one whole second out of every two, so it goes false and true again, and the actions run once every two seconds."
+   },
+   "ts": {
+    "code": "let lastCondition = false;\nlet heartbeat = 0;\n\nexport function OngoingGlobal(): void {\n    // The same edge test the blocks editor does for you.\n    const condition = Math.round(mod.GetMatchTimeElapsed()) % 2 === 0;\n    const rising = condition && !lastCondition;\n\n    lastCondition = condition;\n    if (!rising) return;\n\n    heartbeat++;\n    console.log(`heartbeat ${heartbeat}`);\n}",
+    "note": "In plain script you own the edge test, which is why script can do things a blocks rule cannot express."
+   },
+   "sources": [
+    "ongoing rules are only fired once the condition changes (scripts-blocks)",
+    "I have a test block editor ongoing rule that seems to never fire (scripts-blocks)",
+    "how would you code an ongoing block in typescript (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-round-time-and-win",
+   "themes": [
+    "timers"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I read how much time is left in the round and give a team the win when the clock runs out? OnTimeLimitReached seems to fire the instant the match starts.",
+   "short": "Set the limit in OnGameModeStarted, read GetMatchTimeRemaining, and end the round from an ongoing rule that watches the clock rather than trusting OnTimeLimitReached.",
+   "answer": "GetMatchTimeRemaining and GetMatchTimeElapsed both give you seconds, and SetGameModeTimeLimit sets the length of the round in seconds; the value you set in script wins over the one in the Portal web settings. OnTimeLimitReached is meant to fire when the clock hits zero, but it has a known habit of firing once at match start, before your time limit has been applied, because at that moment elapsed and limit are both zero. Because of that, do not hang your win condition on it alone. An ongoing rule whose condition is that the remaining time has dropped below one second is reliable, and it has a second benefit: it runs before the built in end of round takes over, and once the built in ending runs your logic is skipped. EndGameMode(team) declares the winner and stops the round.",
+   "gotchas": [
+    "The built in win condition takes priority and there is no way to switch it off, so your rule has to get there first.",
+    "SetGameModeTimeLimit takes seconds, so 45 minutes is 2700.",
+    "ResetGameModeTime for a second round has been reported as not working, so track your own round number if you need more than one round."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": true
+        },
+        "fields": {
+         "NAME": "Time Limit Victory",
+         "EVENTTYPE": "Ongoing",
+         "OBJECTTYPE": "Global"
+        },
+        "inputs": {
+         "CONDITIONS": {
+          "block": {
+           "type": "conditionBlock",
+           "inputs": {
+            "CONDITION": {
+             "block": {
+              "type": "LessThan",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "GetMatchTimeRemaining"
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 1
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         },
+         "ACTIONS": {
+          "block": {
+           "type": "EndGameMode",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "GetTeam",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 2
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    "note": "Watching the clock in an ongoing rule beats OnTimeLimitReached because it fires before the built in end of round."
+   },
+   "ts": {
+    "code": "const ROUND_SECONDS = 2700; // 45 minutes\nlet ended = false;\n\nexport function OnGameModeStarted(): void {\n    mod.SetGameModeTimeLimit(ROUND_SECONDS);\n}\n\nexport function OngoingGlobal(): void {\n    if (ended) return;\n    if (mod.GetMatchTimeRemaining() >= 1) return;\n\n    ended = true;\n    mod.EndGameMode(mod.GetTeam(2));\n}",
+    "note": "The ended flag is the edge test: without it OngoingGlobal would call EndGameMode on every tick after the clock ran out."
+   },
+   "sources": [
+    "OnTimeLimitReached() triggers immediately (bug-reports)",
+    "any quick suggestions so team 2 wins when time limit is reached (scripts-blocks)",
+    "Does the onTimeLimitReached function work, it seems like it does not trigger (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-variable-scope",
+   "themes": [
+    "variables"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I keep a value between rules, and how do I keep a separate one per player, like a level that goes up every second kill?",
+   "short": "A Global variable holds one value for the whole match; an object variable holds one value per player, team or other object, and you plug the object into the block.",
+   "answer": "In the blocks editor, when you make a variable you choose a type. Global means there is one copy for the whole match. Any other type, such as Player or Team, means there is one copy per object of that type, and the variable block then asks you which object you mean, usually Event Player. SetVariable writes and GetVariable reads, and both take the variable block itself rather than a name. In script the same two functions exist: a global is declared once as mod.GlobalVariable(index) and an object variable is addressed as mod.ObjectVariable(object, index), where the index is a plain number, which is why converted block code reads the way it does. A plain module level let in your script file is simpler and faster and is what most script only projects use; the mod variables exist so that blocks and script can share the same state, and so that a converted blocks project keeps working. What you cannot do is stick your own field on a mod.Player object, because that object is only a handle to something living in the engine.",
+   "gotchas": [
+    "Assigning to a property on a mod.Player does nothing. Use an object variable or your own lookup keyed by the player.",
+    "An object variable on a player is wiped when that player leaves, and a bot that respawns is a new player.",
+    "Global and object variables are per match. Nothing survives to the next round."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Count Kills",
+         "EVENTTYPE": "OnPlayerEarnedKill"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "SetVariable",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "variableReferenceBlock",
+              "extraState": {
+               "isObjectVar": true
+              },
+              "fields": {
+               "OBJECTTYPE": "Player",
+               "VAR": {
+                "id": "sysKills"
+               }
+              },
+              "inputs": {
+               "OBJECT": {
+                "block": {
+                 "type": "EventPlayer"
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "Add",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "GetVariable",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "variableReferenceBlock",
+                    "extraState": {
+                     "isObjectVar": true
+                    },
+                    "fields": {
+                     "OBJECTTYPE": "Player",
+                     "VAR": {
+                      "id": "sysKills"
+                     }
+                    },
+                    "inputs": {
+                     "OBJECT": {
+                      "block": {
+                       "type": "EventPlayer"
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 1
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     },
+     "variables": [
+      {
+       "name": "Kills",
+       "id": "sysKills",
+       "type": "Player"
+      }
+     ]
+    },
+    "note": "Kills is a Player scoped variable, so each player counts their own. The same variable block appears twice, once to read and once to write."
+   },
+   "ts": {
+    "code": "// One value for the whole match.\nconst RoundNumberGlobalVar = mod.GlobalVariable(0);\n\n// One value per player. Object variables are addressed by index.\nconst KillsPlayerVar = 0;\n\nexport function OnGameModeStarted(): void {\n    mod.SetVariable(RoundNumberGlobalVar, 1);\n}\n\nexport function OnPlayerEarnedKill(eventPlayer: mod.Player): void {\n    const kills: number = mod.GetVariable(mod.ObjectVariable(eventPlayer, KillsPlayerVar));\n    mod.SetVariable(mod.ObjectVariable(eventPlayer, KillsPlayerVar), kills + 1);\n\n    console.log(`round ${mod.GetVariable(RoundNumberGlobalVar)}, kills ${kills + 1}`);\n}",
+    "note": "If your project is script only, a plain Map or a class per player is easier to read and costs less than the mod variable calls."
+   },
+   "sources": [
+    "I would like to have a variable level attached to the player object (scripts-blocks)",
+    "does anyone know what these variables do in the API (scripts-blocks)",
+    "is it just defining the variable and then setting it on a specific object with mod.objectvariable (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "systems-mod-array",
+   "themes": [
+    "variables"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "Why can I not use length, square brackets or filter on mod.AllPlayers()? And why does AppendToArray leave my array empty?",
+   "short": "mod.AllPlayers returns a mod.Array, which is an engine handle and not a JavaScript array, and AppendToArray gives you a new array rather than changing the one you passed in.",
+   "answer": "A mod.Array looks like a list but it is a handle to something the engine owns, so the JavaScript things you would reach for do not apply: there is no length, square bracket indexing does not work, and neither do filter, map or sort. Use the engine functions instead. CountOf gives the size, ValueInArray(array, index) reads one entry counting from 0, RandomValueInArray picks one at random, and ArrayContains asks whether a value is in there. The one that catches everybody is AppendToArray: it returns a new array with the extra value on the end and leaves the array you handed it untouched, so you have to assign the result back. The same is true of RemoveFromArray and SortedArray. If you would rather use ordinary JavaScript, copy the entries out into a real array first with a counted loop, do the work there, and only convert back if some engine function needs a mod.Array.",
+   "gotchas": [
+    "AppendToArray, RemoveFromArray and SortedArray all return a new array. Forgetting to assign the result is the most common array bug in Portal.",
+    "The order of AllPlayers is not stable. A player who respawns can land anywhere in it, so never use a position in that list as an identity.",
+    "A loop over an array should read CountOf once into a variable rather than calling it in the loop condition every pass."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "x": 40,
+        "y": 40,
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Count The Bots",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "SetVariable",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "variableReferenceBlock",
+              "extraState": {
+               "isObjectVar": false
+              },
+              "fields": {
+               "OBJECTTYPE": "Global",
+               "VAR": {
+                "id": "sysBotCount"
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "Number",
+              "fields": {
+               "NUM": 0
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "ForVariable",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "variableReferenceBlock",
+                "extraState": {
+                 "isObjectVar": false
+                },
+                "fields": {
+                 "OBJECTTYPE": "Global",
+                 "VAR": {
+                  "id": "sysArrIdx"
+                 }
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 0
+                }
+               }
+              },
+              "VALUE-2": {
+               "block": {
+                "type": "CountOf",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "AllPlayers"
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-3": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 1
+                }
+               }
+              },
+              "DO": {
+               "block": {
+                "type": "If",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "GetSoldierState",
+                   "inputs": {
+                    "VALUE-0": {
+                     "block": {
+                      "type": "ValueInArray",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "AllPlayers"
+                        }
+                       },
+                       "VALUE-1": {
+                        "block": {
+                         "type": "GetVariable",
+                         "inputs": {
+                          "VALUE-0": {
+                           "block": {
+                            "type": "variableReferenceBlock",
+                            "extraState": {
+                             "isObjectVar": false
+                            },
+                            "fields": {
+                             "OBJECTTYPE": "Global",
+                             "VAR": {
+                              "id": "sysArrIdx"
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    },
+                    "VALUE-1": {
+                     "block": {
+                      "type": "SoldierStateBoolItem",
+                      "fields": {
+                       "VALUE-0": "SoldierStateBool",
+                       "VALUE-1": "IsAISoldier"
+                      }
+                     }
+                    }
+                   }
+                  }
+                 },
+                 "DO": {
+                  "block": {
+                   "type": "SetVariable",
+                   "inputs": {
+                    "VALUE-0": {
+                     "block": {
+                      "type": "variableReferenceBlock",
+                      "extraState": {
+                       "isObjectVar": false
+                      },
+                      "fields": {
+                       "OBJECTTYPE": "Global",
+                       "VAR": {
+                        "id": "sysBotCount"
+                       }
+                      }
+                     }
+                    },
+                    "VALUE-1": {
+                     "block": {
+                      "type": "Add",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "GetVariable",
+                         "inputs": {
+                          "VALUE-0": {
+                           "block": {
+                            "type": "variableReferenceBlock",
+                            "extraState": {
+                             "isObjectVar": false
+                            },
+                            "fields": {
+                             "OBJECTTYPE": "Global",
+                             "VAR": {
+                              "id": "sysBotCount"
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       },
+                       "VALUE-1": {
+                        "block": {
+                         "type": "Number",
+                         "fields": {
+                          "NUM": 1
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      ]
+     },
+     "variables": [
+      {
+       "name": "BotCount",
+       "id": "sysBotCount",
+       "type": "Global"
+      },
+      {
+       "name": "ArrayIndex",
+       "id": "sysArrIdx",
+       "type": "Global"
+      }
+     ]
+    },
+    "note": "The loop counts ArrayIndex from 0 up to but not including the number of players, and Value In Array reads each one. This is the blocks shape of a for loop over a mod array."
+   },
+   "ts": {
+    "code": "function toList(array: mod.Array): mod.Player[] {\n    const out: mod.Player[] = [];\n    const size = mod.CountOf(array);\n\n    for (let i = 0; i < size; i++) {\n        out.push(mod.ValueInArray(array, i));\n    }\n\n    return out;\n}\n\nexport function OnGameModeStarted(): void {\n    // Engine style: counted loop over the handle.\n    const players = mod.AllPlayers();\n    let bots = 0;\n\n    for (let i = 0; i < mod.CountOf(players); i++) {\n        const player: mod.Player = mod.ValueInArray(players, i);\n        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAISoldier)) bots++;\n    }\n\n    // JavaScript style: copy out once, then use normal array methods.\n    const alive = toList(mod.AllPlayers()).filter(\n        p => !mod.GetSoldierState(p, mod.SoldierStateBool.IsDead)\n    );\n\n    // AppendToArray returns a NEW array. Assigning the result back is required.\n    let picked = mod.EmptyArray();\n    if (alive.length > 0) picked = mod.AppendToArray(picked, alive[0]);\n\n    console.log(`bots ${bots}, alive ${alive.length}, picked ${mod.CountOf(picked)}`);\n}",
+    "note": "toList is the copy out helper. Once the entries are in a real array every normal JavaScript method works."
+   },
+   "sources": [
+    "how to access player by index from array correctly, mod.AllPlayers[0] not working (scripts-blocks)",
+    "modlib.FilteredArray() and modlib.GetPlayersInTeam() Returning Empty Arrays (bug-reports)",
+    "I do not think you can treat the mod.Array as a real array (scripts-blocks)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  }
+ ]
+}

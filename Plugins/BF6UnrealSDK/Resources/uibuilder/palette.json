@@ -1,0 +1,79 @@
+{
+  "note": "The owner's BF6 UI style guide, as the builder's default palette. Colours are given as the hex the guide names and as the [r, g, b] on 0..1 that the engine's Set*Color calls actually take.",
+  "precedence": "Two palettes live here and they do not compete. The swatches and alphas below are the owner's Figma guide and they win for anything drawn in game by the UI builder. toolChrome below is the Portal site's own token set and it wins for the tool's own chrome, so the tool and the site read as one product. Where they disagree, the split is by surface, never by preference.",
+  "rules": [
+    "Panels are 080B0B or D5EBF9 at 75 or 50 percent.",
+    "Accent bands run at 75 percent.",
+    "Always put a blur behind text and numbers."
+  ],
+  "swatches": [
+    { "name": "White",       "group": "bright", "hex": "#FFFFFF", "rgb": [1.000, 1.000, 1.000] },
+    { "name": "Cyan",        "group": "bright", "hex": "#70EBFF", "rgb": [0.439, 0.922, 1.000] },
+    { "name": "Red",         "group": "bright", "hex": "#FF8361", "rgb": [1.000, 0.514, 0.380] },
+    { "name": "Green",       "group": "bright", "hex": "#ADFD86", "rgb": [0.678, 0.992, 0.525] },
+    { "name": "Yellow",      "group": "bright", "hex": "#FFFC9C", "rgb": [1.000, 0.988, 0.612] },
+    { "name": "Ice",         "group": "light",  "hex": "#D5EBF9", "rgb": [0.835, 0.922, 0.976] },
+    { "name": "Dark cyan",   "group": "dark",   "hex": "#132F3F", "rgb": [0.075, 0.184, 0.247] },
+    { "name": "Dark red",    "group": "dark",   "hex": "#401811", "rgb": [0.251, 0.094, 0.067] },
+    { "name": "Dark green",  "group": "dark",   "hex": "#477236", "rgb": [0.278, 0.447, 0.212] },
+    { "name": "Dark yellow", "group": "dark",   "hex": "#716000", "rgb": [0.443, 0.376, 0.000] },
+    { "name": "Steel",       "group": "grey",   "hex": "#545E63", "rgb": [0.329, 0.369, 0.388] },
+    { "name": "Slate",       "group": "grey",   "hex": "#36393C", "rgb": [0.212, 0.224, 0.235] },
+    { "name": "Ink",         "group": "grey",   "hex": "#080B0B", "rgb": [0.031, 0.043, 0.043] }
+  ],
+  "alphas": [
+    { "hex": "#080B0B", "alpha": 0.75, "use": "dark panel over the scene" },
+    { "hex": "#080B0B", "alpha": 0.50, "use": "lighter dark panel" },
+    { "hex": "#D5EBF9", "alpha": 0.75, "use": "light panel" },
+    { "hex": "#D5EBF9", "alpha": 0.50, "use": "lighter light panel" },
+    { "hex": "#70EBFF", "alpha": 0.75, "use": "friendly or info accent band" },
+    { "hex": "#FF8361", "alpha": 0.75, "use": "enemy or warning accent band" },
+    { "hex": "#ADFD86", "alpha": 0.75, "use": "positive or objective accent band" },
+    { "hex": "#132F3F", "alpha": 0.75, "use": "dark cyan band" },
+    { "hex": "#401811", "alpha": 0.75, "use": "dark red band" },
+    { "hex": "#477236", "alpha": 0.75, "use": "dark green band" }
+  ],
+  "toolChrome": {
+    "note": "Portal site design tokens, for the builder's own panels, buttons and text. Extracted from portal.battlefield.com build 15249075. The full table, with the selector each value came from, is Resources/portalstyle/tokens.json.",
+    "source": "portal.battlefield.com/bf6/15249075/assets/index-CKMQIwzL.css",
+    "swatches": [
+      { "name": "Ground",        "token": "--tmln-colors-gray900",          "hex": "#090A0A", "rgb": [0.035, 0.039, 0.039] },
+      { "name": "Panel",         "token": "--tmln-colors-gray800",          "hex": "#111314", "rgb": [0.067, 0.075, 0.078] },
+      { "name": "Panel light",   "token": "--tmln-colors-gray700",          "hex": "#272B2E", "rgb": [0.153, 0.169, 0.180] },
+      { "name": "Field",         "token": "--tmln-colors-gray600",          "hex": "#343A3D", "rgb": [0.204, 0.227, 0.239] },
+      { "name": "Hover",         "token": "--tmln-colors-gray500",          "hex": "#464D52", "rgb": [0.275, 0.302, 0.322] },
+      { "name": "Disabled",      "token": "--tmln-colors-gray400",          "hex": "#606A70", "rgb": [0.376, 0.416, 0.439] },
+      { "name": "Text dim",      "token": "--tmln-colors-gray300",          "hex": "#75828A", "rgb": [0.459, 0.510, 0.541] },
+      { "name": "Text",          "token": "--tmln-colors-neutral-100",      "hex": "#AEC0CC", "rgb": [0.682, 0.753, 0.800] },
+      { "name": "Text bright",   "token": "--tmln-colors-neutral-200",      "hex": "#BFCAD1", "rgb": [0.749, 0.792, 0.820] },
+      { "name": "Info",          "token": "--tmln-colors-tertiary",         "hex": "#59BFF8", "rgb": [0.349, 0.749, 0.973] },
+      { "name": "Positive",      "token": "--tmln-colors-positive-vibrant", "hex": "#8EED6C", "rgb": [0.557, 0.929, 0.424] },
+      { "name": "Warning",       "token": "--tmln-colors-warning-vibrant",  "hex": "#F2C573", "rgb": [0.949, 0.773, 0.451] },
+      { "name": "Negative",      "token": "--tmln-colors-danger-vibrant",   "hex": "#FB694D", "rgb": [0.984, 0.412, 0.302] },
+      { "name": "Brand",         "token": "--tmln-colors-brand100",         "hex": "#FF3C00", "rgb": [1.000, 0.235, 0.000] }
+    ],
+    "hairline": { "token": "--tmln-colors-neutral-100-t-25", "value": "rgba(174, 192, 204, 0.25)", "use": "panel and divider border" },
+    "borderStrong": { "token": "--tmln-colors-neutral-100-t-50", "value": "rgba(174, 192, 204, 0.5)", "use": "secondary button border" },
+    "spacing": { "xxxs": 4, "xxs": 6, "xs": 8, "sm": 12, "md": 16, "lg": 24, "xl": 32, "xxl": 40, "xxxl": 48, "jumbo": 64 },
+    "fontSizes": { "xs": 10, "sm": 12, "md": 16, "lg": 20, "xl": 24, "xxl": 34, "xxxl": 45, "xxxxl": 56, "jumbo": 102 },
+    "fonts": {
+      "title": "BFTitle-Narrow-Bold",
+      "titleAlt": "BFTitle-Semi-Bold",
+      "heading": "BFSubHeadline-Bold",
+      "headingAlt": "BFSubHeadline-Medium",
+      "body": "BFText-Regular",
+      "bodyBold": "BFText-Bold",
+      "bodyLight": "BFText-Light",
+      "mono": "BFMono-Bold",
+      "monoAlt": "BFMono-Book",
+      "fallback": "sans-serif"
+    },
+    "shape": {
+      "cornerRadius": 0,
+      "hairlineWidth": 1,
+      "ringWidth": 2,
+      "ringInset": 5,
+      "note": "The site declares no radius on any control. Hover and focus are a 2px ring drawn outside the control with its corners chamfered by a clip-path, not a rounded outline."
+    }
+  }
+}

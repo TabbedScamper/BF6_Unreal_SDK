@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>BF6 Blocks</title>
+<style>
+  :root {
+    --ink: #0D0F10;
+    --panel: #111314;
+    --panel-light: #1A1D1F;
+    --line: rgba(174, 192, 204, 0.5);
+    --accent: #FF581A;
+    --accent-dim: #B83E10;
+    --text: #BFCAD1;
+    --text-blue: #AEC0CC;
+    --text-dim: #75828A;
+    --warn: #F5A623;
+  }
+  * { box-sizing: border-box; }
+  /* An author rule on an id beats the browser's own [hidden] rule whatever the
+     specificity, so anything that is also a flex box would stay on screen after
+     hidden is set. This puts that right for the whole page. */
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--ink); color: var(--text);
+    font: 12px/1.4 "Segoe UI", Tahoma, sans-serif;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .bar {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 6px 8px; min-height: 34px;
+  }
+  .title {
+    color: var(--accent); font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; margin-right: 8px;
+  }
+  button, select, input {
+    background: var(--panel-light); color: var(--text);
+    border: 1px solid var(--line); border-radius: 0;
+    font: inherit; padding: 4px 8px; text-transform: uppercase;
+    font-weight: 700; letter-spacing: 0.5px; cursor: pointer;
+  }
+  input { text-transform: none; font-weight: 400; letter-spacing: 0; cursor: text; }
+  button:hover, select:hover { border-color: var(--accent); color: #fff; }
+  button.primary { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+  button.ghost { background: transparent; }
+  .grow { flex: 1 1 auto; }
+  .pill {
+    border: 1px solid var(--line); padding: 2px 6px; color: var(--text-dim);
+    text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;
+  }
+  .pill.on { color: var(--accent); border-color: var(--accent); }
+  .pill.warnpill { color: var(--warn); border-color: var(--warn); }
+  /* The game's log. Monospaced because the mod's own output is usually
+     aligned, and scrolled rather than grown so a long match cannot push the
+     rest of the panel off the screen. */
+  .gamelog {
+    max-height: 220px; overflow-y: auto; margin: 4px 0 8px;
+    font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.45;
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; padding: 4px 6px;
+  }
+  .gamelog div { white-space: pre-wrap; word-break: break-word; }
+  .gamelog .at { opacity: 0.45; margin-right: 6px; }
+  .gamelog .error { color: var(--warn); }
+  .gamelog .system { opacity: 0.7; font-style: italic; }
+  .gamelog .newsession { border-top: 1px solid var(--warn); margin-top: 6px; padding-top: 4px; opacity: 0.8; }
+  /* The budget pill once it knows the real answer: green when the workspace
+     packs down inside Portal's limits, amber when it never will. */
+  .pill.okpill { color: var(--ok, #4caf50); border-color: var(--ok, #4caf50); }
+  /* Briefly marks the button that IS the way forward, when the one the user
+     reached for cannot work. */
+  @keyframes bf6urgent {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255,170,0,0); }
+    50%      { box-shadow: 0 0 0 3px rgba(255,170,0,0.55); }
+  }
+  button.urgent { animation: bf6urgent 1s ease-in-out 3; border-color: var(--warn); }
+  @media (prefers-reduced-motion: reduce) {
+    button.urgent { animation: none; border-color: var(--warn); box-shadow: 0 0 0 3px rgba(255,170,0,0.55); }
+  }
+  .pill.hidden { display: none; }
+  /* Pinned right, and allowed to wrap as one piece rather than shedding a
+     button off the end when the window is narrow. */
+  .wstools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .wstools input[type=search] { text-transform: none; min-width: 150px; }
+  .wstools button.danger { color: var(--warn); border-color: var(--warn); }
+  .wstools button.danger:hover { background: var(--warn); color: var(--panel); }
+  .lgHead { color: var(--accent); text-transform: uppercase; letter-spacing: 1px;
+            font-weight: 700; margin: 10px 0 4px; }
+  .lgRow { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .lgSwatch { width: 22px; height: 14px; border: 1px solid var(--line); flex: 0 0 auto; }
+  .lgSym { width: 18px; height: 18px; flex: 0 0 auto; }
+  .lgName { min-width: 108px; }
+  .lgWhat { color: var(--dim); }
+  /* Each legend row is a real block in its own small read-only workspace,
+     so the row grows to whatever the renderer actually draws. */
+  .lgShow { margin: 6px 0 10px; }
+  .lgCanvas { border: 1px solid var(--line); background: var(--panel);
+              margin-bottom: 4px; overflow: hidden; }
+  .lgPart { display: flex; gap: 8px; padding: 2px 0; }
+  .lgPart b { color: var(--accent); min-width: 104px; font-weight: 600; }
+
+  .banner, .restore, .portal { display: none; }
+  .banner.on {
+    display: block; background: var(--accent-dim); color: #fff;
+    padding: 6px 10px; font-weight: 700; letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--accent);
+  }
+  .restore.on {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    background: var(--panel-light); border-bottom: 1px solid var(--accent);
+    padding: 6px 10px;
+  }
+  .restore-text { color: var(--text); }
+  .portal.on {
+    display: block; border: 1px solid var(--accent); overflow: auto;
+    padding: 6px 8px; margin-top: 8px;
+  }
+  .portal-head { color: var(--accent); font-weight: 700; text-transform: uppercase; }
+  .portal.good .portal-head { color: #7FB77E; }
+  .portal-head2 { color: var(--text-dim); font-weight: 700; text-transform: uppercase; margin-top: 6px; }
+  .portal-msg { color: var(--text); margin: 4px 0; white-space: pre-wrap; }
+  .portal-row { border-bottom: 1px solid rgba(174,192,204,0.12); padding: 3px 0; cursor: pointer; }
+  .portal-row:hover { background: var(--panel-light); }
+  .portal-block { color: var(--text-blue); font-family: Consolas, monospace; font-size: 11px; }
+  .portal-text { color: var(--text-dim); }
+
+  /* ---- one canvas, and a strip of handles --------------------------------
+     The blocks are the work and they fill the window. Everything that helps
+     you make them sits behind one small handle and slides out over the canvas:
+     one panel at a time, Escape closes it, a click on the canvas closes it
+     unless it is pinned, and the tool comes back the way you left it. The same
+     shape the script editor and the UI builder use.
+
+     THE STRIP IS ON THE RIGHT, and it is on the right for a reason: Blockly
+     owns the left edge. The block categories are a column down the left of the
+     canvas and the flyout opens over the canvas beside them, so a panel on the
+     left lands under the categories. Nothing of ours goes on that side.
+
+     The strip is a flex item, so the canvas ends where the strip begins and
+     the two never overlap. The panel is absolutely positioned OVER the canvas
+     and changes no width, so opening one cannot resize or reflow the
+     workspace: the blocks do not move under the user's hands.
+     ---------------------------------------------------------------------- */
+  #body { display: flex; flex: 1; min-height: 0; position: relative; }
+  #rail {
+    width: 106px; min-width: 106px; background: var(--panel);
+    border-left: 1px solid var(--line); display: flex; flex-direction: column;
+  }
+  .railbtn {
+    display: block; width: 100%; text-align: left; border: none;
+    border-right: 3px solid transparent; border-bottom: 1px solid var(--line);
+    background: none; padding: 10px 7px; color: var(--text-dim);
+    white-space: normal; line-height: 1.25; letter-spacing: 0.4px;
+    text-transform: none; font-weight: 600; font-size: 11px;
+  }
+  .railbtn.on { color: var(--accent); border-right-color: var(--accent); background: var(--panel-light); }
+  .railbtn:hover { color: var(--text); border-right-color: var(--accent-dim); }
+  .railbtn.hasnews::after { content: " *"; color: var(--warn); font-weight: 700; }
+
+  #side {
+    position: absolute; right: 106px; top: 0; bottom: 0; width: 344px;
+    background: var(--panel); border-left: 1px solid var(--line);
+    display: none; flex-direction: column; z-index: 40;
+    box-shadow: -8px 0 22px rgba(0, 0, 0, 0.5);
+  }
+  #side.open { display: flex; }
+  #sideHead {
+    display: flex; align-items: center; gap: 6px; padding: 7px 8px;
+    background: var(--panel-light); border-bottom: 1px solid var(--line);
+  }
+  #sideHead .name {
+    flex: 1; font-weight: 700; letter-spacing: 0.8px;
+    text-transform: uppercase; color: var(--accent);
+  }
+  #sideHead button { padding: 3px 6px; font-size: 10px; }
+  #sideHead button.on { color: var(--accent); border-color: var(--accent); }
+  #sideBody { flex: 1; overflow: auto; }
+
+  .pane { display: none; padding: 8px; }
+  .pane.on { display: block; }
+  /* Every panel opens with one sentence saying what it is for. */
+  .lede { color: var(--text-blue); font-size: 11px; margin: 0 0 10px; line-height: 1.45; }
+  .h {
+    font-weight: 700; font-size: 10px; letter-spacing: 0.8px; text-transform: uppercase;
+    color: var(--accent); margin: 12px 0 6px;
+  }
+  .h:first-child { margin-top: 0; }
+  .sub { color: var(--text-dim); font-size: 11px; margin: 0 0 8px; }
+  .row {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    padding: 6px 8px; border: 1px solid var(--line); background: var(--panel-light);
+    margin-bottom: 4px; color: var(--text); font-size: 11px;
+    text-transform: none; letter-spacing: 0; font-weight: 400;
+  }
+  .row:hover { border-color: var(--accent); }
+  .row .t { font-weight: 700; color: var(--text-blue); display: block; }
+  .paneline { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .paneline input { flex: 1 1 120px; min-width: 0; }
+
+  /* ---- the overflow ------------------------------------------------------ */
+  #more {
+    position: absolute; z-index: 60; background: var(--panel);
+    border: 1px solid var(--accent); min-width: 260px; padding: 3px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+  }
+  #more button, #more select {
+    display: block; width: 100%; text-align: left; border: none;
+    background: none; text-transform: none; letter-spacing: 0;
+    font-weight: 400; padding: 6px 8px;
+  }
+  #more button:hover { background: var(--panel-light); color: #fff; }
+  #more button.on::after { content: "  on"; color: var(--accent); font-weight: 700; }
+  #more .mh {
+    padding: 8px 8px 3px; color: var(--text-dim); font-weight: 700; font-size: 9px;
+    letter-spacing: 0.8px; text-transform: uppercase;
+  }
+
+  .tabs { display: flex; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+  .tab {
+    flex: 1; padding: 5px 2px; text-align: center; color: var(--text-dim);
+    text-transform: uppercase; font-weight: 700; font-size: 11px; cursor: pointer;
+  }
+  .tab.on { color: var(--accent); border-bottom: 2px solid var(--accent); }
+  #navcount { padding: 4px 0; color: var(--text-dim); font-size: 11px; }
+  #navlist { overflow: auto; }
+  .nav-row { padding: 5px 8px; border-bottom: 1px solid rgba(174,192,204,0.12); cursor: pointer; }
+  .nav-row:hover { background: var(--panel-light); }
+  .nav-row.lit { border-left: 3px solid var(--accent); }
+  .nav-name { color: var(--text-blue); font-weight: 700; }
+  .nav-sub { color: var(--text-dim); font-size: 11px; }
+  .warn { color: var(--warn); font-weight: 700; font-size: 10px; }
+
+  #centre { flex: 1; position: relative; min-width: 0; }
+  #centre.dropping::after {
+    content: "Drop a Portal workspace, a full experience or a script export";
+    position: absolute; inset: 8px; z-index: 50;
+    border: 2px dashed var(--accent); background: rgba(255, 88, 26, 0.08);
+    color: var(--accent); font-weight: 700; letter-spacing: 0.5px;
+    text-transform: uppercase; display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  /* THE FILE TABS SIT OVER THE CANVAS, NOT BESIDE IT.
+     Blockly owns its container absolutely, so the strip floats above it and the
+     canvas keeps its full size. Hit testing stays on the strip alone. */
+  /* BINDER BOOKMARKS DOWN THE RIGHT EDGE, AS A STAIRCASE.
+   
+     Across the top they fought the toolbox, the pull-out and the search, and
+     every fix was a different answer to who wins the overlap. Down the side,
+     against the helper rail, they collide with nothing.
+   
+     Sideways text was unreadable. A stack that only opened on hover meant
+     pointing at things to find out what they were. So each tab is sized to its
+     own label and hangs off the right edge: the left edges fall where the words
+     end, which is the staircase, and every name is readable without touching
+     anything. Hovering nudges one out so it is obvious which will be clicked. */
+  #regiontabs {
+    position: fixed; right: 106px; top: 86px; z-index: 60;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+    max-width: 260px; max-height: calc(100vh - 300px);
+    overflow-y: auto; overflow-x: hidden;
+    transition: right .16s ease-out;
+    background: none; border: none; padding: 0;
+  }
+  /* Follows the slide-out: when the helper panel opens the stack steps aside by
+     its width instead of hiding behind it. */
+  #regiontabs.pushed { right: 450px; }
+  #regiontabs .rtab {
+    /* Sized to the label, not to a column, so the steps come from the words. */
+    align-self: flex-end; width: auto; max-width: 240px;
+    height: 21px; line-height: 19px; padding: 0 8px 0 7px;
+    background: rgba(25,29,33,.96); color: #c2cdd5;
+    border: 1px solid #2b3238; border-right: none;
+    border-left: 4px solid transparent;
+    border-radius: 3px 0 0 3px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer; font-size: 11px; letter-spacing: .02em;
+    font-variant-numeric: tabular-nums;
+    transition: transform .12s ease-out, background .12s ease-out, color .12s ease-out;
+  }
+  #regiontabs .rtab:hover {
+    transform: translateX(-8px); background: #232a31; color: #fff;
+  }
+  #regiontabs .rtab.on { background: #0f2a3d; color: #fff; transform: translateX(-8px); }
+  #regiontabs .rtab.on:hover { background: #143a52; }
+  #breadcrumb { position: absolute; left: 8px; bottom: 8px; z-index: 60;
+    padding: 4px 10px; font-size: 11px; color: #cfe0ea; cursor: pointer;
+    background: rgba(12,14,16,.92); border: 1px solid #2b3238; border-radius: 3px; }
+  #breadcrumb:hover { color: #fff; border-color: #3d5568; }
+  /* A file heading in the outline. Sticky so the reader always knows which
+     file the rows under the cursor belong to. */
+  .nav-group { position: sticky; top: 0; z-index: 2; margin-top: 6px;
+    padding: 4px 8px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+    color: #8fa3b0; background: #14181b; border-top: 1px solid #2b3238;
+    font-variant-numeric: tabular-nums; }
+  .nav-group:hover { color: #dce8f0; }
+  #canvas { position: absolute; inset: 0; }
+
+  /* ---- what already lives on the right ------------------------------------
+     Blockly puts its trashcan and its zoom controls at the bottom right of the
+     workspace, and our minimap was there too. A panel sliding in from the
+     right would cover all three, so all three step aside while one is open.
+
+     The minimap is ours and is simply moved. Blockly's two are moved with the
+     CSS translate property, which COMPOSES with the transform attribute
+     Blockly writes on them rather than replacing it, so their own positioning
+     still works and their hit areas move with them. A browser without it
+     leaves them where they were, which is the old behaviour and not a break.
+     -------------------------------------------------------------------- */
+
+  /* THE MAP KEEPS THE CORNER; THE CONTROLS MOVE UP.
+     Blockly pins zoom in, zoom out, show-everything and the trashcan to the
+     bottom right, which is where the minimap lives, so half a plus button
+     showed and the rest sat underneath the map.
+
+     The map stays exactly where it was and the controls are lifted clear of
+     it instead: the map's height plus its margin plus a little air. The
+     trashcan goes up with them because it shares that corner and would
+     otherwise be the next thing buried.
+
+     Blockly re-positions these itself on every resize, so this is a translate
+     on top of wherever it decides to put them rather than a position of our
+     own, which is why a resize cannot undo it. */
+  #minimap {
+    position: absolute; right: 8px; bottom: 8px; width: 220px; height: 150px;
+    border: 1px solid var(--line); background: var(--ink); cursor: crosshair;
+    transition: right 0.12s ease-out;
+  }
+  .blocklyZoom, .blocklyTrash { translate: 0 -166px; }
+  body.shelf-open #minimap { right: 352px; }
+  body.shelf-open .blocklyZoom, body.shelf-open .blocklyTrash { translate: -344px -166px; }
+
+  /* Blockly draws its field editors, its menus and its tooltips in their own
+     layer on the page rather than inside the workspace. They must stay above
+     the panel: a colour picker opened on a block near the right edge cannot be
+     allowed to render behind it. Blockly's own numbers already clear ours;
+     these are pinned so a captured site stylesheet cannot lower them. */
+  .blocklyWidgetDiv { z-index: 99999 !important; }
+  .blocklyDropDownDiv { z-index: 1000 !important; }
+  .blocklyTooltipDiv { z-index: 100000 !important; }
+  #help { padding: 0; overflow: auto; }
+  .help-type { color: var(--text-blue); font-weight: 700; font-size: 14px; }
+  .help-cat { color: var(--text-dim); text-transform: uppercase; font-size: 11px; margin-bottom: 6px; }
+  .help-sig {
+    background: var(--panel-light); border-left: 2px solid var(--accent);
+    padding: 4px 6px; margin: 3px 0; font-family: Consolas, monospace; font-size: 11px;
+  }
+  .help-raw { margin: 6px 0; color: var(--text-dim); }
+  .help-input { color: var(--text-dim); font-family: Consolas, monospace; font-size: 11px; }
+  .dim { color: var(--text-dim); }
+
+  /* ---- answers -----------------------------------------------------------
+     The curated answers and the raw threads are two different things and are
+     never mixed: a curated answer has been written and its example has been
+     loaded and checked, a thread is what somebody said on a forum.
+     ---------------------------------------------------------------------- */
+  .ans { border: 1px solid var(--line); margin-bottom: 6px; background: var(--panel-light); }
+  .ans-q {
+    padding: 6px 8px; color: var(--text-blue); font-weight: 700; cursor: pointer;
+    border-left: 3px solid var(--accent);
+  }
+  .ans-q:hover { background: #202426; }
+  .ans-short { color: var(--text-dim); font-weight: 400; display: block; margin-top: 3px; font-size: 11px; }
+  .ans-body { display: none; padding: 6px 8px 8px; border-top: 1px solid var(--line); }
+  .ans-body.on { display: block; }
+  .ans-text { color: var(--text); white-space: pre-wrap; margin-bottom: 8px; }
+  .ans-gotcha { color: var(--warn); font-size: 11px; margin: 3px 0 3px 12px; text-indent: -12px; }
+  .ans-code {
+    background: var(--ink); border: 1px solid var(--line); padding: 6px;
+    font-family: Consolas, monospace; font-size: 11px; color: var(--text-dim);
+    white-space: pre; overflow: auto; max-height: 220px; display: none;
+  }
+  .ans-code.on { display: block; }
+  .ans-src { color: var(--text-dim); font-size: 10px; margin-top: 6px; }
+  .ans-verified { color: #7FB77E; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .ans-unverified { color: var(--warn); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .corpus-note {
+    border-top: 1px solid var(--line); margin-top: 14px; padding-top: 8px;
+    color: var(--text-dim); font-size: 11px;
+  }
+  #faqlist { overflow: auto; }
+  .faq-row { border-bottom: 1px solid rgba(174,192,204,0.12); padding: 4px 0; }
+  .faq-q { color: var(--text-blue); cursor: pointer; font-weight: 700; }
+  .faq-a { color: var(--text-dim); margin: 4px 0 2px 0; white-space: pre-wrap; }
+  .faq-theme { color: var(--accent-dim); text-transform: uppercase; font-size: 10px; }
+
+  #status-bar {
+    display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+    background: var(--panel); border-top: 1px solid var(--line); height: 26px;
+  }
+  .status { color: var(--text-dim); }
+  .status.bad { color: var(--accent); }
+
+  /* WHAT FITS HERE opens over the middle of the canvas, and ASK A QUESTION
+     opens over its right. Both wanted the same corner on a narrow window, so
+     the popup steps left by half the panel's width while a panel is open and
+     the two are never in the same place. It also sits above the panel: it is
+     the thing the user just asked for. */
+  /* An empty socket is clickable, so it says so on hover. The glyph the
+     renderer already puts in the hole is the thing to light up. */
+  /* The socket glyph is a FieldImage, so it has no class of its own. The text
+     pictures do (bf6-text-pic), so everything else drawn as an image inside a
+     block is a type symbol sitting in a hole, which is exactly what can be
+     clicked to ask what fits there. */
+  .blocklyBlockCanvas image:not(.bf6-text-pic) { cursor: pointer; }
+  .blocklyBlockCanvas image:not(.bf6-text-pic):hover { filter: brightness(1.9) drop-shadow(0 0 3px #6cf); }
+  /* THE SUGGESTIONS READ LIKE THE PULL-OUT ON THE LEFT.
+     
+     It is the same question the toolbox answers - what block do I want - so it
+     should not look like a different tool. Same ground, same column of chips,
+     same category colour down the left of each one. It opens beside the socket
+     it is about rather than in the middle of the screen, so the hole being
+     filled stays visible while choosing.
+     
+     Above the site: Portal's captured stylesheet uses z-index up to 100000 for
+     its own toolbox and pull-out, and at 45 this opened behind them and looked
+     like nothing had happened at all. */
+  #blockpreview { position: absolute; left: -4000px; top: 0; width: 600px; height: 400px; }
+  .slot-shot { margin: 2px 0 4px; overflow: hidden; }
+  .slot-shot svg { display: block; }
+  .slot-desc { color: #b6c4ce; font-size: 11px; margin-top: 3px; line-height: 1.35; }
+  #slotpop {
+    display: none; position: absolute; width: 320px; max-height: 62%;
+    background: rgba(16,19,22,.985); border: 1px solid #39434c;
+    border-radius: 4px; box-shadow: 0 14px 40px rgba(0,0,0,.62);
+    flex-direction: column; overflow: hidden; z-index: 2000001;
+  }
+  #slotpop.on { display: flex; }
+  /* The popup is placed by script, which keeps it clear of an open panel. This
+     covers the other order: the panel opened while the popup was already up.
+     They answer the same question - what fits in this socket - so the panel
+     taking over dismisses the popup rather than the two sharing the corner and
+     the popup losing. openSide() also clears its contents, so this is the
+     guarantee rather than the whole mechanism. Placed after the base rule so it
+     does not shadow it. */
+  body.shelf-open #slotpop { display: none; }
+  .slot-head {
+    padding: 7px 10px; color: #cfe3f2; background: #0f2231;
+    border-bottom: 1px solid #39434c;
+    font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .slot-filter {
+    margin: 6px; padding: 5px 8px; background: #0e1114; color: #e7edf2;
+    border: 1px solid #39434c; border-radius: 3px; font-size: 12px;
+  }
+  .slot-list { overflow-y: auto; padding: 0 6px 6px; }
+  .slot-group {
+    padding: 8px 4px 4px; color: #7f929f; font-size: 10px;
+    letter-spacing: .06em; text-transform: uppercase;
+  }
+  .slot-cat {
+    padding: 5px 4px 2px; color: #9fb2c0; font-size: 10px;
+    letter-spacing: .05em; text-transform: uppercase;
+  }
+  .slot-item {
+    display: block; margin: 3px 0; padding: 6px 9px;
+    background: #1b2026; border: 1px solid #2f3841;
+    border-left: 4px solid #4a5b6b; border-radius: 4px;
+    cursor: pointer; transition: background .1s ease-out, transform .1s ease-out;
+  }
+  .slot-item:hover { background: #242c34; transform: translateX(2px); }
+  .slot-type { color: #eaf1f6; font-size: 12px; }
+  .slot-sig { color: #8fa3b0; font-size: 10.5px; margin-top: 2px; }
+  #rulemode { display: none; }
+  #rulemode.on { display: inline-block; color: var(--accent); border-color: var(--accent); }
+</style>
+</head>
+<body class="no-site-style">
+
+<!-- Five controls and the readouts. Everything that used to sit here still
+     exists: the rest is in #more below or behind a handle, so every existing
+     onclick and every console command still finds its button. -->
+<div class="bar">
+  <span class="title">BF6 Blocks</span>
+  <button id="btn-save" class="primary">Save to Portal</button>
+  <button id="btn-undo">Undo</button>
+  <button id="btn-redo">Redo</button>
+  <button id="btn-fit">Show everything</button>
+  <button id="btnMore">More</button>
+  <span class="grow"></span>
+  <span class="pill" id="conn">Page not open</span>
+  <span class="pill warnpill" id="stylepill">Site style not captured yet</span>
+  <span class="pill hidden" id="stale"></span>
+  <span class="pill hidden" id="pending"></span>
+  <span class="pill" id="rulemode">Editing one rule</span>
+  <!-- Portal refuses a workspace past about 128 variables per scope and says
+       so only on upload. This says so while there is still time to act. -->
+  <span class="pill" id="budget" title="Variables against Portal's limit"></span>
+  <!-- The site keeps these five in the top right of the rules screen, so ours
+       sit in the same corner and say the same things. Search is first because
+       it is the one used every minute; reset is last and asks before it acts. -->
+  <span class="wstools" id="wstools">
+    <input id="topsearch" type="search" placeholder="Search blocks"
+           title="Find a block by name. The same search as the one over the toolbox.">
+    <button id="btn-exportscript" title="Write these blocks out as a TypeScript project, split by what each rule is about">Export to Script</button>
+    <button id="btn-importscript" title="Read a TypeScript project back in as blocks, laid out by family">Import Script</button>
+    <button id="btn-importws" title="Open a workspace, a full experience or a single script file">Import Workspace</button>
+    <button id="btn-exportws" title="Save these blocks as the same .json the site exports">Export Workspace</button>
+    <button id="btn-resetws" class="danger" title="Empty the canvas. Asks first, and can be undone.">Reset Workspace</button>
+  </span>
+</div>
+
+<div id="more" hidden>
+  <div class="mh">Your work</div>
+  <button id="btn-import">Open a file</button>
+  <button id="btn-clean">Tidy the blocks up</button>
+  <button id="btn-collapse">Fold every block</button>
+  <button id="btn-expand">Unfold every block</button>
+  <button id="btn-rule">Work on one rule at a time</button>
+  <div class="mh">Save a copy to a file</div>
+  <select id="export">
+    <option value="">Save a copy as...</option>
+    <option value="workspace">Just the blocks (.json)</option>
+    <option value="experience">The whole experience (.json)</option>
+  </select>
+  <div class="mh">The game's log</div>
+  <button id="btn-logpull" title="Read what your mod printed during the last Host Locally session">Pull the game's log</button>
+  <button id="btn-logwatch" title="Follow the log live while you play. Start this before you launch.">Watch the game's log</button>
+  <div id="gamelog" class="gamelog" hidden></div>
+  <div class="mh">The Portal page</div>
+  <button id="btn-pull">Bring down what is on Portal</button>
+  <button id="btn-push">Send what is here to the page</button>
+  <button id="btn-tosite">Put it on the page by hand</button>
+  <button id="btn-capstyle">Match the site's look</button>
+</div>
+
+<div class="banner" id="banner"></div>
+<div class="restore" id="restore"></div>
+
+<div id="body">
+
+  <!-- The canvas comes first and takes everything the strip does not, so it
+       keeps its full width whenever no panel is open. The strip and the panel
+       follow it, on the right, away from Blockly's category column. -->
+  <div id="centre">
+    <!-- class="blockly" is not decoration: two thirds of the site's own
+         stylesheet is written as ".blockly .blocklyToolboxDiv ...", so without
+         this ancestor 51 of its 79 rules match nothing and the toolbox, the
+         flyout and the search bar all fall back to Blockly defaults. -->
+    <!-- ONE TAB PER SOURCE FILE.
+         Blockly cannot virtualise: a 52,000 block project has to be kept off
+         the canvas, not merely scrolled past. A tab loads one file and nothing
+         else, which is the only thing that makes a large project readable. -->
+    <div id="regiontabs" style="display:none"></div>
+    <div id="breadcrumb" title="Back to where you followed the call from" style="display:none"></div>
+    <div id="canvas" class="blockly"></div>
+    <canvas id="minimap"></canvas>
+    <div id="slotpop"></div>
+  <!-- Where candidate blocks are drawn before being copied into the picker.
+       Off screen rather than hidden: a display:none workspace measures its
+       text as zero and every block comes out the wrong size. -->
+  <div id="blockpreview"></div>
+  </div>
+
+  <!-- ---- the handle strip ----------------------------------------------
+       Named in plain words for somebody who has never scripted, and using the
+       same words as the script editor and the UI builder wherever it is the
+       same idea. Nothing here is a tool word. -->
+  <div id="rail">
+    <button class="railbtn" data-pane="start">Start here</button>
+    <button class="railbtn" data-pane="rules">Your rules</button>
+    <button class="railbtn" data-pane="find">Find a block</button>
+    <button class="railbtn" data-pane="fits">What fits here</button>
+    <button class="railbtn" data-pane="examples">Examples</button>
+    <button class="railbtn" data-pane="explain">Explain this</button>
+    <button class="railbtn" data-pane="legend">What things mean</button>
+    <button class="railbtn" data-pane="level">The level</button>
+    <button class="railbtn" data-pane="wrong">What went wrong</button>
+    <button class="railbtn" data-pane="ask">Ask a question</button>
+  </div>
+
+  <!-- ---- the slide-out -------------------------------------------------- -->
+  <div id="side">
+    <div id="sideHead">
+      <span class="name" id="sideTitle">Start here</span>
+      <button id="sidePin" title="Leave this open while you work on the blocks">Keep open</button>
+      <button id="sideClose" title="Close it (Escape)">Close</button>
+    </div>
+    <div id="sideBody">
+
+      <div class="pane" id="pane-start">
+        <div class="lede">Blocks are the rules of your experience. A rule says when something happens, and what the game should do about it.</div>
+        <div class="h">Five steps</div>
+        <button class="row" id="start-examples"><span class="t">1. Put a working rule on the canvas</span>Read it, change one thing, see what happens. Nothing here can break your experience.</button>
+        <button class="row" id="start-find"><span class="t">2. Find the block you want</span>Search by what it does, not by what it is called.</button>
+        <button class="row" id="start-fits"><span class="t">3. Ask what fits a hole</span>Click an empty socket and the tool lists only the blocks that go in it.</button>
+        <button class="row" id="start-explain"><span class="t">4. Ask what a block does</span>Select any block and read what it takes and what it gives back.</button>
+        <button class="row" id="start-save"><span class="t">5. Save it to Portal</span>SAVE TO PORTAL presses the site's own save button. That is the only way your work leaves this tool.</button>
+        <div class="h">Stuck?</div>
+        <button class="row" id="start-ask"><span class="t">Ask a question</span>Answers to the things creators ask most, each with a rule you can drop straight onto the canvas.</button>
+      </div>
+
+      <div class="pane" id="pane-rules">
+        <div class="lede">Everything your experience is made of. Click a row to jump to it on the canvas.</div>
+        <div class="tabs">
+          <div class="tab on" id="tab-rules">Rules</div>
+          <div class="tab" id="tab-subs">Subs</div>
+          <div class="tab" id="tab-vars">Vars</div>
+          <div class="tab" id="tab-orphans">Loose</div>
+        </div>
+        <div id="navcount"></div>
+        <div id="navlist"></div>
+      </div>
+
+      <div class="pane" id="pane-find">
+        <div class="lede">Search what is already on the canvas, or narrow the block list on the left of it.</div>
+        <div class="h">On the canvas</div>
+        <div class="paneline">
+          <input id="search" placeholder="find in blocks, fields and variables">
+          <button id="btn-prev">Prev</button>
+          <button id="btn-next">Next</button>
+        </div>
+        <div class="sub">Enter steps forward, Shift and Enter steps back. Ctrl and F opens this.</div>
+        <div class="h">In the block list</div>
+        <div class="paneline">
+          <input id="toolsearch" placeholder="filter the block list">
+        </div>
+      </div>
+
+      <div class="pane" id="pane-fits">
+        <div class="lede">Select a block or an empty socket, then ask. Only the blocks that actually fit are listed, so nothing you pick can be the wrong shape.</div>
+        <button class="row" id="btn-slot"><span class="t">Show me what fits here</span>Lists every block that can go in the place you have selected.</button>
+      </div>
+
+      <div class="pane" id="pane-examples">
+        <div class="lede">Small working setups. Pick one and it lands on the canvas, ready to read and change.</div>
+        <select id="snippets"><option value="">Pick an example</option></select>
+        <div class="sub">Examples that need a placed object ask you which one, or use whatever you have selected in the level.</div>
+      </div>
+
+      <div class="pane" id="pane-explain">
+        <div class="lede">Select any block and this says what it takes, what it gives back, and which family it belongs to.</div>
+        <div id="help"><div class="dim">Select a block to see what it takes and what it gives back.</div></div>
+      </div>
+
+      <!-- Everything in here is BUILT FROM THE CAPTURED STYLE, never typed out:
+           the swatches are the real block colours, the symbols are the real
+           socket art, and the example is a real block drawn by the real
+           renderer. A legend that is written by hand is a legend that goes
+           quietly wrong the first time the site changes. -->
+      <div class="pane" id="pane-legend">
+        <div class="lede">What the colours and the symbols on a block mean, and what each part of a block is called. Everything here is read from the site's own style, so it matches what you are looking at.</div>
+        <div id="legendBody"></div>
+      </div>
+
+      <div class="pane" id="pane-level">
+        <div class="lede">The blocks that point at something placed in the level. Pick the object in the viewport, then use one of these.</div>
+        <button class="row" id="btn-usesel"><span class="t">Use the object I picked</span>Puts the selected object's number into the block you have selected.</button>
+        <button class="row" id="btn-assign"><span class="t">Give the selected object this number</span>Writes the number in the block onto the object you picked in the level.</button>
+        <button class="row" id="btn-nextref"><span class="t">Jump to the next block that uses it</span>Steps through every block pointing at what is selected in the level.</button>
+      </div>
+
+      <div class="pane" id="pane-wrong">
+        <div class="lede">Whatever the tool or Portal is unhappy about, said in plain words. Empty here is good news.</div>
+        <div class="portal" id="portal"></div>
+        <div class="h">What the readouts mean</div>
+        <div class="sub">PAGE NOT OPEN means the Portal blocks page is not open in the panel, so nothing can be sent to it. NOT SIGNED IN means Portal has not been signed in to. Neither is about your internet connection, and your work is safe here either way: it goes over as soon as the page is open.</div>
+        <div class="sub">A style readout that says the offline default means the tool is drawing with what it recovered from the public site rather than from your own signed-in page. Press MATCH THE SITE'S LOOK under MORE to make it exact.</div>
+      </div>
+
+      <div class="pane" id="pane-ask">
+        <div class="lede">Answers to the things creators ask most. Each one has a rule you can drop straight onto the canvas.</div>
+        <div class="paneline">
+          <input id="answerbox" placeholder="what are you trying to do?">
+        </div>
+        <div id="answerlist"><div class="dim">Loading the answers.</div></div>
+
+        <div class="corpus-note">
+          The list below is different: it is what creators asked each other in
+          their own words, exactly as it was written, with nothing checked. Use
+          it when the answers above do not cover what you are after.
+        </div>
+        <div class="paneline">
+          <input id="faqbox" placeholder="search the threads">
+          <select id="faqtheme"><option value="">All themes</option></select>
+        </div>
+        <div id="faqlist"><div class="dim">No community threads installed yet.</div></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="status-bar">
+  <span class="status" id="status">starting</span>
+  <span class="grow"></span>
+  <span class="status" id="scenehits"></span>
+</div>
+
+<script src="vendor/blockly_compressed.js"></script>
+<script src="vendor/msg/en.js"></script>
+<script src="vendor/types_fallback.js"></script>
+<script src="vendor/toolbox_fallback.js"></script>
+<!-- The blocks/TypeScript converter, for importing the site's script export.
+     Its catalogue and event table arrive from the tool at startup; the
+     TypeScript compiler itself is found on disk and loaded on demand. -->
+<!-- OUR OWN SCRIPTS, WITH A CACHE BUSTER.
+
+     The page is a file:// document inside the editor's browser, and CEF holds
+     on to a local script across a reload. Editing convert.js and reloading the
+     page kept running the OLD converter: a fix that was verified correct
+     offline produced the identical failure in the editor, twice, because the
+     file on disk was not the file being run.
+
+     The vendored Blockly above is not busted - it never changes and it is 5MB.
+     These four do change, every time the tool is worked on. -->
+<script>
+  (function () {
+    var v = Date.now();
+    /* The extended language loads after Blockly and the native converter and
+       before the UI, because the UI installs its definitions and guards. Its
+       three modules define BF6Extended, BF6ExtendedBlocks and
+       BF6ExtendedIntegration. Loading them does not by itself put extended
+       blocks in a toolbox: a project has to opt in. */
+    var ours = ["../convert/convert.js","measure.js","editor.js",
+                "extended/compiler.js","extended/blocks.js","extended/integration.js",
+                "../loot/binding.js","editor_ui.js"];
+    for (var i = 0; i < ours.length; i++) {
+      document.write('<script src="' + ours[i] + '?v=' + v + '">' + '<\/script>');
+    }
+  }());
+</script>
+</body>
+</html>

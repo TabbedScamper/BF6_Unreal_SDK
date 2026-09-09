@@ -93,19 +93,79 @@ namespace BF6Api
 	// Opens a file dialog; detects the map from the file, loads it, and names the
 	// session after the file. Returns true when a map was actually imported.
 	bool    ImportSpatial();
-	// Write the current custom map's session to disk. bSilent skips the toast
-	// (used by the tool's own periodic autosave).
+	// Write the open session to its NAMED save. Does nothing on a session that
+	// has no name yet - that is what CreateCustom (SAVE AS) is for.
 	void    SaveCurrent(bool bSilent = false);
 	// Write the whole map back out as a Godot scene the official SDK opens.
 	// Save picks the file; returns false on cancel or a failed write.
 	bool    SaveAsTscn();
-	// Periodic autosave. OFF by default and remembered per project: the common
-	// use of this tool on an existing map is heavy throwaway change, and an
-	// autosave turns "revert" into "the file already has it".
-	bool    GetAutosave();
-	void    SetAutosave(bool bOn);
-	// Turn the read-only base preview into an editable custom map named Name.
+
+	// ---- the Godot scene a spatial was authored from ----------------------
+	//
+	// A .spatial.json carries the scene tree only through each object's id,
+	// which is its full Godot node path. A group pivot that holds no object of
+	// its own exists only as a path segment, so it has no transform in the
+	// file at all, and a minified spatial renames every segment to a short
+	// token. The .tscn the map was exported from still has the real names, the
+	// real grouping and the real pivots, so it can be laid back over a map
+	// that arrived as a spatial. BF6Project owns the offer; this is the work.
+	struct FTscnCompare
+	{
+		int32   TscnObjects  = 0;   // objects in the scene file
+		int32   MapObjects   = 0;   // objects in the open map
+		int32   MatchedById  = 0;   // same ObjId, unique on both sides
+		int32   MatchedByPos = 0;   // no usable id: same type within a centimetre
+		int32   OnlyInTscn   = 0;   // the scene file has these and the map does not
+		int32   OnlyInMap    = 0;   // the map has these and the scene file does not
+		int32   Moved        = 0;   // matched, but more than a centimetre apart
+		int32   TscnPivots   = 0;   // real group pivots in the scene file
+		FString Level;              // the map the scene file is for, when it says
+		FString Problem;            // set when the file could not be read at all
+		bool    Agrees() const { return Problem.IsEmpty() && OnlyInTscn == 0 && OnlyInMap == 0; }
+	};
+	FTscnCompare CompareTscn(const FString& File);
+
+	struct FTscnMerge
+	{
+		int32 Renamed = 0;        // objects and pivots that took a new label
+		int32 Groups = 0;         // pivots the scene file had and the map did not
+		int32 Pivots = 0;         // pivots whose transform moved to the authored one
+		int32 Reparented = 0;     // objects that changed branch
+		int32 GroupsDropped = 0;  // empty derived groups the scene file has no node for
+	};
+	// Adopt the scene file's names, grouping and pivots onto the OPEN map.
+	// Nothing is spawned and nothing is deleted except a derived group the
+	// scene file has no node for that nothing hangs off any more.
+	bool MergeTscnTree(const FString& File, FTscnMerge& Out);
+	// Open the scene file as a map of its own, under its own name. The save
+	// that was open is left on disk exactly as it was.
+	bool ImportTscnAsSave(const FString& File);
+
+	// SAVE AS: the world on screen, saved under Name, which the session adopts.
+	// (The old CREATE A CUSTOM MAP step, moved to where a save belongs.)
 	void    CreateCustom(const FString& Name);
+
+	// ---- temp backups -----------------------------------------------------
+	//
+	// Always on, and never a save: they live in their own folder, keep the
+	// newest N per level, and a named save changes only on an explicit SAVE.
+	struct FBackupInfo { FString Path, Level, Save, When; int32 Objects = 0; };
+	int32   GetAutosaveMax();               // backups kept per level (default 10)
+	void    SetAutosaveMax(int32 N);
+	void    TickAutosave();                 // the build overlay's tick drives this
+	void    MarkSessionChanged();           // "treat this as an edit" (import, mode build)
+	bool    HasUnsavedChanges();            // changed since the last NAMED save
+	bool    AutosaveNow(bool bSync = false);   // write a backup right now
+	TArray<FBackupInfo> ListBackups(const FString& Level);   // newest first (parses each)
+	int32   BackupCount(const FString& Level);               // how many, without reading them
+	bool    RestoreBackup(const FString& Path);              // loads it as the unnamed session
+	// The backup left behind by an editor that did not close cleanly, if any.
+	bool    PendingCrashBackup(FBackupInfo& Out);
+	void    DismissCrashBackup();           // forget the marker (the files stay)
+	void    ClearRunningMarker();           // clean shutdown
+	// UI, in BF6BuildMode.cpp: the one-time crash offer and the backup list.
+	void    CheckCrashRecovery();
+	void    ShowBackupPicker(const FString& Level);
 	// Deproject the current viewport cursor to the ground plane. False if no viewport.
 	bool    WorldFromViewportCursor(FVector& OutWorld);
 	// The surface point straight ahead of the camera (library double-click placement).
@@ -172,6 +232,10 @@ namespace BF6Api
 
 	// ---- zone (polygon volume) point editing, Godot-style ----
 	bool IsVolumeActor(AActor* A);          // does this actor carry an editable loop?
+	// ---- what the add-on placement seam forwards to (BF6Extension.cpp) ----
+	bool SetVolumeLoop(AActor* Volume, const TArray<FVector>& WorldPoints);   // replace the loop, world cm
+	void ParentUnder(AActor* Child, AActor* Parent);                           // attach, keep world
+	void SetActorPrettyLabel(AActor* A, const FString& Label);                 // a unique scene-tree label
 	// ---- HQ, which owns an area and a set of spawns ----
 	// Drop links naming objects that no longer exist. Runs after a delete;
 	// safe to call at any time, and returns how many objects were corrected.
@@ -277,6 +341,7 @@ namespace BF6Api
 	void RegisterOutlinerTab();
 	void UnregisterOutlinerTab();
 	void OpenOutlinerTab();
+	void CloseOutlinerTab();   // the map screen has no scene; the tab comes back with the build screen
 	void RefreshSceneTree();   // rebuild the tree after a batch spawn + re-parent
 	// Ask for a refresh; it happens once at the end of the frame no matter how
 	// many times it is asked for. Filing an actor does this for you.
@@ -706,4 +771,9 @@ namespace BF6Api
 	// newer, offer to download and restart-to-apply (a compiled plugin can't be
 	// swapped while the editor runs). bManual: also report "up to date"/errors.
 	void CheckForUpdates(bool bManual);
+
+	// The optional High Poly add-on: whether it is there, and fetching it.
+	// The map screen shows the button only while it is absent.
+	bool HighPolyIsInstalled();
+	void InstallHighPoly();
 }

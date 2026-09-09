@@ -611,6 +611,17 @@ namespace BF6Api
 			if (TSharedPtr<FTabManager> TM = LE->GetLevelEditorTabManager())
 				TM->TryInvokeTab(FTabId(LevelEditorTabIds::LevelEditorSceneOutliner));
 	}
+
+	// The map screen has no scene to show, so the Scene tab steps aside while
+	// it is up. Closing the live tab keeps its dock slot in the layout, and
+	// OpenOutlinerTab puts it straight back when the build screen returns.
+	void CloseOutlinerTab()
+	{
+		if (FLevelEditorModule* LE = FModuleManager::GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor")))
+			if (TSharedPtr<FTabManager> TM = LE->GetLevelEditorTabManager())
+				if (TSharedPtr<SDockTab> Live = TM->FindExistingLiveTab(FTabId(LevelEditorTabIds::LevelEditorSceneOutliner)))
+					Live->RequestCloseTab();
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

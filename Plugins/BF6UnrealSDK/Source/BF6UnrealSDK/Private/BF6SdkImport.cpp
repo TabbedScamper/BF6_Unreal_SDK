@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 #include "BF6Internal.h"
+#include "BF6UiSound.h"   // ---- BF6UiSound ----
 #include "BF6BuildMode.h"   // StoredSdkRoot / ValidateSdkRoot
 
 #include "Misc/Paths.h"
@@ -343,6 +344,8 @@ void BF6_ImportFail(const FString& Why)
 {
 	BF6_CloseGodotPipe();
 	g_imp.Phase = FBF6Import::EPhase::Failed;
+	// ---- BF6UiSound ----
+	BF6UiSound::Play(EBF6UiSound::Error);
 	g_imp.Status = FString::Printf(TEXT("Import failed: %s"), *Why);
 	if (g_imp.Tick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(g_imp.Tick); g_imp.Tick.Reset(); }
 	Notify(FString::Printf(TEXT("SDK import failed: %s"), *Why));
@@ -486,15 +489,62 @@ void BF6_ImportTickPhase()
 		return;
 	}
 
-	// all done - stamp the SDK version only now, so a failed import is offered
-	// a re-sync next launch instead of being recorded as current
 	UE_LOG(LogBF6, Warning, TEXT("Map meshes: %d of %d converted."), Count, Target);
-	IFileManager::Get().Copy(*(BF6_DataDir() / TEXT("sdk.version.json")), *(g_imp.SdkRoot / TEXT("sdk.version.json")));
-	// snapshot for the NEXT update's version-history diff
-	BF6Api::BF6_SnapshotSdkHistory(g_imp.SdkRoot);
+
+	// SHORT OF TARGET IS NOT DONE.
+	//
+	// The loop above stops when progress stalls, which is the right way to end a
+	// run that has given all it can, and it was also the way a half-converted
+	// SDK became a finished one: a few workers failing while the rest succeeded
+	// left Count below Target, and this went on to stamp the version as current
+	// and say "Import complete". The tool then believed it had every model,
+	// silently missing whichever ones those workers were carrying, and the next
+	// launch saw a current version and offered no re-sync.
+	//
+	// The version is the claim "this SDK is fully converted here", so it is
+	// stamped only when that is true. A short run keeps the old stamp, which is
+	// exactly what makes the next launch offer to finish the job. Nothing
+	// already converted is redone: the workers count what is on disk and carry
+	// on from there.
+	const int32 ObjShort = FMath::Max(0, g_imp.ObjTotal - g_imp.ObjDone);
+	const int32 MapShort = FMath::Max(0, Target - Count);
+	const bool  bWhole   = (ObjShort == 0 && MapShort == 0);
+
+	if (bWhole)
+	{
+		IFileManager::Get().Copy(*(BF6_DataDir() / TEXT("sdk.version.json")), *(g_imp.SdkRoot / TEXT("sdk.version.json")));
+		// snapshot for the NEXT update's version-history diff
+		BF6Api::BF6_SnapshotSdkHistory(g_imp.SdkRoot);
+	}
+
 	g_imp.Phase = FBF6Import::EPhase::Done;
-	g_imp.Status = FString::Printf(TEXT("Import complete - %d of %d models, %d of %d map meshes"), g_imp.ObjDone, g_imp.ObjTotal, Count, Target);
 	g_imp.Frac = 1.f;
 	if (g_imp.Tick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(g_imp.Tick); g_imp.Tick.Reset(); }
-	Notify(FString::Printf(TEXT("SDK import complete - %d models and %d map meshes ready."), g_imp.ObjDone, Count));
+
+	if (bWhole)
+	{
+		g_imp.Status = FString::Printf(TEXT("Import complete - %d models, %d map meshes"), g_imp.ObjDone, Count);
+		// ---- BF6UiSound ----
+		BF6UiSound::Play(EBF6UiSound::ImportDone);
+		Notify(FString::Printf(TEXT("SDK import complete - %d models and %d map meshes ready."), g_imp.ObjDone, Count));
+		return;
+	}
+
+	// What is missing, in the words somebody can act on. The counts are named
+	// separately because which phase fell short changes what is wrong.
+	FString Missing;
+	if (ObjShort) { Missing += FString::Printf(TEXT("%d model%s"), ObjShort, ObjShort == 1 ? TEXT("") : TEXT("s")); }
+	if (ObjShort && MapShort) { Missing += TEXT(" and "); }
+	if (MapShort) { Missing += FString::Printf(TEXT("%d map mesh%s"), MapShort, MapShort == 1 ? TEXT("") : TEXT("es")); }
+
+	g_imp.Status = FString::Printf(
+		TEXT("Import incomplete - %d of %d models, %d of %d map meshes. %s missing."),
+		g_imp.ObjDone, g_imp.ObjTotal, Count, Target, *Missing);
+	UE_LOG(LogBF6, Warning,
+		TEXT("SDK import fell short: %s. The SDK version was NOT stamped, so the next launch will offer to finish it. ")
+		TEXT("Run Full re-sync to fill the gaps; what already converted is kept. See Saved/BF6UnrealSDK/import/godot_run.log."),
+		*Missing);
+	Notify(FString::Printf(
+		TEXT("SDK import finished short: %s could not be converted. Run Full re-sync to finish; nothing already done is redone."),
+		*Missing));
 }

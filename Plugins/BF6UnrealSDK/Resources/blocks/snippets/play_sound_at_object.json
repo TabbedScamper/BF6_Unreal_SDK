@@ -1,0 +1,107 @@
+{
+ "name": "Audio: play a sound where the player is",
+ "note": "Fires when a player walks into one area trigger and plays a sound at that player's position, audible within 30 metres. PlaySound's four argument form is PlaySound(SFX, Number, Vector, Number) from the mined catalogue; the two argument form is the one the reference project uses. UNVERIFIED: GetSFX does not appear in the reference project, so its input name comes from the catalogue.",
+ "blocks": {
+  "languageVersion": 0,
+  "blocks": [
+   {
+    "type": "ruleBlock",
+    "x": 40,
+    "y": 40,
+    "extraState": {
+     "isOngoingEvent": false
+    },
+    "fields": {
+     "NAME": "Sound On Enter",
+     "EVENTTYPE": "OnPlayerEnterAreaTrigger"
+    },
+    "inputs": {
+     "CONDITIONS": {
+      "block": {
+       "type": "conditionBlock",
+       "inputs": {
+        "CONDITION": {
+         "block": {
+          "type": "Equals",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "GetObjId",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "EventAreaTrigger"
+               }
+              }
+             }
+            }
+           },
+           "VALUE-1": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": "{{OBJID:AreaTrigger}}"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "ACTIONS": {
+      "block": {
+       "type": "PlaySound",
+       "inputs": {
+        "VALUE-0": {
+         "block": {
+          "type": "GetSFX",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": "{{OBJID:SFX}}"
+             }
+            }
+           }
+          }
+         }
+        },
+        "VALUE-1": {
+         "block": {
+          "type": "Number",
+          "fields": {
+           "NUM": 1
+          }
+         }
+        },
+        "VALUE-2": {
+         "block": {
+          "type": "GetObjectPosition",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "EventPlayer"
+            }
+           }
+          }
+         }
+        },
+        "VALUE-3": {
+         "block": {
+          "type": "Number",
+          "fields": {
+           "NUM": 30
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  ]
+ }
+}

@@ -1,10 +1,29 @@
-#include "BF6UnrealSDK.h"
+﻿#include "BF6UnrealSDK.h"
+// ---- BF6UiBuilder ----
+#include "BF6UiBuilder.h"  // the UI builder: dock tab, BF6.UI.* commands
+// ---- end BF6UiBuilder ----
+#include "BF6PortalWeb.h"   // the Portal site panel: module hooks, save key, export note
+// ---- BF6ObjIds ----
+#include "BF6ObjIds.h"   // the ObjId manager: one definition of a duplicate id
+// ---- end BF6ObjIds ----
+#include "BF6Blocks.h"      // the Portal block editor: module hooks
+#include "BF6Assist.h"      // where the user's own AI attaches
+#include "BF6GameLog.h"     // the Portal log Battlefield writes while a mod runs
+#include "BF6Capabilities.h" // what each source says this build can do
+#include "BF6PortalProfile.h"   // ---- BF6PortalProfile ----: the path-based importer lives here
+// ---- BF6Script ----
+#include "BF6Script.h"   // the TypeScript editor tab and its Portal push
+// ---- end BF6Script ----
+// ---- BF6Project ----
+#include "BF6Project.h"   // every save is a complete project on disk
+// ---- end BF6Project ----
 
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/AutomationTest.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformProcess.h"
@@ -32,6 +51,7 @@
 #include "GameFramework/Actor.h"
 #include "EngineUtils.h"
 #include "Editor.h"
+#include "FileHelpers.h"   // FEditorFileUtils: the save barrier before an update restart
 #include "Engine/Selection.h"
 #include "ScopedTransaction.h"
 #include "Misc/ITransaction.h"
@@ -98,6 +118,7 @@
 #include "BF6Theme.h"
 #include "BF6Bridge.h"
 #include "SBF6PreviewViewport.h"
+#include "BF6UiSound.h"   // ---- BF6UiSound ----
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 
@@ -145,14 +166,125 @@ static bf6_placeable_props_fn g_props  = nullptr;
 static bf6_ctx*               g_ctx    = nullptr;
 FString                       g_pluginDir;   // shared: BF6Internal.h
 
-static const char* kGameDir =
-    "C:/Program Files (x86)/Steam/steamapps/common/Battlefield 6";
 // The install the core is actually reading, empty in catalogue-only mode.
-// Discovery is still the one Steam path; finding an install properly belongs
-// in the core (the Godot plugin's gamedir module), not in two bindings.
 static FString                g_gameDir;
+
+// ---------------------------------------------------------------------------
+// FINDING THE GAME, WHEREVER IT WAS INSTALLED FROM.
+//
+// This was one hardcoded string:
+//     C:/Program Files (x86)/Steam/steamapps/common/Battlefield 6
+// so anybody who bought Battlefield through the EA App - which is the ordinary
+// way to buy it - had no install as far as the tool was concerned. It fell
+// straight through to catalogue-only mode and every mesh read was unavailable,
+// with a log line about "no game install" on a machine where the game was
+// plainly installed.
+//
+// The add-on already got this right: a validated folder, remembered, with a
+// picker. The base tool did not, and the base tool is the one that owns the
+// core, so this is where discovery belongs.
+//
+// Order: what the user chose, then what the add-on already found, then the
+// usual places. Validation is the same test the add-on uses, because two
+// different ideas of "is this an install" is how they end up disagreeing.
+// ---------------------------------------------------------------------------
+static const TCHAR* kInstallIni = TEXT("BF6UnrealSDK");
+static const TCHAR* kInstallKey = TEXT("GameInstallDir");
+
+static bool BF6_LooksLikeInstall(const FString& Dir)
+{
+	if (Dir.IsEmpty() || !FPaths::DirectoryExists(Dir)) { return false; }
+	if (FPaths::FileExists(FPaths::Combine(Dir, TEXT("bf6.exe")))) { return true; }
+	TArray<FString> Tocs;
+	IFileManager::Get().FindFiles(Tocs,
+		*(FPaths::Combine(Dir, TEXT("Data/Win32")) / TEXT("*.toc")), true, false);
+	return Tocs.Num() > 0;
+}
+
+static FString BF6_DiscoverGameInstall(TArray<FString>* OutTried = nullptr)
+{
+	auto Try = [OutTried](const FString& Dir) -> bool
+	{
+		if (Dir.IsEmpty()) { return false; }
+		if (OutTried) { OutTried->AddUnique(Dir); }
+		return BF6_LooksLikeInstall(Dir);
+	};
+
+	// 1. What the user picked, if it is still there.
+	FString Chosen;
+	if (GConfig && GConfig->GetString(kInstallIni, kInstallKey, Chosen, GEditorPerProjectIni))
+	{
+		if (Try(Chosen)) { return Chosen; }
+	}
+
+	// 2. What the High Poly add-on already found and remembered, so the two
+	//    halves of the tool never disagree about which install is open.
+	const FString AddOnRecord = FPaths::Combine(FPaths::ProjectSavedDir(),
+		TEXT("BF6HighPoly"), TEXT("install.txt"));
+	FString FromAddOn;
+	if (FFileHelper::LoadFileToString(FromAddOn, *AddOnRecord))
+	{
+		FromAddOn.TrimStartAndEndInline();
+		if (Try(FromAddOn)) { return FromAddOn; }
+	}
+
+	// 3. The usual places. EA App first: it is the ordinary way to own the
+	//    game, and it was the one this tool could not see.
+	static const TCHAR* kCandidates[] = {
+		TEXT("C:/Program Files/EA Games/Battlefield 6"),
+		TEXT("C:/Program Files/EA Games/Battlefield 6 Open Beta"),
+		TEXT("C:/Program Files (x86)/Steam/steamapps/common/Battlefield 6"),
+		TEXT("D:/Program Files/EA Games/Battlefield 6"),
+		TEXT("D:/SteamLibrary/steamapps/common/Battlefield 6"),
+		TEXT("E:/SteamLibrary/steamapps/common/Battlefield 6"),
+	};
+	for (const TCHAR* C : kCandidates) { if (Try(FString(C))) { return FString(C); } }
+
+	// 4. Every fixed drive, for a library on a disk we did not guess.
+	static const TCHAR* kSuffixes[] = {
+		TEXT("SteamLibrary/steamapps/common/Battlefield 6"),
+		TEXT("Program Files/EA Games/Battlefield 6"),
+		TEXT("EA Games/Battlefield 6"),
+		TEXT("Games/Battlefield 6"),
+	};
+	for (TCHAR Drive = TEXT('C'); Drive <= TEXT('Z'); ++Drive)
+	{
+		const FString Root = FString::Printf(TEXT("%c:/"), Drive);
+		if (!FPaths::DirectoryExists(Root)) { continue; }
+		for (const TCHAR* S : kSuffixes)
+		{
+			if (Try(Root + S)) { return Root + S; }
+		}
+	}
+	return FString();
+}
 static const FName kTabName("BF6Objects");
 static const FName kPlacedTag("BF6Placed");
+
+// EXPORT MEMBERSHIP, SAID OUT LOUD.
+//
+// An add-on that builds several variants of a map's gameplay objects and shows
+// one at a time needs a way to say "this belongs to a variant nobody asked
+// for". Hiding was doing that job by accident and doing it badly: the exporter
+// does not care whether an actor is visible, so every variant ever built went
+// into the file together with colliding ids.
+//
+// This tag is that statement, and the only thing the exporter honours. It is
+// deliberately NOT the hidden flag, because hiding is something people do to
+// see past an object while they work, and an export that silently dropped
+// whatever was hidden would lose real map content.
+static const FName kNoExportTag("BF6NoExport");
+
+// The tag counts on the actor or on anything it is attached under, so an add-on
+// marks the one node it owns rather than every object beneath it.
+static bool BF6_ExcludedFromExport(const AActor* A)
+{
+	for (const AActor* P = A; P; P = P->GetAttachParentActor())
+	{
+		if (P->Tags.Contains(kNoExportTag)) { return true; }
+	}
+	return false;
+}
 static const FName kContextTag("BF6Context");
 static const FName kBaseTag("BF6Base");
 // Godot builds its hierarchy out of nodes: an empty Node3D used purely as a
@@ -909,6 +1041,11 @@ static FString ObjModelPath(const FString& MeshName)
 
 // Place a placeable using the SDK's shipped low-poly model (complete, fast, matches
 // the Godot object library). MeshName is the placeable's 'mesh' constant.
+// During a bulk load, check each distinct model path once. This table exists
+// only for that operation; later opens and individual placements check disk
+// again, including models installed or removed since the previous operation.
+static TMap<FString, bool>* GBulkModelFileChecks = nullptr;
+
 static AActor* SpawnSdkModel(const FString& MeshName, const FString& Label, const FTransform& Xform)
 {
 	if (!GEditor || MeshName.IsEmpty()) return nullptr;
@@ -916,7 +1053,13 @@ static AActor* SpawnSdkModel(const FString& MeshName, const FString& Label, cons
 	if (!World) return nullptr;
 	const FString Path = ObjModelPath(MeshName);
 	const double S0 = FPlatformTime::Seconds();
-	const bool bHave = FPaths::FileExists(Path);
+	bool bHave;
+	if (GBulkModelFileChecks)
+	{
+		if (const bool* Found = GBulkModelFileChecks->Find(Path)) bHave = *Found;
+		else bHave = GBulkModelFileChecks->Add(Path, FPaths::FileExists(Path));
+	}
+	else bHave = FPaths::FileExists(Path);
 	GStatSec += FPlatformTime::Seconds() - S0;
 	if (!bHave) { UE_LOG(LogBF6, Warning, TEXT("no SDK model bundled for '%s'"), *MeshName); return nullptr; }
 	const double P0 = FPlatformTime::Seconds();
@@ -1943,11 +2086,64 @@ static FString BF6_SessionPathOld(const FString& Level, const FString& Name)
 {
 	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), Level) / (Name + TEXT(".json"));
 }
-static FString BF6_SessionPathFor(const FString& Level, const FString& Name)   // load: new layout wins
+
+// ---- BF6Project: an experience is ONE project with MANY maps ----------------
+//
+// An experience is one game mode: one script project, one settings set, one
+// thumbnail, one block workspace - and eleven maps. Eleven flat sibling saves
+// duplicated the shared half eleven times or left it homeless, so an
+// experience gets ONE folder with its maps inside it:
+//
+//   experiences/<experience>/                 project.json, package.json, src,
+//                                             scripts, blocks, settings, dist
+//   experiences/<experience>/maps/<Level>/    <Level>.json, <Level>.spatial.json,
+//                                             <Level>.tscn, backups
+//
+// THE SAVE NAME IS THE EXPERIENCE NAME, and that is what makes this cheap:
+// every path in the tool is already (Level, Name), and a map of an experience
+// is (that map's level, the experience's folder). So RESUME under a map card
+// lists the experience by name, the map switcher moves between levels of one
+// save, and nothing above this line had to learn a new shape.
+//
+// A save that belongs to no experience is untouched: it stays saves/<Name>/.
+// SAVES IS THE ONE PLACE. Experiences used to sit beside saves/ rather than
+// inside it, which left a creator looking at an empty saves folder while all
+// eleven of their maps were somewhere else, and reading that as lost work.
+// Everything a creator saves now lives under saves/, standalone maps directly
+// in it and experiences under saves/experiences/.
+static FString BF6_ExperiencesRoot()
 {
+	return FPaths::Combine(BF6_SavesRoot(), TEXT("experiences"));
+}
+static FString BF6_ExperienceDir(const FString& Name)
+{
+	return BF6_ExperiencesRoot() / Name;
+}
+// True when a folder of that name is an experience project (it has the
+// manifest), so the same name can never mean two different layouts.
+static bool BF6_IsExperienceSave(const FString& Name)
+{
+	return !Name.IsEmpty() && FPaths::FileExists(BF6_ExperienceDir(Name) / TEXT("project.json"));
+}
+static FString BF6_SessionPathExp(const FString& Level, const FString& Name)
+{
+	return BF6_ExperienceDir(Name) / TEXT("maps") / Level / (Level + TEXT(".json"));
+}
+// Where a save is WRITTEN. An experience keeps its maps inside itself; anything
+// else keeps the per-save folder it has always had.
+static FString BF6_SessionWritePath(const FString& Level, const FString& Name)
+{
+	if (BF6_IsExperienceSave(Name)) return BF6_SessionPathExp(Level, Name);
+	return BF6_SessionPathNew(Level, Name);
+}
+static FString BF6_SessionPathFor(const FString& Level, const FString& Name)   // load: newest layout wins
+{
+	const FString E = BF6_SessionPathExp(Level, Name);
+	if (FPaths::FileExists(E)) return E;
 	const FString N = BF6_SessionPathNew(Level, Name);
 	return FPaths::FileExists(N) ? N : BF6_SessionPathOld(Level, Name);
 }
+// ---- end BF6Project ----
 
 // A custom map's name becomes a FOLDER on disk, so the filesystem has a veto.
 // Without this a name like "M4/Sherman" wrote nothing, the session still
@@ -2000,6 +2196,16 @@ static TArray<FString> ListSaves(const FString& Level)
 	for (const FString& D : Dirs)
 		if (FPaths::FileExists(BF6_SavesRoot() / D / (Level + TEXT(".json"))))
 			Out.AddUnique(D);
+	// ---- BF6Project ----
+	// experiences/<experience>/maps/<Level>/<Level>.json. The save name is the
+	// experience, so a map that belongs to one is resumed under that map's own
+	// card by the name of the game mode it is part of, which is what somebody
+	// signed out of Portal has to be able to do.
+	TArray<FString> Exps;
+	IFileManager::Get().FindFiles(Exps, *(BF6_ExperiencesRoot() / TEXT("*")), false, true);
+	for (const FString& E : Exps)
+		if (FPaths::FileExists(BF6_SessionPathExp(Level, E))) Out.AddUnique(E);
+	// ---- end BF6Project ----
 	// old flat layout keeps listing until re-saved
 	TArray<FString> Files;
 	IFileManager::Get().FindFiles(Files, *(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), Level) / TEXT("*.json")), true, false);
@@ -2040,6 +2246,21 @@ static uint32 BF6_SavesFingerprint()
 	IFileManager::Get().FindFiles(Dirs, *(Root / TEXT("*")), false, true);
 	Dirs.Sort();
 	for (const FString& D : Dirs) { Fold(D); FoldDir(Root / D); }
+
+	// ---- BF6Project ----: experiences/<experience>/maps/<Level>/<Level>.json
+	const FString ERoot = BF6_ExperiencesRoot();
+	TArray<FString> Exps;
+	IFileManager::Get().FindFiles(Exps, *(ERoot / TEXT("*")), false, true);
+	Exps.Sort();
+	for (const FString& E : Exps)
+	{
+		Fold(E);
+		TArray<FString> Maps;
+		IFileManager::Get().FindFiles(Maps, *(ERoot / E / TEXT("maps") / TEXT("*")), false, true);
+		Maps.Sort();
+		for (const FString& M : Maps) { Fold(M); FoldDir(ERoot / E / TEXT("maps") / M); }
+	}
+	// ---- end BF6Project ----
 
 	// old flat layout: <Level>/<Name>.json, a sibling of saves/. Matched on the
 	// level prefix so the tool's own churning folders (thumbs, export, sdk)
@@ -2140,12 +2361,23 @@ static void BF6_SyncTreeTagsFromLive()
 	}
 }
 
-static bool SaveSession(const FString& Level, const FString& Name)
+// The session, as JSON, built on the GAME THREAD and nothing else.
+//
+// Split out of SaveSession because the temp backups write the very same
+// document: one description of the session, two destinations. Serialising here
+// and writing elsewhere is also what lets a backup leave the game thread - the
+// world may only be read from it, a file may be written from anywhere.
+//
+// Name may be EMPTY: an unnamed session is a real session, it simply has no
+// file of its own yet. The only thing the name feeds is the Portal experience
+// lookup, which answers nothing for a map that was never saved under a name.
+static TSharedPtr<FJsonObject> BF6_BuildSessionRoot(const FString& Level, const FString& Name, int32& OutObjects)
 {
+	OutObjects = 0;
 	BF6_SyncTreeTagsFromLive();
-	if (!GEditor || Name.IsEmpty()) return false;
+	if (!GEditor) return nullptr;
 	UWorld* World = GEditor->GetEditorWorldContext().World();
-	if (!World) return false;
+	if (!World) return nullptr;
 	TArray<TSharedPtr<FJsonValue>> Objs;
 	TMap<AGroupActor*, int32> GroupIdx;   // group root -> stable save index
 	for (TActorIterator<AActor> It(World); It; ++It)
@@ -2181,7 +2413,8 @@ static bool SaveSession(const FString& Level, const FString& Name)
 					|| TS.StartsWith(TEXT("gtree:")) || TS.StartsWith(TEXT("gpath:"))   // the authored tree
 					|| TS.StartsWith(TEXT("gord:"))                              // and its order
 					|| TS.StartsWith(TEXT("tint:"))                             // and its colour
-					|| TS.StartsWith(TEXT("vcol:")))                            // a volume's own colour
+					|| TS.StartsWith(TEXT("vcol:"))                             // a volume's own colour
+					|| TS.StartsWith(TEXT("preview:highpoly.")))                // editor-only loadout appearance
 					RawTags.Add(MakeShared<FJsonValueString>(TS));
 			}
 			if (RawTags.Num()) O->SetArrayField(TEXT("tags"), RawTags);
@@ -2259,6 +2492,20 @@ static bool SaveSession(const FString& Level, const FString& Name)
 	// cryptic "no accepted layers found in provided level")
 	Root->SetStringField(TEXT("_note"), TEXT("BF6 Unreal SDK session save - NOT for the Portal site. Use EXPORT in the tool to get the uploadable <map>.spatial.json."));
 	Root->SetStringField(TEXT("level"), Level);
+	// ---- BF6PortalWeb: the Portal experience this map is linked to ----
+	{
+		const FString Exp = BF6PortalWeb::ExperienceForSave(Level, Name);
+		if (!Exp.IsEmpty()) Root->SetStringField(TEXT("portalExperience"), Exp);
+		// ---- BF6PortalProfile ----
+		// WHICH MAP OF THE EXPERIENCE THIS IS. An experience carries a whole map
+		// rotation; its blocks, script and settings are shared by every map in
+		// it and only the map differs, so a save has to say which slot it sits
+		// in or the tool cannot offer the sibling maps.
+		const int32 PortalMapIdx = BF6PortalWeb::MapIdxForSave(Level, Name);
+		if (!Exp.IsEmpty() && PortalMapIdx >= 0) Root->SetNumberField(TEXT("portalMapIdx"), PortalMapIdx);
+		// ---- end BF6PortalProfile ----
+	}
+	// ---- end BF6PortalWeb ----
 	Root->SetArrayField(TEXT("objects"), Objs);
 	Root->SetArrayField(TEXT("base"), BaseArr);
 	// THIS SAVE'S BASE LIST IS THE WHOLE TRUTH, and saying so is what lets a
@@ -2277,31 +2524,143 @@ static bool SaveSession(const FString& Level, const FString& Name)
 	// saves have no flag and keep the old behaviour, which is the only safe
 	// reading of them: their base list was never guaranteed complete.
 	Root->SetBoolField(TEXT("base_complete"), true);
+	OutObjects = Objs.Num();
+	return Root;
+}
+
+// The NAMED save: the same document, written where RESUME looks for it. This
+// is the only write a creator's own SAVE makes, and the only file the tool ever
+// overwrites without being asked.
+static bool SaveSession(const FString& Level, const FString& Name)
+{
+	if (Name.IsEmpty()) return false;
+	int32 NObj = 0;
+	TSharedPtr<FJsonObject> Root = BF6_BuildSessionRoot(Level, Name, NObj);
+	if (!Root.IsValid()) return false;
 	FString Out;
 	TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
 	FJsonSerializer::Serialize(Root.ToSharedRef(), W);
-	const FString Path = BF6_SessionPathNew(Level, Name);
+	const FString Path = BF6_SessionWritePath(Level, Name);   // ---- BF6Project ----: an experience keeps its maps inside itself
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
 	// The RESULT matters. A name the filesystem will not take produced a silent
 	// no-write, and the caller then reported success for a file that was never
 	// created - worse than failing, because nothing looks wrong until the save
 	// is gone.
-	if (!FFileHelper::SaveStringToFile(Out, *Path))
+	//
+	// AND THE OLD SAVE SURVIVES A FAILED NEW ONE. Writing straight over the
+	// destination means a write that dies halfway - disk full, the file locked
+	// by a sync client, the editor going down - leaves a truncated file where a
+	// good save used to be, and the good one is gone. So the new contents go to
+	// a temporary file beside it, are read back to prove they arrived whole, and
+	// only then replace the previous save. Nothing is destroyed until its
+	// replacement is known to exist.
 	{
-		UE_LOG(LogBF6, Error, TEXT("Could not write the session to %s"), *Path);
-		return false;
+		const FString Temp = Path + TEXT(".writing");
+		IFileManager::Get().Delete(*Temp, false, true, true);
+		if (!FFileHelper::SaveStringToFile(Out, *Temp))
+		{
+			UE_LOG(LogBF6, Error, TEXT("Could not write the session to %s"), *Temp);
+			return false;
+		}
+		FString Back;
+		// CONTENTS, NOT LENGTH. Two files of the same size can differ, and a
+		// half-flushed write can land at the right length with the wrong bytes.
+		if (!FFileHelper::LoadFileToString(Back, *Temp) || Back != Out)
+		{
+			IFileManager::Get().Delete(*Temp, false, true, true);
+			UE_LOG(LogBF6, Error,
+				TEXT("The session written to %s did not read back identical, so %s was left as it was."),
+				*Temp, *Path);
+			return false;
+		}
+
+		// THE PREVIOUS SAVE OUTLIVES THE SWAP.
+		//
+		// Windows will not rename over an existing file, so the old one used to
+		// be DELETED and then the new one moved in. Everything between those
+		// two calls is a window where the only committed copy does not exist:
+		// if the move fails, or the editor goes down, the save is simply gone.
+		//
+		// So the old one is renamed aside first. The new one moves into place,
+		// and only then is the old one dropped. If anything fails the old one
+		// goes straight back, and if the process dies mid-way the file is still
+		// on disk under a name that says what it is.
+		IFileManager& FM = IFileManager::Get();
+		const FString Prev = Path + TEXT(".previous");
+		bool bMovedAside = false;
+		if (FPaths::FileExists(Path))
+		{
+			FM.Delete(*Prev, false, true, true);
+			if (!FM.Move(*Prev, *Path, true, true))
+			{
+				FM.Delete(*Temp, false, true, true);
+				UE_LOG(LogBF6, Error,
+					TEXT("Could not set the previous save aside, so %s was left exactly as it was."), *Path);
+				return false;
+			}
+			bMovedAside = true;
+		}
+		if (!FM.Move(*Path, *Temp, true, true))
+		{
+			// Put it back. The user ends where they started rather than with
+			// nothing - IF that works. Announcing a rollback without checking
+			// it is the same class of untruth as reporting a failed mount as
+			// finished: the reader believes their old save is back when it is
+			// still sitting under another name.
+			const bool bPutBack = bMovedAside ? FM.Move(*Path, *Prev, true, true) : true;
+			if (bPutBack)
+			{
+				UE_LOG(LogBF6, Error,
+					TEXT("The session could not be moved into place, so the previous save was put back. ")
+					TEXT("The new one is complete at %s: rename it to %s by hand."),
+					*Temp, *Path);
+			}
+			else
+			{
+				// Both files exist and neither is where it belongs. Say exactly
+				// where they are, because this is the moment somebody needs to
+				// go and get them.
+				UE_LOG(LogBF6, Error,
+					TEXT("The session could not be moved into place AND the previous save could not be put ")
+					TEXT("back. Nothing was lost, but two files need moving by hand: the new save is at %s ")
+					TEXT("and the previous one is at %s. One of them belongs at %s."),
+					*Temp, *Prev, *Path);
+			}
+			return false;
+		}
+		// Committed. The stand-in has done its job.
+		if (bMovedAside) { FM.Delete(*Prev, false, true, true); }
 	}
 	// the same save under the OLD flat layout is superseded - remove it so
 	// the resume list never shows doubles
 	const FString Old = BF6_SessionPathOld(Level, Name);
 	if (FPaths::FileExists(Old)) IFileManager::Get().Delete(*Old);
-	UE_LOG(LogBF6, Display, TEXT("Saved %d object(s) to %s"), Objs.Num(), *Path);
+	UE_LOG(LogBF6, Display, TEXT("Saved %d object(s) to %s"), NObj, *Path);
+
+	// ---- BF6PortalProfile ----
+	// The tool saved a map. Said out loud rather than left for a timestamp
+	// poll to notice, so the auto-sync starts the moment the write lands.
+	BF6PortalProfile::NoteToolSaved(Level, Name);
+	// ---- end BF6PortalProfile ----
+
+	// ---- BF6Project ----
+	// EVERY SAVE GETS A PROJECT, a freshly built map with nothing in it
+	// included. The call is cheap on purpose: it makes the folders, rewrites
+	// the manifest with a content hash per artefact, and queues the template
+	// copy and the rotating project snapshot onto a background thread.
+	BF6Project::NoteSaved(Level, Name);
+	// ---- end BF6Project ----
 	return true;
 }
 
-static void LoadSession(const FString& Level, const FString& Name)
+// Load a session document from an EXACT path, so a temp backup loads through
+// the same code a named save does - one loader, one set of rules about links,
+// groups, the tree and deleted base objects.
+static void BF6_LoadSessionFile(const FString& Level, const FString& Path)
 {
 	const double LoadT0 = FPlatformTime::Seconds();
+	TMap<FString, bool> ModelFileChecks;
+	TGuardValue<TMap<FString, bool>*> ModelChecksScope(GBulkModelFileChecks, &ModelFileChecks);
 	GMeshDecodeSec = GMeshBuildSec = 0.0; GMeshCalls = GMeshCacheHits = 0;
 	GLabelSec = GSpawnSec = GStatSec = GFolderSec = 0.0;
 	// one scan of the world up front instead of one per object
@@ -2309,8 +2668,7 @@ static void LoadSession(const FString& Level, const FString& Name)
 	if (UWorld* LW = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr) BulkLabels.Populate(LW);
 	GBulkLabels = &BulkLabels;
 	ON_SCOPE_EXIT { GBulkLabels = nullptr; };
-	if (Name.IsEmpty()) return;
-	const FString Path = BF6_SessionPathFor(Level, Name);
+	if (Path.IsEmpty()) return;
 	FString In;
 	if (!FFileHelper::LoadFileToString(In, *Path)) { UE_LOG(LogBF6, Warning, TEXT("no save at %s"), *Path); return; }
 	TSharedPtr<FJsonObject> Root;
@@ -2568,6 +2926,20 @@ static void LoadSession(const FString& Level, const FString& Name)
 		FPlatformTime::Seconds() - LoadT0, GMeshDecodeSec, GMeshCacheHits, GMeshCalls, GMeshBuildSec);
 	UE_LOG(LogBF6, Display, TEXT("  load detail: %.2fs naming, %.2fs spawning, %.2fs file checks, %.2fs outliner"),
 		GLabelSec, GSpawnSec, GStatSec, GFolderSec);
+}
+
+// A named save, by name.
+static void LoadSession(const FString& Level, const FString& Name)
+{
+	if (Name.IsEmpty()) return;
+	BF6_LoadSessionFile(Level, BF6_SessionPathFor(Level, Name));
+	// ---- BF6Project ----
+	// A save made before projects existed is upgraded the first time it is
+	// opened, in place and without losing anything: the manifest and the
+	// tool's own folders appear, the session file it already had is untouched,
+	// and the log says exactly what was added.
+	BF6Project::Ensure(Level, Name, false);
+	// ---- end BF6Project ----
 }
 
 // Carries a placeable while dragging from the list into the level viewport.
@@ -4252,8 +4624,376 @@ static void BF6_LoadBaseSetup(const FString& Level)
 
 
 static void BF6_HookSpawnWatch();   // fwd: defined with the other editor hooks
+// ============================================================================
+// TEMP BACKUPS - the safety net under every session, always running
+// ============================================================================
+//
+// The tool used to make you name a map before it would let you touch anything,
+// and then leave the keeping of that work to you. Both halves are gone. A map
+// opens EDITABLE on top of its shipped base setup, the session starts unnamed,
+// and from the first change the tool keeps its own rolling backups.
+//
+// Three states, and they never write over each other:
+//   BASELINE      the shipped base setup - read-only, and what a clear returns to
+//   SESSION       what is in the world right now; unnamed until a SAVE AS
+//   NAMED SAVE    saves/<name>/<Level>.json, and it changes ONLY on an explicit SAVE
+//   TEMP BACKUP   autosave/<Level>/<stamp>_<n>.json, newest N kept, never a save
+//
+// That last line answers the old autosave toggle's real worry, which was a
+// throwaway experiment quietly overwriting a map somebody wanted to keep. A
+// backup cannot do that: it goes to its own folder under its own name. So the
+// toggle is gone and the net is simply always there.
+struct FBF6BackupHeader
+{
+	FString Path, Level, Save, When, Session;
+	int32   Objects = 0;
+	uint32  Pid = 0;
+};
+
+static FString BF6_AutosaveRoot()
+{
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("autosave"));
+}
+static FString BF6_AutosaveDirFor(const FString& Level)
+{
+	return BF6_AutosaveRoot() / (Level.IsEmpty() ? TEXT("Unknown") : Level);
+}
+static FString BF6_RunningMarkerPath()
+{
+	return BF6_AutosaveRoot() / TEXT("running.json");
+}
+
+// How many backups per level to keep. A setting rather than a constant because
+// the right number depends on how big the map is and how brave the creator is
+// feeling; ten is enough to walk back a bad half hour.
+static bool  g_autoMaxLoaded = false;
+static int32 g_autoMax = 10;
+static int32 BF6_AutosaveMax()
+{
+	if (!g_autoMaxLoaded)
+	{
+		g_autoMaxLoaded = true;
+		GConfig->GetInt(TEXT("BF6UnrealSDK"), TEXT("AutosaveMax"), g_autoMax, GEditorPerProjectIni);
+	}
+	return FMath::Clamp(g_autoMax, 1, 200);
+}
+static void BF6_SetAutosaveMax(int32 N)
+{
+	BF6_AutosaveMax();   // load first, so the write is not against a stale default
+	g_autoMax = FMath::Clamp(N, 1, 200);
+	GConfig->SetInt(TEXT("BF6UnrealSDK"), TEXT("AutosaveMax"), g_autoMax, GEditorPerProjectIni);
+	GConfig->Flush(false, GEditorPerProjectIni);
+}
+
+// ---- change tracking ----
+//
+// One fingerprint of everything a session save would record - transforms and
+// tags of our own actors - taken a few times a second. It is cheaper than it
+// looks (FName hashes are indices) and it is the only thing that catches ALL
+// of the ways a map changes: placements, deletes, a gizmo move, a property, a
+// link, a reshaped zone, an import, a mode build, and an undo of any of them.
+// Hooking each of those instead would mean a list to keep in step forever, and
+// the one call site somebody forgets is silent lost work.
+static FString g_autoSession;          // this editor run's session id
+static uint32  g_autoFp = 0;           // fingerprint at the last check
+static bool    g_autoFpValid = false;
+static bool    g_autoDirty = false;    // changed since the last NAMED save
+static bool    g_autoPending = false;  // a change is waiting for its backup
+static double  g_autoChangeT = 0.0;    // when the world last moved
+static double  g_autoWroteT = 0.0;
+static FString g_autoLastPath;         // newest backup this session wrote
+static int32   g_autoSeq = 0;
+
+static const double kBF6AutosaveQuiet = 5.0;    // seconds of calm before a write
+static const double kBF6AutosaveFloor = 5.0;    // and never more often than this
+
+static uint32 BF6_SessionFingerprint()
+{
+	uint32 H = 2166136261u;
+	if (!GEditor) return H;
+	UWorld* W = GEditor->GetEditorWorldContext().World();
+	if (!W) return H;
+	for (TActorIterator<AActor> It(W); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A->Tags.Contains(kPlacedTag) && !A->Tags.Contains(kBaseTag) && !A->Tags.Contains(kGroupTag)) continue;
+		if (A->Tags.Contains(kHandleTag)) continue;
+		H = HashCombine(H, GetTypeHash(A->GetFName()));
+		const FTransform Xf = A->GetActorTransform();
+		const FVector L = Xf.GetLocation(); const FRotator R = Xf.Rotator(); const FVector S = Xf.GetScale3D();
+		// quantised: a float that only differs in its last bits is not an edit,
+		// and rounding here keeps a still map from looking busy
+		H = HashCombine(H, (uint32)FMath::RoundToInt(L.X * 10.0));
+		H = HashCombine(H, (uint32)FMath::RoundToInt(L.Y * 10.0));
+		H = HashCombine(H, (uint32)FMath::RoundToInt(L.Z * 10.0));
+		H = HashCombine(H, (uint32)FMath::RoundToInt(R.Pitch * 10.0));
+		H = HashCombine(H, (uint32)FMath::RoundToInt(R.Yaw * 10.0));
+		H = HashCombine(H, (uint32)FMath::RoundToInt(R.Roll * 10.0));
+		H = HashCombine(H, (uint32)FMath::RoundToInt(S.X * 1000.0));
+		H = HashCombine(H, (uint32)FMath::RoundToInt(S.Y * 1000.0));
+		H = HashCombine(H, (uint32)FMath::RoundToInt(S.Z * 1000.0));
+		for (const FName& T : A->Tags) H = HashCombine(H, GetTypeHash(T));
+	}
+	return H;
+}
+
+// The marker that says an editor is MID-EDIT. Its absence on the next launch is
+// what tells a clean exit from a crash, so it is written once the session has
+// something to lose and removed only on the way out.
+static void BF6_WriteRunningMarker()
+{
+	if (g_ss.CurrentLevel.IsEmpty()) return;
+	TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+	O->SetStringField(TEXT("level"), g_ss.CurrentLevel);
+	O->SetStringField(TEXT("save"), g_ss.CurrentSave);
+	O->SetStringField(TEXT("session"), g_autoSession);
+	O->SetNumberField(TEXT("pid"), (double)FPlatformProcess::GetCurrentProcessId());
+	O->SetStringField(TEXT("backup"), g_autoLastPath);
+	O->SetStringField(TEXT("time"), FDateTime::Now().ToString());
+	FString Out;
+	TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
+	FJsonSerializer::Serialize(O.ToSharedRef(), W);
+	const FString Path = BF6_RunningMarkerPath();
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
+	FFileHelper::SaveStringToFile(Out, *Path);
+}
+
+static void BF6_ClearRunningMarker()
+{
+	const FString Path = BF6_RunningMarkerPath();
+	if (FPaths::FileExists(Path)) IFileManager::Get().Delete(*Path);
+}
+
+// Read one backup's header without loading the objects. Cheap enough to list a
+// folder of them; the whole point of the header is that a picker never has to
+// parse a 20 MB body to say what it is.
+static bool BF6_ReadBackupHeader(const FString& Path, FBF6BackupHeader& Out)
+{
+	FString In;
+	if (!FFileHelper::LoadFileToString(In, *Path)) return false;
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
+	if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid()) return false;
+	Out.Path = Path;
+	Out.Level = Root->HasField(TEXT("level")) ? Root->GetStringField(TEXT("level")) : FString();
+	const TSharedPtr<FJsonObject>* H = nullptr;
+	if (Root->TryGetObjectField(TEXT("_autosave"), H) && H && H->IsValid())
+	{
+		(*H)->TryGetStringField(TEXT("save"), Out.Save);
+		(*H)->TryGetStringField(TEXT("time"), Out.When);
+		(*H)->TryGetStringField(TEXT("session"), Out.Session);
+		double N = 0.0;
+		if ((*H)->TryGetNumberField(TEXT("objects"), N)) Out.Objects = (int32)N;
+		if ((*H)->TryGetNumberField(TEXT("pid"), N)) Out.Pid = (uint32)N;
+	}
+	if (Out.When.IsEmpty()) Out.When = IFileManager::Get().GetTimeStamp(*Path).ToString();
+	return true;
+}
+
+// Newest first.
+static TArray<FBF6BackupHeader> BF6_ListBackups(const FString& Level)
+{
+	TArray<FBF6BackupHeader> Out;
+	const FString Dir = BF6_AutosaveDirFor(Level);
+	TArray<FString> Files;
+	IFileManager::Get().FindFiles(Files, *(Dir / TEXT("*.json")), true, false);
+	for (const FString& F : Files)
+	{
+		FBF6BackupHeader H;
+		if (BF6_ReadBackupHeader(Dir / F, H)) Out.Add(H);
+	}
+	Out.Sort([](const FBF6BackupHeader& A, const FBF6BackupHeader& B)
+	{
+		return IFileManager::Get().GetTimeStamp(*A.Path) > IFileManager::Get().GetTimeStamp(*B.Path);
+	});
+	return Out;
+}
+
+// Write one backup. Serialised here, on the game thread, because that is the
+// only thread allowed to read the world; written on a pool thread, because a
+// multi-megabyte file landing inside a frame is a stutter the creator feels
+// every five seconds. Temp file then rename, so a backup is either the whole
+// document or it was never there - a half-written one is worse than none,
+// since it is exactly what gets reached for after a crash.
+static bool BF6_WriteTempBackup(bool bSync)
+{
+	if (g_ss.CurrentLevel.IsEmpty()) return false;
+	const FString Level = g_ss.CurrentLevel;
+	const FString Save = g_ss.CurrentSave;
+	int32 NObj = 0;
+	TSharedPtr<FJsonObject> Root = BF6_BuildSessionRoot(Level, Save, NObj);
+	if (!Root.IsValid()) return false;
+
+	if (g_autoSession.IsEmpty()) g_autoSession = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	TSharedPtr<FJsonObject> H = MakeShared<FJsonObject>();
+	H->SetStringField(TEXT("level"), Level);
+	H->SetStringField(TEXT("save"), Save);
+	H->SetStringField(TEXT("session"), g_autoSession);
+	H->SetNumberField(TEXT("pid"), (double)FPlatformProcess::GetCurrentProcessId());
+	H->SetStringField(TEXT("time"), FDateTime::Now().ToString());
+	H->SetNumberField(TEXT("objects"), NObj);
+	Root->SetObjectField(TEXT("_autosave"), H);
+
+	FString Out;
+	TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
+	FJsonSerializer::Serialize(Root.ToSharedRef(), W);
+
+	const FString Dir = BF6_AutosaveDirFor(Level);
+	const FString Stamp = FDateTime::Now().ToString(TEXT("%Y%m%d-%H%M%S"));
+	const FString Path = Dir / FString::Printf(TEXT("%s_%d.json"), *Stamp, ++g_autoSeq);
+	const int32 Keep = BF6_AutosaveMax();
+
+	g_autoLastPath = Path;
+	g_autoWroteT = FPlatformTime::Seconds();
+	BF6_WriteRunningMarker();
+	// Building the document tidies the tree tags, which is itself a change to
+	// the world. Re-reading the fingerprint here stops that tidy-up from
+	// looking like the creator's next edit and triggering a second backup.
+	g_autoFp = BF6_SessionFingerprint();
+	g_autoFpValid = true;
+
+	// bSync on the way out of the editor: a pool task queued at shutdown may
+	// never get a thread before the process ends, and the one backup that must
+	// not be lost is the last one.
+	auto WriteIt = [Out, Path, Dir, Keep]
+	{
+		IFileManager& FM = IFileManager::Get();
+		FM.MakeDirectory(*Dir, true);
+		const FString Tmp = Path + TEXT(".writing");
+		if (!FFileHelper::SaveStringToFile(Out, *Tmp))
+		{
+			UE_LOG(LogBF6, Warning, TEXT("temp backup could not be written to %s"), *Tmp);
+			return;
+		}
+		if (FM.Move(*Path, *Tmp, true, true) == false)
+		{
+			UE_LOG(LogBF6, Warning, TEXT("temp backup could not be renamed into place at %s"), *Path);
+			return;
+		}
+		// keep the newest N, by the clock on disk
+		TArray<FString> Files;
+		FM.FindFiles(Files, *(Dir / TEXT("*.json")), true, false);
+		if (Files.Num() <= Keep) return;
+		Files.Sort([&FM, &Dir](const FString& A, const FString& B)
+			{ return FM.GetTimeStamp(*(Dir / A)) > FM.GetTimeStamp(*(Dir / B)); });
+		for (int32 i = Keep; i < Files.Num(); i++) FM.Delete(*(Dir / Files[i]));
+	};
+	if (bSync) WriteIt();
+	else Async(EAsyncExecution::ThreadPool, MoveTemp(WriteIt));
+	return true;
+}
+
+// Called from the build overlay's tick. Notices the change, waits for the hand
+// to stop moving, then writes once - a placement, a delete, the end of a drag,
+// a link, an import and a mode build all arrive here as the same thing.
+static void BF6_TickAutosave()
+{
+	if (g_ss.CurrentLevel.IsEmpty()) return;
+	const double Now = FPlatformTime::Seconds();
+	const uint32 Fp = BF6_SessionFingerprint();
+	if (!g_autoFpValid) { g_autoFpValid = true; g_autoFp = Fp; return; }
+	if (Fp != g_autoFp)
+	{
+		g_autoFp = Fp;
+		g_autoChangeT = Now;
+		g_autoPending = true;
+		g_autoDirty = true;
+		return;
+	}
+	if (!g_autoPending) return;
+	if (Now - g_autoChangeT < kBF6AutosaveQuiet) return;
+	if (Now - g_autoWroteT < kBF6AutosaveFloor) return;
+	g_autoPending = false;
+	BF6_WriteTempBackup(false);
+}
+
+// A session that has just opened is, by definition, exactly what is on disk.
+static void BF6_AutosaveSessionOpened()
+{
+	g_autoFpValid = false;
+	g_autoDirty = false;
+	g_autoPending = false;
+	g_autoLastPath.Reset();
+	if (g_autoSession.IsEmpty()) g_autoSession = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	BF6_WriteRunningMarker();
+}
+
+// ---------------------------------------------------------------------------
+// WHERE YOU WERE STANDING ON THIS MAP.
+//
+// The tool used to remember which EDITOR was open and put it back, which meant
+// opening a map covered the map. What is actually worth carrying between
+// sessions is the view: come back to Tsuru Reef and be looking at the part of
+// Tsuru Reef you were working on, not at the world origin.
+//
+// Per map, because that is the unit the answer belongs to. In the editor's own
+// per-project ini, so it follows the project and never touches the map assets.
+// ---------------------------------------------------------------------------
+namespace
+{
+	const TCHAR* kCamSection = TEXT("BF6UnrealSDK.Camera");
+
+	FLevelEditorViewportClient* BF6_ActiveViewportClient()
+	{
+		if (!FModuleManager::Get().IsModuleLoaded("LevelEditor")) { return nullptr; }
+		FLevelEditorModule& LE = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+		TSharedPtr<SLevelViewport> VP = LE.GetFirstActiveLevelViewport();
+		return VP.IsValid() ? &VP->GetLevelViewportClient() : nullptr;
+	}
+
+	void BF6_SaveCameraFor(const FString& Level)
+	{
+		if (Level.IsEmpty() || !GConfig) { return; }
+		FLevelEditorViewportClient* VC = BF6_ActiveViewportClient();
+		if (!VC) { return; }
+		// Perspective only. An orthographic top view has no useful rotation and
+		// restoring one into a perspective viewport puts the camera nowhere.
+		if (!VC->IsPerspective()) { return; }
+		const FVector L = VC->GetViewLocation();
+		const FRotator R = VC->GetViewRotation();
+		GConfig->SetString(kCamSection, *Level,
+			*FString::Printf(TEXT("%f,%f,%f,%f,%f,%f"), L.X, L.Y, L.Z, R.Pitch, R.Yaw, R.Roll),
+			GEditorPerProjectIni);
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
+
+	void BF6_RestoreCameraFor(const FString& Level)
+	{
+		if (Level.IsEmpty() || !GConfig) { return; }
+		FString Saved;
+		if (!GConfig->GetString(kCamSection, *Level, Saved, GEditorPerProjectIni)) { return; }
+		TArray<FString> P;
+		Saved.ParseIntoArray(P, TEXT(","), false);
+		if (P.Num() != 6) { return; }
+		const FVector L(FCString::Atod(*P[0]), FCString::Atod(*P[1]), FCString::Atod(*P[2]));
+		const FRotator R(FCString::Atod(*P[3]), FCString::Atod(*P[4]), FCString::Atod(*P[5]));
+
+		// The viewport is not necessarily ready the instant the world is, so
+		// this retries briefly rather than silently doing nothing. It gives up
+		// after a couple of seconds: a camera that snaps somewhere long after
+		// the user started moving would be worse than not restoring at all.
+		TSharedRef<int32> Tries = MakeShared<int32>(0);
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+			[L, R, Tries](float) -> bool
+			{
+				if (++(*Tries) > 20) { return false; }
+				FLevelEditorViewportClient* VC = BF6_ActiveViewportClient();
+				if (!VC || !VC->IsPerspective()) { return true; }
+				VC->SetViewLocation(L);
+				VC->SetViewRotation(R);
+				VC->Invalidate();
+				return false;
+			}), 0.1f);
+	}
+}
+
+static double GMapOpenStartedAt = 0.0;
+
+double BF6Ext::MapOpenStartedAt() { return GMapOpenStartedAt; }
+
 static void BF6_OpenMapWorldImpl(const FString& Level, const FString& SaveName)
 {
+	GMapOpenStartedAt = FPlatformTime::Seconds();
 	if (!GEditor) return;
 	// The save may have been deleted since the menu drew it - the menu watches
 	// the folder, but a click can still land in the gap. Opening it anyway
@@ -4268,9 +5008,16 @@ static void BF6_OpenMapWorldImpl(const FString& Level, const FString& SaveName)
 	}
 	// Tell the add-ons the old map is going before anything is torn down, so
 	// an overlay can drop its own actors while the world is still coherent.
+	// Before anything is torn down, while the viewport still shows the old map.
+	if (!g_ss.CurrentLevel.IsEmpty()) { BF6_SaveCameraFor(g_ss.CurrentLevel); }
 	if (!g_ss.CurrentLevel.IsEmpty()) { BF6Api::BF6_MapDecalStash(); BF6ExtInternal::BroadcastMapClosing(g_ss.CurrentLevel); }
 	BF6_EnsureBaseSetupFormat();
-	g_ss.CurrentLevel = Level; g_ss.CurrentSave = Save; g_ss.bEditing = !Save.IsEmpty();
+	// EDITABLE THE MOMENT IT OPENS. There is no read-only base map any more:
+	// the shipped base setup is a baseline you build on top of, and the work
+	// you do on it is an unnamed session with temp backups behind it until you
+	// give it a name. The old gate cost every creator a naming ceremony before
+	// they were allowed to move the first object.
+	g_ss.CurrentLevel = Level; g_ss.CurrentSave = Save; g_ss.bEditing = !Level.IsEmpty();
 	BF6_HookSpawnWatch();   // the world may have been replaced since last time
 	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag); ClearActorsWithTag(kGroupTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
@@ -4290,7 +5037,9 @@ static void BF6_OpenMapWorldImpl(const FString& Level, const FString& SaveName)
 	// the only source either way.
 	BF6_ReapplyVolumeColors();
 	BF6_RecomputeBudget();
+	BF6_AutosaveSessionOpened();
 	BF6ExtInternal::BroadcastMapOpened(Level, Save);
+	BF6_RestoreCameraFor(Level);
 }
 
 // Export the current session to <map>.spatial.json (Portal format). bMinify
@@ -4546,6 +5295,19 @@ static FString BF6_BuildSpatialJson(bool bMinify)
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		if (!It->Tags.Contains(kPlacedTag)) continue;
+		// NOT PART OF THIS VARIANT.
+		//
+		// An add-on can build gameplay objects for several game modes into one
+		// map and show only the chosen one. Those it is not showing were merely
+		// HIDDEN, and hidden actors export exactly like visible ones, so a map
+		// built for Conquest and then Breakthrough exported both sets, with
+		// their ids colliding.
+		//
+		// Being hidden is NOT the test: people hide things to get them out of
+		// the way while they work, and dropping those from the export would be
+		// a far worse bug than the one being fixed. The test is this explicit
+		// tag, which an add-on puts on only what it means to exclude.
+		if (BF6_ExcludedFromExport(*It)) continue;
 		FString Type=TagValue(*It,TEXT("label:")); if(Type.IsEmpty())Type=TagValue(*It,TEXT("mesh:")); if(Type.IsEmpty())continue;
 		if (BF6_IsEngineNodeType(Type)) continue;   // Godot pivots from old imports
 		const FTransform Xf=It->GetActorTransform(); const FVector L=Xf.GetLocation();
@@ -4738,7 +5500,40 @@ static void BF6_ExportSpatial(bool bMinify)
 		? Level + TEXT(".spatial.json")
 		: Level + TEXT("_") + SafeSave + TEXT(".spatial.json");
 	const FString Path = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("export"), File);
-	FFileHelper::SaveStringToFile(Out, *Path);
+	// A FILE THAT WAS NOT WRITTEN IS NOT AN EXPORT.
+	//
+	// The result was discarded, and everything after it went ahead anyway:
+	// NoteExport handed COPY EXPORT PATH a path to a file that might not exist,
+	// the success notification fired, and Explorer opened on it. A full disk, a
+	// read only folder or a locked file all produced a confident report of an
+	// export that never happened, which is the worst possible moment to be
+	// wrong because the next thing the user does is upload it.
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
+	if (!FFileHelper::SaveStringToFile(Out, *Path))
+	{
+		UE_LOG(LogBF6, Error, TEXT("export: could not write %s"), *Path);
+		Notify(FString::Printf(
+			TEXT("The export could not be written to %s. Nothing was exported. ")
+			TEXT("Check the folder exists and is not read only."), *Path));
+		return;
+	}
+	BF6PortalWeb::NoteExport(Path);   // BF6PortalWeb: COPY EXPORT PATH hands out this file
+	// ---- BF6Project ----
+	// The same file inside the project, so the folder is self-contained and the
+	// sync has something of ours to hold against the site's copy. The write is
+	// stamped as ours, which is what stops the sync that follows from offering
+	// it straight back as a site change.
+	if (!g_ss.CurrentSave.IsEmpty())
+	{
+		const FString InProject = FPaths::Combine(BF6Project::DirFor(g_ss.CurrentSave), TEXT("spatials"), File);
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(InProject), true);
+		if (FFileHelper::SaveStringToFile(Out, *InProject))
+		{
+			BF6Project::NoteSaved(Level, g_ss.CurrentSave);
+			BF6Project::NoteArtefactWritten(g_ss.CurrentSave, FString(TEXT("spatials/")) + File, TEXT("tool"));
+		}
+	}
+	// ---- end BF6Project ----
 	Notify(FString::Printf(TEXT("Exported %d KB -> %s"), FTCHARToUTF8(*Out).Length() / 1024, *File));
 	UE_LOG(LogBF6, Warning, TEXT("Exported spatial.json (%d bytes): %s"), FTCHARToUTF8(*Out).Length(), *Path);
 	// open Explorer with the file SELECTED so the right file gets uploaded -
@@ -4810,12 +5605,21 @@ static FString BF6_TscnResolvePath(const FString& From, const FString& Rel)
 	return FString::Join(Seg, TEXT("/"));
 }
 
-static bool BF6_ImportTscnFile(const FString& File)
+// The engine classes that are pure tree: they hold a transform and children and
+// nothing else. The spawner turns each into a node actor; the comparison counts
+// them as the scene's real group pivots.
+static bool BF6_IsTscnPivotType(const FString& T)
 {
-	FString In;
-	if (!FFileHelper::LoadFileToString(In, *File)) { Notify(TEXT("Could not read the file.")); return false; }
+	return T == TEXT("Node3D") || T == TEXT("Camera3D")
+		|| T == TEXT("AnimationPlayer") || T == TEXT("Path3D");
+}
 
-	struct FTNode
+// ONE PARSER, TWO READERS. The import below turns a scene file into a map;
+// the tscn offer (BF6Project) has to read the same file without touching the
+// world, to say how it differs from the map already open. Both go through
+// BF6_ParseTscn, so a scene that imports correctly and a scene that compares
+// correctly can never be two different readings of the same bytes.
+	struct FBF6TscnNode
 	{
 		FString Name, Path, ParentPath, Type;
 		bool bSkip = false;              // static subtree / hidden convention
@@ -4849,18 +5653,36 @@ static bool BF6_ImportTscnFile(const FString& File)
 		double WO[3] = { 0,0,0 };
 	};
 
+// Everything one scene file says, before any of it becomes an actor.
+struct FBF6TscnScene
+{
+	TArray<TSharedPtr<FBF6TscnNode>>         Nodes;
+	TMap<FString, TSharedPtr<FBF6TscnNode>>  ByPath;
+	TMap<FString, TArray<double>>            SubCurvePts;
+	TMap<FString, bool>                      SubCurveClosed;
+	TMap<FString, FVector>                   SubBoxSize;
+	FString RootName;
+	FString Level;      // empty when the file itself does not say which map
+};
+
+static bool BF6_ParseTscn(const FString& File, FBF6TscnScene& Out, FString& OutProblem)
+{
+	using FTNode = FBF6TscnNode;
+	FString In;
+	if (!FFileHelper::LoadFileToString(In, *File)) { OutProblem = TEXT("Could not read the file."); return false; }
+
 	TMap<FString, FString> ExtScene;    // ext id -> type name (objects/addons)
 	TSet<FString> ExtStatic;            // ext ids that are res://static/ scenes
 	TMap<FString, FString> ExtScript;   // ext id -> script class name
-	TArray<TSharedPtr<FTNode>> Nodes;
+	TArray<TSharedPtr<FTNode>>& Nodes = Out.Nodes;
 	// sub_resource collectors: Curve3D points for waypoint paths, BoxShape3D
 	// sizes for legacy volumes
 	FString CurSub, CurSubType;
-	TMap<FString, TArray<double>> SubCurvePts;
-	TMap<FString, bool> SubCurveClosed;
-	TMap<FString, FVector> SubBoxSize;
+	TMap<FString, TArray<double>>& SubCurvePts    = Out.SubCurvePts;
+	TMap<FString, bool>&           SubCurveClosed = Out.SubCurveClosed;
+	TMap<FString, FVector>&        SubBoxSize     = Out.SubBoxSize;
 	TSharedPtr<FTNode> Cur;
-	FString RootName;
+	FString& RootName = Out.RootName;
 
 	TArray<FString> Lines;
 	In.ParseIntoArrayLines(Lines);
@@ -4984,12 +5806,12 @@ static bool BF6_ImportTscnFile(const FString& File)
 		else Cur->Props.Add(TPair<FString, FString>(Key, Val));
 	}
 	Cur.Reset();
-	if (Nodes.Num() == 0) { Notify(TEXT("No nodes found - is this a Godot scene file?")); return false; }
+	if (Nodes.Num() == 0) { OutProblem = TEXT("No nodes found - is this a Godot scene file?"); return false; }
 
 	// resolve each node's TYPE and static/hidden skips, and accumulate world
 	// transforms (parents always precede children in a .tscn)
-	TMap<FString, TSharedPtr<FTNode>> ByPath;
-	FString Level;
+	TMap<FString, TSharedPtr<FTNode>>& ByPath = Out.ByPath;
+	FString& Level = Out.Level;
 	for (const TSharedPtr<FTNode>& N : Nodes)
 	{
 		ByPath.Add(N->Path, N);
@@ -4999,7 +5821,16 @@ static bool BF6_ImportTscnFile(const FString& File)
 			else if (const FString* T = ExtScene.Find(N->InstExt)) N->Type = *T;
 		}
 		else if (!N->ScriptExt.IsEmpty()) N->Type = N->ScriptExt;
-		else N->Type.Reset();   // plain pivot (Node3D / Camera3D): transform only
+		// A plain engine node carries no object of its own, but it IS the tree,
+		// and its transform is the pivot the creator grouped things about. The
+		// four the spawner knows how to make keep their class name so it can;
+		// anything else is cleared, exactly as before, and is skipped.
+		//
+		// THIS USED TO CLEAR ALL OF THEM, which made the spawner's own Node3D
+		// branch unreachable: every pivot was dropped and the tree rebuild put
+		// an identity node back in its place, so a scene's authored pivots did
+		// not survive the trip. Pitfall has 47 of them.
+		else if (!BF6_IsTscnPivotType(N->Type)) N->Type.Reset();
 
 		const TSharedPtr<FTNode>* Par = nullptr;
 		if (N->Path != TEXT("."))
@@ -5037,6 +5868,23 @@ static bool BF6_ImportTscnFile(const FString& File)
 		for (const TSharedPtr<FTNode>& N : Nodes)
 			if (N->InstExt.Len() && ExtStatic.Contains(N->InstExt) && N->Name.EndsWith(TEXT("_Terrain")))
 			{ Level = N->Name.LeftChop(8); break; }
+	return true;
+}
+
+static bool BF6_ImportTscnFile(const FString& File)
+{
+	using FTNode = FBF6TscnNode;
+	FBF6TscnScene Sc;
+	FString Problem;
+	if (!BF6_ParseTscn(File, Sc, Problem)) { Notify(Problem); return false; }
+
+	TArray<TSharedPtr<FTNode>>&              Nodes          = Sc.Nodes;
+	TMap<FString, TSharedPtr<FTNode>>&       ByPath         = Sc.ByPath;
+	TMap<FString, TArray<double>>&           SubCurvePts    = Sc.SubCurvePts;
+	TMap<FString, bool>&                     SubCurveClosed = Sc.SubCurveClosed;
+	TMap<FString, FVector>&                  SubBoxSize     = Sc.SubBoxSize;
+
+	FString Level = Sc.Level;
 	if (Level.IsEmpty()) Level = g_ss.CurrentLevel;
 	if (Level.IsEmpty()) { Notify(TEXT("Could not tell which map this scene is for.")); return false; }
 
@@ -5084,7 +5932,7 @@ static bool BF6_ImportTscnFile(const FString& File)
 	// transform is not the child's.
 	for (const TSharedPtr<FTNode>& N : Nodes)
 	{
-		if (N->PathPts.Num() < 6 || !(N->Type == TEXT("Node3D") || N->Type.IsEmpty())) continue;
+		if (N->PathPts.Num() < 6 || !(BF6_IsTscnPivotType(N->Type) || N->Type.IsEmpty())) continue;
 		if (N->ParentPath.IsEmpty() || N->ParentPath == TEXT(".")) continue;
 		const TSharedPtr<FTNode>* Par = ByPath.Find(N->ParentPath);
 		if (!Par || !Par->IsValid() || (*Par)->PathPts.Num() > 0) continue;
@@ -5330,9 +6178,503 @@ static bool BF6_ImportTscnFile(const FString& File)
 		const int32 Hooked = BF6_RebuildTreeFromTags();
 		if (Hooked > 0) UE_LOG(LogBF6, Display, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
 	}
+	// An import is a session opening: new baseline, new crash marker. It is
+	// also work that is not on disk under this tool's own name yet, so the
+	// backups start straight away.
+	BF6_AutosaveSessionOpened();
+	BF6Api::MarkSessionChanged();
 	Notify(FString::Printf(TEXT("Imported Godot scene '%s' onto %s: %d objects%s. Editable now."),
 		*g_ss.CurrentSave, *Level, spawned,
 		skippedTypes > 0 ? *FString::Printf(TEXT(" (%d had no model and were skipped)"), skippedTypes) : TEXT("")));
+	return true;
+}
+
+// ---- BF6PortalProfile: the tree the spatial format really carries ----------
+//
+// THE FORMAT HAS NO HIERARCHY FIELD. What it has is every object's "id", which
+// is the full Godot scene path: "Arena-Center/Platforms/Platform-1/Pallet_23",
+// "TEAM_1_HQ/SpawnPoint_1_1". A pure group pivot (a Node3D with no object of
+// its own) appears ONLY as a path segment - Pitfall has 46 of them - and its
+// transform is nowhere in the file, because the children carry world
+// transforms. So a derived group takes the centroid of its descendants, which
+// is where the SDK draws the pivot anyway.
+//
+// Minified files ("*.spatial.minified.json", which is what the site usually
+// stores) keep the same "/" structure with every segment renamed to a short
+// token. The tokens ARE the names the site holds and scripts reference ObjId
+// rather than names, so short group labels are correct, not a bug.
+//
+// Our own exports carry the real group transforms in Static metadata, and that
+// always wins; this only runs when there is none.
+static int32 BF6_ApplyTreeFromIdPaths(const TArray<TPair<TWeakObjectPtr<AActor>, FString>>& IdPaths,
+	int32& OutGroups, bool& bOutMinified)
+{
+	OutGroups = 0;
+	bOutMinified = false;
+	if (!GEditor || IdPaths.Num() == 0) return 0;
+	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+
+	// A path that names an object is never also a group.
+	TSet<FString> ObjectPaths;
+	for (const TPair<TWeakObjectPtr<AActor>, FString>& It : IdPaths)
+		if (It.Key.IsValid()) ObjectPaths.Add(It.Value);
+
+	TMap<FString, FVector> Sum;
+	TMap<FString, int32>   Count;
+	int32 Parented = 0, Segs = 0, ShortSegs = 0;
+	for (const TPair<TWeakObjectPtr<AActor>, FString>& It : IdPaths)
+	{
+		AActor* A = It.Key.Get(); if (!A) continue;
+		const FString Path = It.Value;
+		if (TagValue(A, TEXT("gpath:")).IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("gpath:")) + Path)));
+		int32 Slash;
+		if (!Path.FindLastChar(TEXT('/'), Slash)) continue;
+		const FString ParentPath = Path.Left(Slash);
+		if (TagValue(A, TEXT("gtree:")).IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("gtree:")) + ParentPath)));
+		Parented++;
+		// every ancestor, not just the immediate one: depth 5 is normal here
+		FString Up = ParentPath;
+		for (int32 Guard = 0; Guard < 32; Guard++)
+		{
+			Sum.FindOrAdd(Up) += A->GetActorLocation();
+			Count.FindOrAdd(Up)++;
+			int32 S2;
+			if (!Up.FindLastChar(TEXT('/'), S2)) break;
+			Up = Up.Left(S2);
+		}
+	}
+	for (const TPair<TWeakObjectPtr<AActor>, FString>& It : IdPaths)
+	{
+		TArray<FString> Parts;
+		It.Value.ParseIntoArray(Parts, TEXT("/"));
+		for (const FString& S : Parts) { Segs++; if (S.Len() <= 3) ShortSegs++; }
+	}
+	bOutMinified = Segs > 0 && (ShortSegs * 10 >= Segs * 6);
+
+	TSet<FString> Existing;
+	for (TActorIterator<AActor> It(W); It; ++It)
+		if (It->Tags.Contains(kGroupTag))
+		{
+			const FString G = TagValue(*It, TEXT("gpath:"));
+			if (!G.IsEmpty()) Existing.Add(G);
+		}
+
+	// shallowest first, so a parent is in the world before a child asks for it
+	TArray<FString> Groups;
+	Sum.GetKeys(Groups);
+	auto Depth = [](const FString& S)
+	{
+		int32 D = 0;
+		for (const TCHAR C : S) if (C == TEXT('/')) D++;
+		return D;
+	};
+	Groups.Sort([&Depth](const FString& A, const FString& B){ return Depth(A) < Depth(B); });
+	for (const FString& G : Groups)
+	{
+		if (G.IsEmpty() || ObjectPaths.Contains(G) || Existing.Contains(G)) continue;
+		FString ParentKey, Leaf = G;
+		int32 S;
+		if (G.FindLastChar(TEXT('/'), S)) { ParentKey = G.Left(S); Leaf = G.RightChop(S + 1); }
+		const int32 N = Count.FindRef(G);
+		const FVector Centre = N > 0 ? (Sum.FindRef(G) / (double)N) : FVector::ZeroVector;
+		if (AActor* GA = BF6_SpawnTreeNode(W, G, ParentKey, FTransform(FRotator::ZeroRotator, Centre)))
+		{
+			BF6_SetPrettyLabel(GA, Leaf);
+			Existing.Add(G);
+			OutGroups++;
+		}
+	}
+	BF6_RebuildTreeFromTags();
+	return Parented;
+}
+// ---- end BF6PortalProfile ----
+
+// ============================================================================
+// THE SCENE FILE A SPATIAL WAS AUTHORED FROM.
+//
+// A .spatial.json carries the scene tree only through each object's "id",
+// which is its full Godot node path. A group pivot that holds no object of its
+// own exists ONLY as a path segment, so its transform is nowhere in the file
+// and the importer has to guess it as the centroid of its descendants. A
+// MINIFIED spatial, which is what the site usually stores, renames every
+// segment to a short token, so on that file every name in the outliner is
+// two or three letters.
+//
+// The .tscn the map was exported from still has all of it. These two functions
+// are what lets it be laid back over a map that came in as a spatial: one says
+// how the two differ, the other adopts the names, the grouping and the pivots
+// without spawning or deleting a single object.
+// ============================================================================
+
+// Where the comparison considers an object to BE. A volume actor sits at the
+// world origin on BOTH import paths and carries its shape as a loop, so the
+// loop's centroid is the only position it has.
+static FVector BF6_CmpPosOf(AActor* A)
+{
+	TArray<FVector> Loop;
+	if (const TArray<FVector>* L = GVolumeLoops.Find(A)) Loop = *L;
+	else BF6_ReadLoopTags(A, Loop);
+	if (Loop.Num() >= 3)
+	{
+		FVector C = FVector::ZeroVector;
+		for (const FVector& P : Loop) C += P;
+		return A->GetActorTransform().TransformPosition(C / (double)Loop.Num());
+	}
+	return A->GetActorLocation();
+}
+
+// One object, from either side, reduced to what the comparison judges it by.
+struct FBF6CmpObj
+{
+	AActor* Actor = nullptr;          // the world side only
+	FString Name, Path, ParentPath, Type;
+	int32   ObjId = -1;
+	FVector Pos = FVector::ZeroVector;   // Unreal cm
+	FTransform Xf;                        // pivots only
+};
+
+// The scene file as two flat lists, without touching the world.
+static bool BF6_TscnCmpLists(const FString& File, TArray<FBF6CmpObj>& OutObjs,
+	TArray<FBF6CmpObj>& OutPivots, FString& OutLevel, FString& OutProblem)
+{
+	FBF6TscnScene Sc;
+	if (!BF6_ParseTscn(File, Sc, OutProblem)) return false;
+	OutLevel = Sc.Level;
+
+	auto ToUnreal = [](double gx, double gy, double gz) { return FVector((float)gx, (float)gz, (float)gy) * 100.f; };
+	for (const TSharedPtr<FBF6TscnNode>& N : Sc.Nodes)
+	{
+		if (N->bSkip || N->Path == TEXT(".")) continue;
+		FBF6CmpObj O;
+		O.Name = N->Name;
+		O.Path = N->Path;
+		O.ParentPath = (N->ParentPath == TEXT(".")) ? FString() : N->ParentPath;
+		O.Type = N->Type;
+
+		// The pivot's own transform, built exactly as the importer builds it:
+		// the basis columns are the Godot axes, swapped into Unreal's.
+		const FVector Rg((float)N->WM[0], (float)N->WM[3], (float)N->WM[6]);
+		const FVector Ug((float)N->WM[1], (float)N->WM[4], (float)N->WM[7]);
+		const FVector Fg((float)N->WM[2], (float)N->WM[5], (float)N->WM[8]);
+		auto SwapG = [](const FVector& v) { return FVector(v.X, v.Z, v.Y); };
+		const FVector Scale(FMath::Max(Rg.Size(), 0.0001f), FMath::Max(Fg.Size(), 0.0001f), FMath::Max(Ug.Size(), 0.0001f));
+		const FVector Ax = SwapG(Rg).GetSafeNormal(), Ay = SwapG(Fg).GetSafeNormal(), Az = SwapG(Ug).GetSafeNormal();
+		O.Pos = ToUnreal(N->WO[0], N->WO[1], N->WO[2]);
+		O.Xf  = FTransform(FMatrix(Ax, Ay, Az, FVector::ZeroVector).Rotator(), O.Pos, Scale);
+
+		if (N->Type.IsEmpty() || BF6_IsTscnPivotType(N->Type)) { OutPivots.Add(O); continue; }
+
+		// A volume's position is its loop centroid, for the same reason the
+		// world side takes one: the node origin and the shape need not agree.
+		if (N->Points.Num() >= 6 && (N->Type == TEXT("PolygonVolume") || N->Type == TEXT("Volume")))
+		{
+			double cx = 0, cz = 0; int32 n = 0;
+			for (int32 i = 0; i + 1 < N->Points.Num(); i += 2) { cx += N->Points[i]; cz += N->Points[i + 1]; ++n; }
+			if (n > 0)
+			{
+				cx /= n; cz /= n;
+				const FVector G(
+					(float)(N->WM[0] * cx + N->WM[2] * cz + N->WO[0]),
+					(float)(N->WM[3] * cx + N->WM[5] * cz + N->WO[1]),
+					(float)(N->WM[6] * cx + N->WM[8] * cz + N->WO[2]));
+				O.Pos = ToUnreal(G.X, G.Y, G.Z);
+			}
+		}
+		for (const TPair<FString, FString>& P : N->Props)
+			if (P.Key == TEXT("ObjId")) { O.ObjId = FCString::Atoi(*P.Value); break; }
+		OutObjs.Add(O);
+	}
+	return true;
+}
+
+// The open map's own objects, in the same shape.
+static void BF6_WorldCmpList(TArray<FBF6CmpObj>& Out)
+{
+	if (!GEditor) return;
+	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return;
+	for (TActorIterator<AActor> It(W); It; ++It)
+	{
+		if (It->Tags.Contains(kGroupTag)) continue;   // the tree, not the objects
+		if (!It->Tags.Contains(kPlacedTag) && !It->Tags.Contains(kBaseTag)) continue;
+		FBF6CmpObj O;
+		O.Actor = *It;
+		O.Name  = It->GetActorLabel();
+		O.Type  = TagValue(*It, TEXT("label:"));
+		O.Path  = TagValue(*It, TEXT("gpath:"));
+		O.ParentPath = TagValue(*It, TEXT("gtree:"));
+		const FString Id = TagValue(*It, TEXT("p:ObjId="));
+		O.ObjId = Id.IsEmpty() ? -1 : FCString::Atoi(*Id);
+		O.Pos = BF6_CmpPosOf(*It);
+		Out.Add(O);
+	}
+}
+
+// THE MATCH, and the order matters. An ObjId that is unique on both sides is
+// the only key that survives a minified round trip, so it goes first. What is
+// left is matched on type and position, nearest first inside one centimetre,
+// because that is what an object that was never given an id has.
+//
+// OutPairs[i] is the world index the tscn object i matched, or INDEX_NONE.
+static void BF6_MatchCmp(const TArray<FBF6CmpObj>& T, const TArray<FBF6CmpObj>& S,
+	TArray<int32>& OutPairs, int32& OutById, int32& OutByPos)
+{
+	OutPairs.Init(INDEX_NONE, T.Num());
+	OutById = OutByPos = 0;
+	TArray<bool> Taken; Taken.Init(false, S.Num());
+
+	TMap<int32, int32> TById, SById;
+	TSet<int32> TDup, SDup;
+	for (int32 i = 0; i < T.Num(); i++)
+		if (T[i].ObjId >= 0) { if (TById.Contains(T[i].ObjId)) TDup.Add(T[i].ObjId); else TById.Add(T[i].ObjId, i); }
+	for (int32 i = 0; i < S.Num(); i++)
+		if (S[i].ObjId >= 0) { if (SById.Contains(S[i].ObjId)) SDup.Add(S[i].ObjId); else SById.Add(S[i].ObjId, i); }
+	for (const TPair<int32, int32>& KV : TById)
+	{
+		if (TDup.Contains(KV.Key) || SDup.Contains(KV.Key)) continue;
+		const int32* Si = SById.Find(KV.Key);
+		if (!Si) continue;
+		OutPairs[KV.Value] = *Si;
+		Taken[*Si] = true;
+		OutById++;
+	}
+
+	// A metre-wide bucket grid, then the 27 cells around it: an exact key can
+	// miss by a float's width, which is how fifteen volumes read as fifteen
+	// additions and fifteen removals of the same objects.
+	const double Cell = 100.0, Tol = 1.0, Tol2 = Tol * Tol;
+	TMap<uint64, TArray<int32>> Grid;
+	auto Key = [Cell](const FVector& P)
+	{
+		const int64 x = (int64)FMath::FloorToDouble(P.X / Cell) & 0x1FFFFF;
+		const int64 y = (int64)FMath::FloorToDouble(P.Y / Cell) & 0x1FFFFF;
+		const int64 z = (int64)FMath::FloorToDouble(P.Z / Cell) & 0x1FFFFF;
+		return (uint64)((x << 42) | (y << 21) | z);
+	};
+	for (int32 i = 0; i < S.Num(); i++) if (!Taken[i]) Grid.FindOrAdd(Key(S[i].Pos)).Add(i);
+	for (int32 i = 0; i < T.Num(); i++)
+	{
+		if (OutPairs[i] != INDEX_NONE) continue;
+		int32 Best = INDEX_NONE; double BestD = Tol2;
+		for (int32 dx = -1; dx <= 1; dx++)
+			for (int32 dy = -1; dy <= 1; dy++)
+				for (int32 dz = -1; dz <= 1; dz++)
+				{
+					const TArray<int32>* Cellp = Grid.Find(Key(T[i].Pos + FVector(dx * Cell, dy * Cell, dz * Cell)));
+					if (!Cellp) continue;
+					for (int32 j : *Cellp)
+					{
+						if (Taken[j] || S[j].Type != T[i].Type) continue;
+						const double D = FVector::DistSquared(T[i].Pos, S[j].Pos);
+						if (D <= BestD) { BestD = D; Best = j; }
+					}
+				}
+		if (Best != INDEX_NONE) { OutPairs[i] = Best; Taken[Best] = true; OutByPos++; }
+	}
+}
+
+static BF6Api::FTscnCompare BF6_CompareTscn(const FString& File)
+{
+	BF6Api::FTscnCompare C;
+	TArray<FBF6CmpObj> T, Piv, S;
+	if (!BF6_TscnCmpLists(File, T, Piv, C.Level, C.Problem)) return C;
+	BF6_WorldCmpList(S);
+
+	TArray<int32> Pairs;
+	BF6_MatchCmp(T, S, Pairs, C.MatchedById, C.MatchedByPos);
+	C.TscnObjects = T.Num();
+	C.MapObjects  = S.Num();
+	C.TscnPivots  = Piv.Num();
+	TArray<bool> Hit; Hit.Init(false, S.Num());
+	for (int32 i = 0; i < T.Num(); i++)
+	{
+		if (Pairs[i] == INDEX_NONE) { C.OnlyInTscn++; continue; }
+		Hit[Pairs[i]] = true;
+		if (FVector::Dist(T[i].Pos, S[Pairs[i]].Pos) > 1.0) C.Moved++;
+	}
+	for (int32 j = 0; j < S.Num(); j++) if (!Hit[j]) C.OnlyInMap++;
+	return C;
+}
+
+// Changing an authored pivot is a change of reference frame, not a move of
+// the objects it already owns. Detach direct children while changing it;
+// nested descendants then stay still too. Record roots for transaction undo.
+static void BF6_SetPivotKeepingChildren(AActor* Pivot, const FTransform& Xf)
+{
+	struct FChildAttachment
+	{
+		USceneComponent* Root;
+		USceneComponent* Parent;
+		FName Socket;
+	};
+	TArray<AActor*> Children;
+	Pivot->GetAttachedActors(Children);
+	TArray<FChildAttachment> Attachments;
+	for (AActor* Child : Children)
+	{
+		USceneComponent* Root = Child->GetRootComponent();
+		if (!Root) continue;
+		Attachments.Add({ Root, Root->GetAttachParent(), Root->GetAttachSocketName() });
+		Child->Modify();
+		Root->Modify();
+		Root->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	}
+	Pivot->Modify();
+	if (USceneComponent* Root = Pivot->GetRootComponent()) Root->Modify();
+	Pivot->SetActorTransform(Xf);
+	for (const FChildAttachment& Child : Attachments)
+		if (Child.Parent) Child.Root->AttachToComponent(Child.Parent,
+			FAttachmentTransformRules::KeepWorldTransform, Child.Socket);
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBF6AdoptPivotTest, "BF6.Editor.AdoptPivotPreservesObjects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBF6AdoptPivotTest::RunTest(const FString& Parameters)
+{
+	UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!TestNotNull(TEXT("Editor world"), W)) return false;
+	TArray<AActor*> Fixtures;
+	ON_SCOPE_EXIT { for (int32 i = Fixtures.Num() - 1; i >= 0; --i) W->DestroyActor(Fixtures[i]); };
+	auto Make = [&]() -> AActor*
+	{
+		FActorSpawnParameters Params;
+		Params.ObjectFlags = RF_Transient | RF_Transactional;
+		AActor* A = W->SpawnActor<AActor>(Params);
+		if (!A) return nullptr;
+		Fixtures.Add(A);
+		USceneComponent* Root = NewObject<USceneComponent>(A, NAME_None, RF_Transient | RF_Transactional);
+		A->SetRootComponent(Root);
+		Root->SetMobility(EComponentMobility::Movable);
+		Root->RegisterComponent();
+		return A;
+	};
+	AActor* Pivot = Make();
+	AActor* Nested = Make();
+	AActor* Object = Make();
+	AActor* Unmatched = Make();
+	if (!Pivot || !Nested || !Object || !Unmatched) return false;
+	Pivot->SetActorLocation(FVector(50000, -70000, 200));
+	Nested->SetActorTransform(FTransform(FRotator(0, 20, 0), FVector(52000, -71000, 400)));
+	Object->SetActorTransform(FTransform(FRotator(10, 30, 5), FVector(52500, -71300, 550), FVector(.74, 2.43, 1.2)));
+	Unmatched->SetActorTransform(FTransform(FRotator(0, 70, 0), FVector(51000, -70200, 600)));
+	Nested->AttachToActor(Pivot, FAttachmentTransformRules::KeepWorldTransform);
+	Object->AttachToActor(Nested, FAttachmentTransformRules::KeepWorldTransform);
+	Unmatched->AttachToActor(Pivot, FAttachmentTransformRules::KeepWorldTransform);
+	const FTransform BeforeNested = Nested->GetActorTransform();
+	const FTransform BeforeObject = Object->GetActorTransform();
+	const FTransform BeforeUnmatched = Unmatched->GetActorTransform();
+	const FTransform AuthoredPivot(FRotator(0, 90, 0), FVector(-400000, 600000, 1500), FVector(.8));
+	BF6_SetPivotKeepingChildren(Pivot, AuthoredPivot);
+	TestTrue(TEXT("Authored pivot restored"), Pivot->GetActorTransform().Equals(AuthoredPivot, .001));
+	TestTrue(TEXT("Nested pivot stays in world space"), Nested->GetActorTransform().Equals(BeforeNested, .001));
+	TestTrue(TEXT("Placed object keeps position rotation and nonuniform scale"), Object->GetActorTransform().Equals(BeforeObject, .001));
+	TestTrue(TEXT("Unmatched child also stays in place"), Unmatched->GetActorTransform().Equals(BeforeUnmatched, .001));
+	BF6_SetPivotKeepingChildren(Nested, FTransform(FRotator(0, -90, 0), FVector(120000, 90000, 300), FVector(1.2)));
+	TestTrue(TEXT("Restoring nested pivot also preserves geometry"), Object->GetActorTransform().Equals(BeforeObject, .001));
+	TestTrue(TEXT("Nested hierarchy retained"), Nested->GetAttachParentActor() == Pivot && Object->GetAttachParentActor() == Nested);
+	TestTrue(TEXT("Unmatched child remains attached"), Unmatched->GetAttachParentActor() == Pivot);
+	return true;
+}
+#endif
+
+static bool BF6_MergeTscnTree(const FString& File, BF6Api::FTscnMerge& Out)
+{
+	if (!GEditor) return false;
+	UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return false;
+
+	TArray<FBF6CmpObj> T, Piv, S;
+	FString Level, Problem;
+	if (!BF6_TscnCmpLists(File, T, Piv, Level, Problem)) { Notify(Problem); return false; }
+	BF6_WorldCmpList(S);
+
+	TArray<int32> Pairs; int32 ById = 0, ByPos = 0;
+	BF6_MatchCmp(T, S, Pairs, ById, ByPos);
+
+	const FScopedTransaction Tr(FText::FromString(TEXT("Adopt the Godot scene's names and grouping")));
+
+	// The pivots first, shallowest first, so a parent exists before a child
+	// asks for it. A pivot the spatial derived is already in the world under
+	// the same key when names were not minified; it keeps its actor and gains
+	// the transform and the name the creator actually gave it.
+	Piv.Sort([](const FBF6CmpObj& A, const FBF6CmpObj& B)
+	{
+		int32 da = 0, db = 0;
+		for (const TCHAR c : A.Path) if (c == TEXT('/')) da++;
+		for (const TCHAR c : B.Path) if (c == TEXT('/')) db++;
+		return da < db;
+	});
+	TMap<FString, AActor*> GroupByPath;
+	TSet<FString> WantPaths;
+	for (TActorIterator<AActor> It(W); It; ++It)
+		if (It->Tags.Contains(kGroupTag))
+		{
+			const FString G = TagValue(*It, TEXT("gpath:"));
+			if (!G.IsEmpty()) GroupByPath.Add(G, *It);
+		}
+	for (const FBF6CmpObj& P : Piv)
+	{
+		WantPaths.Add(P.Path);
+		AActor** Found = GroupByPath.Find(P.Path);
+		AActor* GA = Found ? *Found : BF6_SpawnTreeNode(W, P.Path, P.ParentPath, P.Xf);
+		if (!GA) continue;
+		if (!Found) { GroupByPath.Add(P.Path, GA); Out.Groups++; }
+		GA->Modify();
+		if (!GA->GetActorTransform().Equals(P.Xf, 0.5f)) { BF6_SetPivotKeepingChildren(GA, P.Xf); Out.Pivots++; }
+		const FString Was = GA->GetActorLabel();
+		BF6_SetPrettyLabel(GA, P.Name);
+		if (GA->GetActorLabel() != Was) Out.Renamed++;
+	}
+
+	// Then the objects: the authored name, and the authored place in the tree.
+	for (int32 i = 0; i < T.Num(); i++)
+	{
+		if (Pairs[i] == INDEX_NONE) continue;
+		AActor* A = S[Pairs[i]].Actor;
+		if (!A) continue;
+		A->Modify();
+		const FString Was = A->GetActorLabel();
+		BF6_SetPrettyLabel(A, T[i].Name);
+		if (A->GetActorLabel() != Was) Out.Renamed++;
+
+		const FString HadPath = TagValue(A, TEXT("gpath:"));
+		if (HadPath != T[i].Path)
+		{
+			if (!HadPath.IsEmpty()) A->Tags.Remove(FName(*(FString(TEXT("gpath:")) + HadPath)));
+			A->Tags.Add(FName(*(FString(TEXT("gpath:")) + T[i].Path)));
+		}
+		const FString HadTree = TagValue(A, TEXT("gtree:"));
+		if (HadTree != T[i].ParentPath)
+		{
+			if (!HadTree.IsEmpty()) A->Tags.Remove(FName(*(FString(TEXT("gtree:")) + HadTree)));
+			if (!T[i].ParentPath.IsEmpty()) A->Tags.Add(FName(*(FString(TEXT("gtree:")) + T[i].ParentPath)));
+			Out.Reparented++;
+		}
+	}
+
+	BF6_RebuildTreeFromTags();
+
+	// What is left over: a group the spatial DERIVED, under a name the scene
+	// file has no node for, that nothing hangs off any more. That is debris
+	// from the guess, not the creator's work, so it goes. A group with children
+	// is never touched, whatever its name.
+	TArray<AActor*> Debris;
+	for (TActorIterator<AActor> It(W); It; ++It)
+	{
+		if (!It->Tags.Contains(kGroupTag)) continue;
+		const FString G = TagValue(*It, TEXT("gpath:"));
+		if (G.IsEmpty() || WantPaths.Contains(G)) continue;
+		TArray<AActor*> Kids;
+		It->GetAttachedActors(Kids);
+		if (Kids.Num() == 0) Debris.Add(*It);
+	}
+	for (AActor* D : Debris) { W->EditorDestroyActor(D, true); Out.GroupsDropped++; }
+
+	if (UUnrealEdEngine* Ed = Cast<UUnrealEdEngine>(GEditor)) Ed->UpdatePivotLocationForSelection();
+	BF6Api::MarkSessionChanged();
+	UE_LOG(LogBF6, Display,
+		TEXT("tscn adopted: %d matched by ObjId, %d by position, %d renamed, %d groups added, %d pivots moved, %d re-parented, %d empty derived groups dropped"),
+		ById, ByPos, Out.Renamed, Out.Groups, Out.Pivots, Out.Reparented, Out.GroupsDropped);
 	return true;
 }
 
@@ -5349,6 +6691,18 @@ static bool BF6_ImportSpatialDialog()
 	const FString File = Picked[0];
 	// Godot scene files take the native .tscn path
 	if (File.EndsWith(TEXT(".tscn"))) return BF6_ImportTscnFile(File);
+	// ---- BF6PortalProfile ----
+	// The dialog is now only the file picker. Everything below it moved into
+	// BF6_ImportSpatialFile so the Portal profile can import what it downloaded
+	// without a dialog, and both get every fix to it.
+	return BF6_ImportSpatialFile(File, FString(), FString(), -1);
+	// ---- end BF6PortalProfile ----
+}
+
+bool BF6_ImportSpatialFile(const FString& File, const FString& SaveNameOverride,
+	const FString& PortalExperienceUrl, int32 PortalMapIdx)
+{
+	if (!GEditor) return false;
 
 	FString In; if (!FFileHelper::LoadFileToString(In, *File)) { Notify(TEXT("Could not read the file.")); return false; }
 	TSharedPtr<FJsonObject> Root; TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
@@ -5374,12 +6728,18 @@ static bool BF6_ImportSpatialDialog()
 	// editable custom map; the custom name rides INSIDE our exports as Static
 	// metadata (the format itself has no name field), so a round-trip keeps
 	// the user's name even if the file got renamed - filename is the fallback
-	FString SaveName;
-	if (StaticArr)
+	FString SaveName = SaveNameOverride;   // ---- BF6PortalProfile ----: the caller may name it
+	if (SaveName.IsEmpty() && StaticArr)
 		for (const auto& v : *StaticArr)
 			if (const TSharedPtr<FJsonObject> o = v->AsObject())
 				if (o->TryGetStringField(TEXT("metadata/bf6_save"), SaveName) && !SaveName.IsEmpty()) break;
 	if (SaveName.IsEmpty()) SaveName = FPaths::GetBaseFilename(File).Replace(TEXT(".spatial"), TEXT(""));
+	// ---- BF6PortalProfile ----
+	// The link goes in BEFORE anything is spawned, so the SaveSession at the
+	// end writes it without being told a second time.
+	if (!PortalExperienceUrl.IsEmpty())
+		BF6PortalWeb::SetSaveLink(Level, SaveName, PortalExperienceUrl, PortalMapIdx);
+	// ---- end BF6PortalProfile ----
 	g_ss.CurrentLevel = Level; g_ss.CurrentSave = SaveName; g_ss.bEditing = true;
 	BF6_ClearContextFor(Level); ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag); ClearActorsWithTag(kGroupTag);
 	BF6_LoadPlaceables(Level); BF6_LoadBudgetMax(Level);
@@ -5449,6 +6809,20 @@ static bool BF6_ImportSpatialDialog()
 		if (!Id.IsEmpty() && P.Pts.Num() >= 2) ImpPaths.Add(Id, MoveTemp(P));
 	}
 
+	// ---- BF6PortalProfile ----
+	// Each object's "id" is its full Godot scene path, and on a file that does
+	// not carry our own tree metadata it is the ONLY record of the hierarchy.
+	// Collected here, used after the loop, so a file that does carry ours is
+	// untouched by any of this.
+	TArray<TPair<TWeakObjectPtr<AActor>, FString>> IdPaths;
+	auto NoteIdPath = [&IdPaths](AActor* A, const TSharedPtr<FJsonObject>& O)
+	{
+		if (!A || !O.IsValid()) return;
+		FString P; O->TryGetStringField(TEXT("id"), P);
+		P.TrimStartAndEndInline();
+		if (!P.IsEmpty()) IdPaths.Emplace(A, P);
+	};
+	// ---- end BF6PortalProfile ----
 	int32 spawned = 0;
 	for (const auto& dv : *Dyn)
 	{
@@ -5487,6 +6861,7 @@ static bool BF6_ImportSpatialDialog()
 				BF6_SetPrettyLabel(A, Type); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient);
 				RestoreProps(A, o);
 				GVolumeLoops.Add(A, Loop); BF6_WriteLoopTags(A);   // imported zones are point-editable too
+				NoteIdPath(A, o);   // ---- BF6PortalProfile ----
 				spawned++;
 			}
 			continue;
@@ -5504,13 +6879,14 @@ static bool BF6_ImportSpatialDialog()
 			const TArray<TSharedPtr<FJsonValue>>* SA = nullptr;
 			if (o->TryGetArrayField(TEXT("size"), SA) && SA->Num() == 3)
 				SzG = FVector((*SA)[0]->AsNumber(), (*SA)[1]->AsNumber(), (*SA)[2]->AsNumber());
-			if (AActor* A = SpawnObbActor(World, Xf, SzG)) { RestoreProps(A, o); BF6_SetObbSizeTag(A, SzG); RebuildObbBox(A); spawned++; }
+			if (AActor* A = SpawnObbActor(World, Xf, SzG)) { RestoreProps(A, o); BF6_SetObbSizeTag(A, SzG); RebuildObbBox(A); NoteIdPath(A, o); spawned++; }   // ---- BF6PortalProfile ----: NoteIdPath
 			continue;
 		}
 		const FString Mesh = BF6_ResolveMeshForType(Type);
 		AActor* A = Mesh.IsEmpty() ? nullptr : SpawnSdkModel(Mesh, Type, Xf);
 		if (!A){ A=World->SpawnActor<AActor>(AActor::StaticClass(),FVector::ZeroVector,FRotator::ZeroRotator); if(!A)continue; UProceduralMeshComponent* MM=MakeProcMesh(A,TEXT("Model")); BuildMarker(MM); A->SetActorTransform(Xf); BF6_SetPrettyLabel(A, Type); A->Tags.Add(kPlacedTag); A->Tags.Add(FName(*(FString(TEXT("label:"))+Type))); A->SetFlags(RF_Transient); }
 		RestoreProps(A, o);   // ObjId, teams, links - everything editable again
+		NoteIdPath(A, o);     // ---- BF6PortalProfile ----
 		// the path this entity owns, collected in pass 0
 		{
 			FString WId;
@@ -5526,11 +6902,74 @@ static bool BF6_ImportSpatialDialog()
 		spawned++;
 	}
 	BF6_RecomputeBudget();
-	const int32 Hooked = BF6_ApplyTreeMetadata(StaticArr);
-	if (Hooked > 0) UE_LOG(LogBF6, Display, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
+	// ---- BF6PortalProfile: the tree ----
+	// Our own metadata has the real group transforms, so it wins outright.
+	// Everything else keeps its hierarchy only in the id paths.
+	bool bHasTreeMeta = false;
+	if (StaticArr)
+		for (const auto& v : *StaticArr)
+			if (const TSharedPtr<FJsonObject> o = v->AsObject())
+			{
+				FString RawTree;
+				if (o->TryGetStringField(TEXT("metadata/bf6_tree"), RawTree) && !RawTree.IsEmpty()) { bHasTreeMeta = true; break; }
+			}
+	if (bHasTreeMeta)
+	{
+		const int32 Hooked = BF6_ApplyTreeMetadata(StaticArr);
+		if (Hooked > 0) UE_LOG(LogBF6, Display, TEXT("authored tree: %d object(s) attached to their parent"), Hooked);
+	}
+	else
+	{
+		int32 TreeGroups = 0; bool bMinifiedNames = false;
+		const int32 TreeParented = BF6_ApplyTreeFromIdPaths(IdPaths, TreeGroups, bMinifiedNames);
+		if (TreeParented > 0 || TreeGroups > 0)
+			UE_LOG(LogBF6, Display, TEXT("tree rebuilt from id paths: %d groups, %d objects parented (minified names: %s)"),
+				TreeGroups, TreeParented, bMinifiedNames ? TEXT("yes") : TEXT("no"));
+	}
+	// ---- end BF6PortalProfile ----
+	// ---- BF6PortalProfile: the session ----
+	// Only when the caller named the save. The dialog import behaves exactly as
+	// it always did: it leaves the map open and unsaved.
+	if (!SaveNameOverride.IsEmpty() && !SaveSession(Level, SaveName))
+		UE_LOG(LogBF6, Warning, TEXT("Portal import: the session for '%s' could not be written."), *SaveName);
+	// WHERE THIS SAVE CAME FROM, written now rather than guessed later. It is
+	// what lets the tool offer the Godot scene to the maps that lost their
+	// names to a spatial, and only to those.
+	if (!SaveNameOverride.IsEmpty()) BF6Project::NoteOrigin(Level, SaveName, TEXT("spatial"), File);
+	// ---- end BF6PortalProfile ----
+	// A session opened: new baseline for the change watch, new crash marker.
+	BF6_AutosaveSessionOpened();
+	// A dialog import is not on disk under this tool's name, so the backups
+	// start now. A Portal import that just wrote its own save is not dirty.
+	if (SaveNameOverride.IsEmpty()) BF6Api::MarkSessionChanged();
 	Notify(FString::Printf(TEXT("Imported '%s' onto %s: %d objects. Editable now."), *g_ss.CurrentSave, *Level, spawned));
 	return true;
 }
+
+// ---- BF6PortalProfile ------------------------------------------------------
+// A map that is in an experience's rotation but has no spatial attachment is
+// still one of that experience's maps: it shares the same blocks, script and
+// settings, and the creator has to be able to switch to it and start building.
+// So it gets a save of its own, on that map's shipped base setup, linked and
+// numbered like its siblings.
+bool BF6_CreatePortalBaseSave(const FString& Level, const FString& SaveName,
+	const FString& PortalExperienceUrl, int32 PortalMapIdx)
+{
+	if (!GEditor || Level.IsEmpty() || SaveName.IsEmpty()) return false;
+	if (!PortalExperienceUrl.IsEmpty())
+		BF6PortalWeb::SetSaveLink(Level, SaveName, PortalExperienceUrl, PortalMapIdx);
+	BF6_OpenMapWorldImpl(Level, FString());          // the base setup, terrain and all
+	if (g_ss.CurrentLevel != Level) return false;    // the map could not be opened
+	g_ss.CurrentSave = SaveName;                     // and now it has a name
+	g_ss.bEditing = true;
+	if (!SaveSession(Level, SaveName)) return false;
+	// A base setup lost nothing, so it is never offered a scene file.
+	BF6Project::NoteOrigin(Level, SaveName, TEXT("base-setup"), FString());
+	BF6_WriteRunningMarker();   // the marker names the save this session belongs to
+	UE_LOG(LogBF6, Display, TEXT("Portal import: '%s' has no map data yet, saved the base setup of %s"), *SaveName, *Level);
+	return true;
+}
+// ---- end BF6PortalProfile ----
 
 // plugin can't hot-swap its own DLL, so the flow is the Godot staged-lane one:
 // check -> download to Saved/ -> restart, and a script applies it while the
@@ -5558,9 +6997,50 @@ static bool BF6_IsNewer(const FString& Remote, const FString& Local)
 	return rc > lc;
 }
 
-// Stage the downloaded zip, write the apply script, close the editor. The
-// script waits for us to exit, unzips over the plugin, and relaunches.
+// ---------------------------------------------------------------------------
+// ONE APPLY, ONE RESTART, FOR ONE COMPONENT OR TWO.
+//
+// The tool and the High Poly add-on are versioned together and have to move
+// together: an add-on built against a different SDK is the pair being out of
+// step, which is the thing this release is trying to stop happening. Two
+// separate updaters would mean two downloads, two restarts, and a window in
+// between where the halves disagree.
+//
+// So a component is a zip, a destination, and a name, and the applier takes a
+// list. Everything the single component version learned the hard way is kept:
+// absolute Windows paths, bounded robocopy retries, the breadcrumb the editor
+// waits for before it dares close, a console-attached powershell, and a
+// relaunch that always happens.
+//
+// What is new is that the whole set is atomic. Each destination is copied aside
+// before it is touched, and if ANY component fails to apply, every one of them
+// is put back. A half applied pair is worse than no update: the editor would
+// come back with a new tool and an old add-on and no way to tell.
+// ---------------------------------------------------------------------------
+struct FBF6UpdatePart
+{
+	FString        Label;        // BF6UnrealSDK, BF6HighPoly: names the folder in the zip
+	FString        DestDir;      // where it ends up, absolute
+	TArray<uint8>  Zip;
+	FString        Tag;          // v0.8.0
+};
+
+static void BF6_StageUpdateAndRestart(const TArray<FBF6UpdatePart>& Parts, bool bDryRun = false);
+
+// The single component call the existing paths use, unchanged for them.
 static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FString& Tag)
+{
+	FBF6UpdatePart One;
+	One.Label   = TEXT("BF6UnrealSDK");
+	One.DestDir = g_pluginDir;
+	One.Zip     = ZipBytes;
+	One.Tag     = Tag;
+	TArray<FBF6UpdatePart> Parts;
+	Parts.Add(MoveTemp(One));
+	BF6_StageUpdateAndRestart(Parts);
+}
+
+static void BF6_StageUpdateAndRestartLegacy(const TArray<uint8>& ZipBytes, const FString& Tag)
 {
 	// EVERY path handed to the applier must be absolute and Windows-native.
 	// FPaths::ProjectSavedDir() is RELATIVE (resolved against the engine base
@@ -5676,6 +7156,656 @@ static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FStri
 	FPlatformMisc::RequestExit(false);
 }
 
+
+// The real one: any number of components, applied together or not at all.
+static void BF6_StageUpdateAndRestart(const TArray<FBF6UpdatePart>& Parts, bool bDryRun)
+{
+	if (Parts.Num() == 0) { return; }
+
+	auto Win = [](const FString& P)
+	{
+		FString S = FPaths::ConvertRelativePathToFull(P);
+		S.ReplaceInline(TEXT("/"), TEXT("\\"));
+		return S;
+	};
+
+	// ONE TRANSACTION, ONE DIRECTORY.
+	//
+	// Every update used to write to the same fixed paths: staging, backup,
+	// apply_update.ps1, apply_update.log. Two of anything at once then trampled
+	// each other. A dry run was the easiest way to see it, because it writes
+	// one-byte placeholder zips and deletes the apply log, so running one while
+	// a real download was in flight corrupted that download's staging and its
+	// startup breadcrumb. Pressing an install button twice did the same.
+	//
+	// So each transaction gets its own directory, and a dry run never shares a
+	// path with a real one. The parent is still tidied of old transactions, but
+	// only ones that are finished.
+	const FString UpdateRoot = Win(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("update")));
+	const FString TxnId = FString::Printf(TEXT("%s%s-%s"),
+		bDryRun ? TEXT("dryrun-") : TEXT(""),
+		*FDateTime::UtcNow().ToString(TEXT("%Y%m%d-%H%M%S")),
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+	const FString UpdateDir = Win(FPaths::Combine(UpdateRoot, TxnId));
+	const FString Staging   = Win(FPaths::Combine(UpdateDir, TEXT("staging")));
+	// Backups live under Saved, which is NOT a plugin search path: a copy of a
+	// .uplugin left inside Plugins would be found and loaded as a second
+	// installation of the same plugin.
+	const FString BackupDir = Win(FPaths::Combine(UpdateDir, TEXT("backup")));
+	const FString Script    = Win(FPaths::Combine(UpdateDir, TEXT("apply_update.ps1")));
+	const FString ApplyLog  = FPaths::Combine(UpdateDir, TEXT("apply_update.log"));
+	const FString Project   = Win(FPaths::ProjectDir() / FApp::GetProjectName()) + TEXT(".uproject");
+	const FString EditorExe = FPlatformProcess::ExecutablePath();
+	IFileManager::Get().MakeDirectory(*UpdateDir, true);
+
+	// Named before the save barrier, which shows the user what is about to be
+	// applied and therefore needs this already built.
+	FString Names;
+	for (const FBF6UpdatePart& P : Parts)
+	{
+		if (!Names.IsEmpty()) { Names += TEXT(" and "); }
+		Names += P.Label + TEXT(" ") + P.Tag;
+	}
+
+	// Refuse to start a second real update while one is staged and waiting for
+	// the editor to close. The first one owns the restart.
+	static bool bTransactionInFlight = false;
+	if (!bDryRun)
+	{
+		if (bTransactionInFlight)
+		{
+			UE_LOG(LogBF6, Warning,
+				TEXT("An update is already staged and waiting for the editor to close. Ignoring this one."));
+			Notify(TEXT("An update is already in progress."));
+			return;
+		}
+
+		// THE SAVE BARRIER.
+		//
+		// This closes the editor. Everything the user has open goes with it, so
+		// the map and the project are written FIRST, and a refusal or a failed
+		// write cancels the update rather than proceeding and hoping. Nothing
+		// here is worth losing somebody's afternoon over.
+		//
+		// The editors that live in a browser panel (Blocks, Script, the UI
+		// builder) are NOT covered by this: their models live in the page and
+		// the host has no way to make them flush synchronously. They autosave,
+		// but "usually saved" is not a barrier, so the confirmation below says
+		// so plainly instead of implying a guarantee this does not give.
+		if (!FEditorFileUtils::SaveDirtyPackages(/*bPromptUser*/ true, /*bSaveMaps*/ true,
+			/*bSaveContent*/ true))
+		{
+			UE_LOG(LogBF6, Warning, TEXT("update cancelled: the map or project was not saved"));
+			Notify(TEXT("The update was cancelled because your work was not saved."));
+			return;
+		}
+
+		const EAppReturnType::Type Go = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(
+			FString::Printf(TEXT(
+				"Ready to apply %s.\n\n"
+				"The editor will close and reopen itself. Your map and project have been saved.\n\n"
+				"The Blocks, Script and UI panels keep their work in the page and cannot be "
+				"flushed from here, so if you have unsaved edits in any of them, press No, save "
+				"them, and run the update again."),
+				*Names)));
+		if (Go != EAppReturnType::Yes)
+		{
+			UE_LOG(LogBF6, Display, TEXT("update declined at the save barrier"));
+			return;
+		}
+
+		bTransactionInFlight = true;
+	}
+
+	// Write every zip first. A component that cannot even be written to disk
+	// stops the whole thing before the editor is asked to close.
+	TArray<FString> ZipPaths;
+	for (int32 i = 0; i < Parts.Num(); i++)
+	{
+		const FString ZipPath = Win(FPaths::Combine(UpdateDir,
+			FString::Printf(TEXT("%s_update.zip"), *Parts[i].Label)));
+		if (!FFileHelper::SaveArrayToFile(Parts[i].Zip, *ZipPath))
+		{
+			Notify(FString::Printf(TEXT("Could not write the update file for %s. Nothing was changed."),
+				*Parts[i].Label));
+			bTransactionInFlight = false;   // nothing was staged, so let another attempt through
+			return;
+		}
+		ZipPaths.Add(ZipPath);
+	}
+
+	const uint32 Pid = FPlatformProcess::GetCurrentProcessId();
+	const FString Q = TEXT("\"");
+
+	FString Ps;
+	Ps += FString::Printf(TEXT("$log = %s%s%s\r\n"), *Q, *ApplyLog, *Q);
+	Ps += TEXT("function Log($m) { Add-Content -Path $log -Value ((Get-Date -Format s) + '  ' + $m) }\r\n");
+	Ps += FString::Printf(TEXT("try { Set-Content -Path $log -Value ((Get-Date -Format s) + '  applying %s') -ErrorAction Stop } catch { exit 1 }\r\n"), *Names);
+	Ps += FString::Printf(TEXT("try { Wait-Process -Id %u -ErrorAction SilentlyContinue } catch {}\r\n"), Pid);
+	Ps += TEXT("Start-Sleep -Seconds 2\r\n");
+	Ps += TEXT("Log 'editor closed'\r\n");
+	Ps += FString::Printf(TEXT("Remove-Item -Recurse -Force %s%s%s -ErrorAction SilentlyContinue\r\n"), *Q, *Staging, *Q);
+	Ps += FString::Printf(TEXT("Remove-Item -Recurse -Force %s%s%s -ErrorAction SilentlyContinue\r\n"), *Q, *BackupDir, *Q);
+	Ps += TEXT("$applied = @()\r\n");
+	Ps += TEXT("$ok = $true\r\n");
+
+	for (int32 i = 0; i < Parts.Num(); i++)
+	{
+		const FString Label = Parts[i].Label;
+		const FString Dest  = Win(Parts[i].DestDir);
+		const FString Stage = Win(FPaths::Combine(Staging, Label));
+		const FString Back  = Win(FPaths::Combine(BackupDir, Label));
+
+		Ps += TEXT("if ($ok) {\r\n");
+		Ps += FString::Printf(TEXT("  Log 'component %s'\r\n"), *Label);
+		Ps += TEXT("  try {\r\n");
+		Ps += FString::Printf(TEXT("    Expand-Archive -Path %s%s%s -DestinationPath %s%s%s -Force -ErrorAction Stop\r\n"),
+			*Q, *ZipPaths[i], *Q, *Q, *Stage, *Q);
+		Ps += TEXT("  } catch {\r\n");
+		Ps += TEXT("    Log ('Expand-Archive failed: ' + $_.Exception.Message)\r\n");
+		Ps += TEXT("    try {\r\n");
+		Ps += TEXT("      Add-Type -AssemblyName System.IO.Compression.FileSystem\r\n");
+		Ps += FString::Printf(TEXT("      [System.IO.Compression.ZipFile]::ExtractToDirectory(%s%s%s, %s%s%s)\r\n"),
+			*Q, *ZipPaths[i], *Q, *Q, *Stage, *Q);
+		Ps += TEXT("    } catch { Log ('unzip failed: ' + $_.Exception.Message); $ok = $false }\r\n");
+		Ps += TEXT("  }\r\n");
+		// The zip may carry a <Label>/ root folder or the files directly.
+		Ps += FString::Printf(TEXT("  $src = Join-Path %s%s%s %s%s%s\r\n"), *Q, *Stage, *Q, *Q, *Label, *Q);
+		Ps += FString::Printf(TEXT("  if (-not (Test-Path $src)) { $src = %s%s%s }\r\n"), *Q, *Stage, *Q);
+
+		// PREFLIGHT, BEFORE ANYTHING IS BACKED UP OR OVERWRITTEN.
+		//
+		// The only check used to be that the download began with PK, and the
+		// descriptor's version was read out AFTERWARDS, which proves nothing
+		// about what was already copied over the user's install. A truncated
+		// archive, a redirect page saved as a zip, or the wrong release's asset
+		// all got as far as replacing files before anyone looked.
+		//
+		// So each staged component must now look like the plugin it claims to
+		// be: its descriptor present and naming the version we asked for, and at
+		// least one binary beside it. Anything else stops the whole transaction
+		// while the install is still untouched.
+		Ps += FString::Printf(TEXT("  $desc = Join-Path $src %s%s.uplugin%s\r\n"), *Q, *Label, *Q);
+		Ps += TEXT("  if ($ok -and -not (Test-Path -LiteralPath $desc)) {\r\n");
+		Ps += FString::Printf(TEXT("    Log 'REFUSED: the %s package has no %s.uplugin in it; nothing was changed'\r\n"), *Label, *Label);
+		Ps += TEXT("    $ok = $false\r\n  }\r\n");
+		// EVERY MODULE THE DESCRIPTOR DECLARES HAS TO BE IN THE BOX.
+		//
+		// "at least one .dll somewhere" was too weak to mean anything: a package
+		// holding nothing but a descriptor and a file called dummy.dll passed
+		// it. The descriptor lists the modules the editor will try to load, and
+		// a package missing one of them produces a plugin that fails at load
+		// time, after it has already replaced a working install. So the check is
+		// the descriptor's own list, plus the .modules manifest the editor reads
+		// to find them.
+		Ps += TEXT("  if ($ok) {\r\n");
+		Ps += TEXT("    $bin = Join-Path $src 'Binaries\\Win64'\r\n");
+		Ps += FString::Printf(TEXT("    if (-not (Test-Path -LiteralPath (Join-Path $bin 'UnrealEditor.modules'))) { Log 'REFUSED: the %s package has no UnrealEditor.modules; nothing was changed'; $ok = $false }\r\n"), *Label);
+		Ps += TEXT("  }\r\n");
+		Ps += TEXT("  if ($ok) {\r\n");
+		Ps += TEXT("    try {\r\n");
+		Ps += TEXT("      $desc_j = Get-Content -LiteralPath $desc -Raw | ConvertFrom-Json\r\n");
+		Ps += TEXT("      $mods_j = Get-Content -LiteralPath (Join-Path $bin 'UnrealEditor.modules') -Raw | ConvertFrom-Json\r\n");
+		Ps += TEXT("      foreach ($m in $desc_j.Modules) {\r\n");
+		Ps += TEXT("        $dll = $mods_j.Modules.($m.Name)\r\n");
+		Ps += TEXT("        if (-not $dll) { Log ('REFUSED: module ' + $m.Name + ' is declared but not in the modules manifest; nothing was changed'); $ok = $false; break }\r\n");
+		Ps += TEXT("        if (-not (Test-Path -LiteralPath (Join-Path $bin $dll))) { Log ('REFUSED: ' + $dll + ' for module ' + $m.Name + ' is missing from the package; nothing was changed'); $ok = $false; break }\r\n");
+		Ps += TEXT("      }\r\n");
+		Ps += FString::Printf(TEXT("      if ($ok) { Log ('%s package carries every module it declares') }\r\n"), *Label);
+		Ps += FString::Printf(TEXT("    } catch { Log ('REFUSED: the %s descriptor or modules manifest could not be read: ' + $_.Exception.Message); $ok = $false }\r\n"), *Label);
+		Ps += TEXT("  }\r\n");
+		// The tag is what the user agreed to install. A release whose descriptor
+		// disagrees with its own tag is not something to apply silently.
+		Ps += TEXT("  if ($ok) {\r\n");
+		Ps += TEXT("    $want = '") + Parts[i].Tag.TrimStartAndEnd().Replace(TEXT("'"), TEXT("''")) + TEXT("'\r\n");
+		Ps += TEXT("    $want = $want.TrimStart('v')\r\n");
+		Ps += TEXT("    if ((Get-Content -LiteralPath $desc -Raw) -match '\"VersionName\"\\s*:\\s*\"([^\"]+)\"') {\r\n");
+		Ps += TEXT("      if ($Matches[1] -ne $want -and $want -ne '0.0.0-dryrun') {\r\n");
+		Ps += FString::Printf(TEXT("        Log ('REFUSED: the %s package says v' + $Matches[1] + ' but ' + $want + ' was requested; nothing was changed')\r\n"), *Label);
+		Ps += TEXT("        $ok = $false\r\n      }\r\n");
+		Ps += FString::Printf(TEXT("      else { Log ('%s package checks out, v' + $Matches[1]) }\r\n"), *Label);
+		Ps += TEXT("    }\r\n");
+		Ps += FString::Printf(TEXT("    else { Log 'REFUSED: the %s descriptor has no VersionName; nothing was changed'; $ok = $false }\r\n"), *Label);
+		Ps += TEXT("  }\r\n");
+		// THREE FACTS PER COMPONENT, TRACKED SEPARATELY, BECAUSE ROLLBACK NEEDS
+		// ALL THREE AND USED TO INFER THEM FROM ONE.
+		//
+		//   existed     was there a destination before this ran
+		//   backupOk    is the backup a COMPLETE copy of it
+		//   touched     did we actually start writing over the destination
+		//
+		// The old rollback tested only "is there a backup folder" and then
+		// restored with /PURGE. A backup that failed halfway leaves a folder
+		// that looks fine, and purging from it deleted good files that had
+		// never been copied into it: the recovery path destroyed more than the
+		// failure did. A destination we never touched was also "restored",
+		// which could only make things worse.
+		Ps += FString::Printf(TEXT("  $existed%d = Test-Path -LiteralPath %s%s%s\r\n"), i, *Q, *Dest, *Q);
+		Ps += FString::Printf(TEXT("  $backupOk%d = $false\r\n"), i);
+		Ps += FString::Printf(TEXT("  $touched%d = $false\r\n"), i);
+		Ps += FString::Printf(TEXT("  if ($ok -and $existed%d) {\r\n"), i);
+		Ps += FString::Printf(TEXT("    robocopy %s%s%s %s%s%s /E /R:2 /W:1 /NFL /NDL /NJH /NJS | Out-Null\r\n"),
+			*Q, *Dest, *Q, *Q, *Back, *Q);
+		Ps += TEXT("    $rc = $LASTEXITCODE\r\n");
+		// Robocopy's exit code is not enough on its own: it reports per-file
+		// failures in ways that still leave a folder behind. Counting both
+		// sides is cheap and is the difference between a backup we may restore
+		// from and one we may not.
+		Ps += FString::Printf(TEXT("    $srcN = (Get-ChildItem -LiteralPath %s%s%s -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count\r\n"),
+			*Q, *Dest, *Q);
+		Ps += FString::Printf(TEXT("    $bakN = (Get-ChildItem -LiteralPath %s%s%s -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count\r\n"),
+			*Q, *Back, *Q);
+		Ps += FString::Printf(TEXT("    if ($rc -lt 8 -and $srcN -eq $bakN -and $srcN -gt 0) { $backupOk%d = $true; Log ('backed up %s, ' + $bakN + ' file(s)') }\r\n"),
+			i, *Label);
+		Ps += FString::Printf(TEXT("    else { Log ('backup of %s is INCOMPLETE (exit ' + $rc + ', ' + $bakN + ' of ' + $srcN + ' files); not applying'); $ok = $false }\r\n"),
+			*Label);
+		Ps += TEXT("  }\r\n");
+		Ps += FString::Printf(TEXT("  if ($ok) {\r\n"));
+		Ps += FString::Printf(TEXT("    $touched%d = $true\r\n"), i);
+		Ps += FString::Printf(TEXT("    robocopy $src %s%s%s /E /R:5 /W:2 /NFL /NDL /NJH /NJS | Out-Null\r\n"), *Q, *Dest, *Q);
+		Ps += TEXT("    if ($LASTEXITCODE -ge 8) { Log ('copy failed, exit ' + $LASTEXITCODE); $ok = $false }\r\n");
+		Ps += FString::Printf(TEXT("    else { Log 'applied %s'; $applied += '%s' }\r\n"), *Label, *Label);
+		Ps += TEXT("  }\r\n");
+		Ps += TEXT("}\r\n");
+	}
+
+	// All or nothing. A pair where one half landed is the failure mode this
+	// whole design exists to avoid, so a failure puts every backup back.
+	//
+	// Rollback is the most dangerous code here, because it runs when something
+	// has already gone wrong and it deletes things. Every branch below is
+	// therefore about what we are ENTITLED to do, not what would be tidy.
+	Ps += TEXT("if (-not $ok) {\r\n");
+	Ps += TEXT("  Log 'APPLY FAILED - rolling back'\r\n");
+	Ps += TEXT("  $recovered = $true\r\n");
+	for (int32 i = 0; i < Parts.Num(); i++)
+	{
+		const FString Dest = Win(Parts[i].DestDir);
+		const FString Back = Win(FPaths::Combine(BackupDir, Parts[i].Label));
+		const FString Label = Parts[i].Label;
+
+		// Never restore over something we did not touch: it is already right.
+		Ps += FString::Printf(TEXT("  if (-not $touched%d) { Log 'nothing was written to %s, leaving it alone' }\r\n"),
+			i, *Label);
+
+		// It was there before and we have a verified copy: put it back exactly,
+		// which is the only case that may purge.
+		Ps += FString::Printf(TEXT("  elseif ($existed%d -and $backupOk%d) {\r\n"), i, i);
+		Ps += FString::Printf(TEXT("    robocopy %s%s%s %s%s%s /MIR /R:3 /W:1 /NFL /NDL /NJH /NJS | Out-Null\r\n"),
+			*Q, *Back, *Q, *Q, *Dest, *Q);
+		// Parenthesised: PowerShell parses `Log 'text' + $x` as three arguments
+		// and quietly drops the number, so the one diagnostic that matters here
+		// would have arrived without its exit code.
+		Ps += FString::Printf(TEXT("    if ($LASTEXITCODE -ge 8) { Log ('RESTORE OF %s FAILED, exit ' + $LASTEXITCODE); $recovered = $false }\r\n"), *Label);
+		Ps += FString::Printf(TEXT("    else { Log 'restored %s' }\r\n"), *Label);
+		Ps += TEXT("  }\r\n");
+
+		// It was there before but the backup is not trustworthy. Copy back what
+		// we do have, and do NOT purge: files missing from a partial backup are
+		// exactly the ones purging would destroy. Say plainly that the folder
+		// is now mixed, because a quiet half-recovery is worse than a loud one.
+		Ps += FString::Printf(TEXT("  elseif ($existed%d) {\r\n"), i);
+		Ps += FString::Printf(TEXT("    if (Test-Path -LiteralPath %s%s%s) {\r\n"), *Q, *Back, *Q);
+		Ps += FString::Printf(TEXT("      robocopy %s%s%s %s%s%s /E /R:3 /W:1 /NFL /NDL /NJH /NJS | Out-Null\r\n"),
+			*Q, *Back, *Q, *Q, *Dest, *Q);
+		Ps += TEXT("    }\r\n");
+		Ps += FString::Printf(TEXT("    Log 'PARTIAL RECOVERY of %s: the backup was incomplete, so nothing was deleted. %s may hold a mix of old and new files. The backup is kept at %s'\r\n"),
+			*Label, *Dest, *Back);
+		Ps += TEXT("    $recovered = $false\r\n");
+		Ps += TEXT("  }\r\n");
+
+		// A fresh install that failed: there was nothing here before, so the
+		// only thing to undo is the folder this transaction created.
+		// A fresh install that failed: there was nothing here before, so the only
+		// thing to undo is the folder this transaction created. The delete was
+		// SilentlyContinue with an unconditional "removed" in the log, so a
+		// locked file left a half-installed plugin behind while the report said
+		// the rollback was clean. That folder then loads on the next launch.
+		Ps += TEXT("  else {\r\n");
+		Ps += FString::Printf(TEXT("    if (Test-Path -LiteralPath %s%s%s) {\r\n"), *Q, *Dest, *Q);
+		Ps += FString::Printf(TEXT("      Remove-Item -LiteralPath %s%s%s -Recurse -Force -ErrorAction SilentlyContinue\r\n"), *Q, *Dest, *Q);
+		Ps += TEXT("    }\r\n");
+		Ps += FString::Printf(TEXT("    if (Test-Path -LiteralPath %s%s%s) {\r\n"), *Q, *Dest, *Q);
+		Ps += FString::Printf(TEXT("      Log 'COULD NOT REMOVE the partial install of %s at %s. It was not there before this update and it is incomplete, so delete it by hand before starting the editor.'\r\n"),
+			*Label, *Dest);
+		Ps += TEXT("      $recovered = $false\r\n");
+		Ps += TEXT("    }\r\n");
+		Ps += FString::Printf(TEXT("    else { Log 'removed the partial install of %s; there was nothing here before' }\r\n"), *Label);
+		Ps += TEXT("  }\r\n");
+	}
+	// The backups stay on disk whenever recovery was not clean. They are the
+	// only remaining copy of the user's working install.
+	Ps += TEXT("  if ($recovered) { Log 'rolled back cleanly; nothing was changed' }\r\n");
+	Ps += FString::Printf(TEXT("  else { Log 'ROLLBACK INCOMPLETE. The backups have been kept at %s. Do not delete them until the install is known good.' }\r\n"),
+		*BackupDir);
+	Ps += TEXT("} else { Log ('applied: ' + ($applied -join ', ')) }\r\n");
+
+	// What the descriptors actually say afterwards. A version read back off
+	// disk is the only honest confirmation; the script reporting its own
+	// success proves nothing.
+	for (const FBF6UpdatePart& P : Parts)
+	{
+		const FString Uplugin = Win(FPaths::Combine(P.DestDir, P.Label + TEXT(".uplugin")));
+		Ps += FString::Printf(TEXT("if (Test-Path %s%s%s) { if ((Get-Content %s%s%s -Raw) -match '\"VersionName\"\\s*:\\s*\"([^\"]+)\"') { Log ('%s is now v' + $Matches[1]) } }\r\n"),
+			*Q, *Uplugin, *Q, *Q, *Uplugin, *Q, *P.Label);
+	}
+
+	Ps += TEXT("Log 'relaunching the editor'\r\n");
+	Ps += FString::Printf(TEXT("Start-Process %s%s%s -ArgumentList '\"%s\"'\r\n"), *Q, *EditorExe, *Q, *Project);
+	Ps += TEXT("Log 'done'\r\n");
+
+	IFileManager::Get().Delete(*ApplyLog, false, true, true);
+	if (!FFileHelper::SaveStringToFile(Ps, *Script))
+	{
+		Notify(TEXT("Could not write the update script - nothing was changed."));
+		bTransactionInFlight = false;
+		return;
+	}
+
+	// A DRY RUN WRITES THE SCRIPT AND STOPS.
+	//
+	// This is the one piece of the tool that runs while the editor is closed and
+	// rewrites the plugin it is updating. It cannot be exercised by the thing it
+	// replaces, so the least it can do is let somebody read it, and let a parser
+	// check it, before it is ever trusted with a real update.
+	if (bDryRun)
+	{
+		UE_LOG(LogBF6, Display, TEXT("update dry run: %s"), *Script);
+		UE_LOG(LogBF6, Display, TEXT("  components : %s"), *Names);
+		UE_LOG(LogBF6, Display, TEXT("  nothing was launched, nothing was changed, the editor stays open"));
+		return;
+	}
+
+	uint32 ChildPid = 0;
+	FProcHandle Proc = FPlatformProcess::CreateProc(TEXT("powershell.exe"),
+		*FString::Printf(TEXT("-NoProfile -ExecutionPolicy Bypass -File \"%s\""), *Script),
+		false, true, true, &ChildPid, 0, *UpdateDir, nullptr);
+
+	bool bStarted = false;
+	if (Proc.IsValid())
+	{
+		for (int32 i = 0; i < 60 && !bStarted; i++)
+		{
+			FPlatformProcess::Sleep(0.1f);
+			bStarted = IFileManager::Get().FileSize(*ApplyLog) > 0;
+		}
+	}
+	if (!bStarted)
+	{
+		if (Proc.IsValid()) { FPlatformProcess::TerminateProc(Proc); FPlatformProcess::CloseProc(Proc); }
+		UE_LOG(LogBF6, Error, TEXT("Update %s: the applier never started (script %s)."), *Names, *Script);
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT(
+			"The updater could not start, so nothing was changed and the editor is staying open.\n\n"
+			"%s is already downloaded under\n%s\n\n"
+			"To finish by hand: close the editor and unzip each package over its plugin folder."),
+			*Names, *UpdateDir)));
+		bTransactionInFlight = false;   // the applier never ran, so this transaction is over
+		return;
+	}
+	FPlatformProcess::CloseProc(Proc);
+
+	// WHAT THE NEXT LAUNCH HAS TO FIND, AND WHERE.
+	//
+	// Each transaction now has its own directory, which fixed two updates
+	// trampling each other and broke the restart report: the marker was written
+	// inside the transaction while the next launch went on reading a fixed path
+	// under update/. A real update therefore reported nothing, and a stale
+	// marker left at the old path would have described some other run.
+	//
+	// So there are two files. The per-transaction manifest is the record, and a
+	// single "active" pointer at the stable location names which transaction to
+	// read. The pointer is written LAST, so a launch either finds a complete
+	// record or finds nothing, never a half-written one.
+	{
+		TSharedRef<FJsonObject> M = MakeShared<FJsonObject>();
+		M->SetStringField(TEXT("txn"), TxnId);
+		M->SetStringField(TEXT("names"), Names);
+		M->SetStringField(TEXT("stagedUtc"), FDateTime::UtcNow().ToIso8601());
+		TArray<TSharedPtr<FJsonValue>> Comps;
+		for (const FBF6UpdatePart& P : Parts)
+		{
+			TSharedRef<FJsonObject> C = MakeShared<FJsonObject>();
+			C->SetStringField(TEXT("label"), P.Label);
+			C->SetStringField(TEXT("tag"), P.Tag);
+			C->SetStringField(TEXT("dest"), P.DestDir);
+			Comps.Add(MakeShared<FJsonValueObject>(C));
+		}
+		M->SetArrayField(TEXT("components"), Comps);
+		FString Out;
+		const TSharedRef<TJsonWriter<>> W = TJsonWriterFactory<>::Create(&Out);
+		FJsonSerializer::Serialize(M, W);
+		FFileHelper::SaveStringToFile(Out, *FPaths::Combine(UpdateDir, TEXT("pending.json")),
+			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+		FFileHelper::SaveStringToFile(TxnId, *FPaths::Combine(UpdateRoot, TEXT("active.txt")),
+			FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	}
+	UE_LOG(LogBF6, Warning, TEXT("Update %s staged (applier pid %u) - closing the editor to apply."), *Names, ChildPid);
+	FPlatformMisc::RequestExit(false);
+}
+
+
+// ---------------------------------------------------------------------------
+// THE HIGH POLY ADD-ON: FINDING IT, AND PUTTING IT THERE.
+//
+// The add-on is optional and precompiled. Somebody who wants high poly scenery
+// should not need Git, a compiler, or an explanation of where plugins live:
+// they should press a button and have it.
+//
+// It also has to stay in step with the tool. The two are versioned together
+// from 0.8.0, so this reports the add-on's state precisely rather than as a
+// yes or no. "Not there" and "there but older than the tool" want different
+// words and different buttons.
+// ---------------------------------------------------------------------------
+static const TCHAR* kHighPolyRepoApi =
+	TEXT("https://api.github.com/repos/TabbedScamper/BF6_Unreal_SDK_High_Poly/releases/latest");
+
+enum class EBF6AddOnState : uint8
+{
+	Absent,        // no folder at all
+	Present,       // a descriptor is there
+	Loaded,        // and its module is up in this session
+	Unreadable,    // a folder, but no descriptor we can read
+};
+
+// Where the add-on would go if we had to put it somewhere: beside the tool,
+// because that is where the user just unzipped the tool itself. Only used when
+// the add-on is genuinely not installed, so there is nothing to find.
+static FString BF6_HighPolyInstallDir()
+{
+	return FPaths::Combine(FPaths::GetPath(g_pluginDir), TEXT("BF6HighPoly"));
+}
+
+static FString BF6_HighPolyDir()
+{
+	// Ask, do not assume. This used to be built from the tool's own path as
+	// <plugins>/Add-Ons/BF6HighPoly, which is only true of the development
+	// project. A user unzips both packages into Plugins/, so the add-on lands
+	// beside the tool instead, and the guess then reported a running add-on as
+	// "not installed" and offered to download a second copy over the top.
+	//
+	// The plugin manager already knows where it was mounted from, whatever
+	// layout it arrived in, so that is the authoritative answer whenever the
+	// add-on is present at all.
+	if (TSharedPtr<IPlugin> P = IPluginManager::Get().FindPlugin(TEXT("BF6HighPoly")))
+	{
+		return P->GetBaseDir();
+	}
+	// Not discovered. It may still be on disk but unmounted (dropped in while
+	// the editor was running, or disabled in the descriptor), so check the two
+	// places it can legitimately live before declaring it absent: beside the
+	// tool, and the development project's Add-Ons folder.
+	const FString Beside = BF6_HighPolyInstallDir();
+	if (FPaths::FileExists(FPaths::Combine(Beside, TEXT("BF6HighPoly.uplugin")))) { return Beside; }
+
+	const FString AddOns = FPaths::Combine(FPaths::GetPath(g_pluginDir), TEXT("Add-Ons"), TEXT("BF6HighPoly"));
+	if (FPaths::FileExists(FPaths::Combine(AddOns, TEXT("BF6HighPoly.uplugin")))) { return AddOns; }
+
+	return Beside;
+}
+
+static EBF6AddOnState BF6_HighPolyState(FString& OutVersion)
+{
+	OutVersion.Reset();
+	const FString Dir = BF6_HighPolyDir();
+	if (!FPaths::DirectoryExists(Dir)) { return EBF6AddOnState::Absent; }
+
+	FString Text;
+	if (!FFileHelper::LoadFileToString(Text, *FPaths::Combine(Dir, TEXT("BF6HighPoly.uplugin"))))
+	{
+		return EBF6AddOnState::Unreadable;
+	}
+	// The descriptor carries a BOM on some machines, so the version is read by
+	// pattern rather than by parsing, exactly as the applier does.
+	const int32 At = Text.Find(TEXT("\"VersionName\""));
+	if (At != INDEX_NONE)
+	{
+		int32 Open = Text.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, At + 14);
+		int32 Close = Open != INDEX_NONE
+			? Text.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, Open + 1)
+			: INDEX_NONE;
+		if (Open != INDEX_NONE && Close != INDEX_NONE) { OutVersion = Text.Mid(Open + 1, Close - Open - 1); }
+	}
+	// Loaded is a stronger claim than present: a folder that arrived this
+	// session is not in the running editor until it restarts, and telling
+	// somebody it is installed while nothing works would be worse than saying
+	// it needs a restart.
+	if (FModuleManager::Get().IsModuleLoaded(TEXT("BF6HighPoly"))) { return EBF6AddOnState::Loaded; }
+	return EBF6AddOnState::Present;
+}
+
+// Fetch the add-on's latest release and hand it to the shared applier. Used by
+// both INSTALL (when it is absent) and the paired update (when it is behind),
+// because the difference is only which words the user saw first.
+static void BF6_FetchHighPoly(bool bManual, TFunction<void(bool, const FString&)> OnDone)
+{
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
+	Req->SetURL(kHighPolyRepoApi);
+	Req->SetVerb(TEXT("GET"));
+	Req->SetHeader(TEXT("User-Agent"), TEXT("BF6UnrealSDK"));
+	Req->SetHeader(TEXT("Accept"), TEXT("application/vnd.github+json"));
+	Req->OnProcessRequestComplete().BindLambda(
+		[bManual, OnDone](FHttpRequestPtr, FHttpResponsePtr Resp, bool bOk)
+	{
+		if (!bOk || !Resp.IsValid() || Resp->GetResponseCode() != 200)
+		{
+			OnDone(false, TEXT("could not reach the High Poly releases (no connection, or none published yet)"));
+			return;
+		}
+		TSharedPtr<FJsonObject> Root;
+		TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(Resp->GetContentAsString());
+		if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid())
+		{
+			OnDone(false, TEXT("the High Poly release list could not be read"));
+			return;
+		}
+		FString Tag;
+		Root->TryGetStringField(TEXT("tag_name"), Tag);
+
+		FString AssetUrl, AssetName;
+		const TArray<TSharedPtr<FJsonValue>>* Assets = nullptr;
+		if (Root->TryGetArrayField(TEXT("assets"), Assets))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *Assets)
+			{
+				const TSharedPtr<FJsonObject> A = V->AsObject();
+				if (!A.IsValid()) { continue; }
+				FString Nm, Url;
+				A->TryGetStringField(TEXT("name"), Nm);
+				A->TryGetStringField(TEXT("browser_download_url"), Url);
+				if (!Nm.EndsWith(TEXT(".zip"))) { continue; }
+				// The add-on's package lives in its own repository, so there is
+				// no ambiguity to resolve here: the first zip that names itself
+				// High Poly wins, else the first zip.
+				if (AssetUrl.IsEmpty() || Nm.Contains(TEXT("HighPoly")) || Nm.Contains(TEXT("High_Poly")))
+				{
+					AssetUrl = Url;
+					AssetName = Nm;
+				}
+				if (Nm.Contains(TEXT("HighPoly")) || Nm.Contains(TEXT("High_Poly"))) { break; }
+			}
+		}
+		if (AssetUrl.IsEmpty())
+		{
+			OnDone(false, FString::Printf(
+				TEXT("%s is published but has no package attached yet"),
+				Tag.IsEmpty() ? TEXT("the latest High Poly release") : *Tag));
+			return;
+		}
+
+		// A FIRST INSTALL HAS TO MATCH THE TOOL TOO.
+		//
+		// The paired update refuses to leave the two on different versions, and
+		// installing the add-on fresh is the same decision made once: fetching
+		// whatever the add-on's latest release happens to be would produce the
+		// mismatch by another route. The versions are the compatibility
+		// statement, so the newest is only the right answer when it agrees with
+		// the tool that is going to load it.
+		{
+			FString Want = BF6Api::PluginVersion();
+			FString Got = Tag;
+			Got.TrimStartAndEndInline();
+			Got.RemoveFromStart(TEXT("v"));
+			if (!Got.IsEmpty() && !Want.IsEmpty() && Got != Want)
+			{
+				OnDone(false, FString::Printf(
+					TEXT("the latest High Poly is %s and this tool is v%s. They are built and released ")
+					TEXT("together, so nothing was installed. Update the tool first, or install High Poly ")
+					TEXT("v%s by hand from the releases page."),
+					*Tag, *Want, *Want));
+				return;
+			}
+		}
+
+		FNotificationInfo Info(FText::FromString(FString::Printf(
+			TEXT("Downloading High Poly %s..."), *Tag)));
+		Info.bFireAndForget = false;
+		Info.bUseThrobber = true;
+		TSharedPtr<SNotificationItem> Toast = FSlateNotificationManager::Get().AddNotification(Info);
+		if (Toast.IsValid()) { Toast->SetCompletionState(SNotificationItem::CS_Pending); }
+
+		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Get = FHttpModule::Get().CreateRequest();
+		Get->SetURL(AssetUrl);
+		Get->SetVerb(TEXT("GET"));
+		Get->SetHeader(TEXT("User-Agent"), TEXT("BF6UnrealSDK"));
+		Get->OnProcessRequestComplete().BindLambda(
+			[Tag, Toast, OnDone](FHttpRequestPtr, FHttpResponsePtr Got, bool bGotOk)
+		{
+			if (Toast.IsValid())
+			{
+				Toast->SetCompletionState(SNotificationItem::CS_None);
+				Toast->ExpireAndFadeout();
+			}
+			if (!bGotOk || !Got.IsValid() || Got->GetResponseCode() != 200)
+			{
+				OnDone(false, TEXT("the High Poly package could not be downloaded"));
+				return;
+			}
+			const TArray<uint8>& Bytes = Got->GetContent();
+			// A zip starts PK. Anything else is a redirect page or an error
+			// body, and unzipping it would fail later with a stranger message.
+			if (Bytes.Num() < 4 || Bytes[0] != 'P' || Bytes[1] != 'K')
+			{
+				OnDone(false, FString::Printf(
+					TEXT("what came back for %s is not a zip (%d bytes)"), *Tag, Bytes.Num()));
+				return;
+			}
+
+			FBF6UpdatePart Part;
+			Part.Label   = TEXT("BF6HighPoly");
+			Part.DestDir = BF6_HighPolyDir();
+			Part.Zip     = Bytes;
+			Part.Tag     = Tag;
+			TArray<FBF6UpdatePart> Parts;
+			Parts.Add(MoveTemp(Part));
+
+			OnDone(true, Tag);
+			BF6_StageUpdateAndRestart(Parts);
+		});
+		Get->ProcessRequest();
+	});
+	Req->ProcessRequest();
+}
+
 // The persistent "downloading..." toast, kept alive so its text can track
 // download progress. Reset when the download ends either way.
 static TSharedPtr<SNotificationItem> GUpdateToast;
@@ -5718,34 +7848,255 @@ static void BF6_DownloadUpdate(const FString& Url, const FString& Tag, uint64 Ex
 	Req->ProcessRequest();
 }
 
-// First launch after an update restart: compare the marker's tag against the
-// running plugin version, so the user knows whether the update actually
-// applied instead of having to find the version label themselves.
+// ---------------------------------------------------------------------------
+// UPDATING THE PAIR, NOT JUST THE TOOL.
+//
+// The update check used to ask GitHub for the SDK's latest release, compare it
+// with the SDK's own version, and say "you are up to date" on that alone. An
+// add-on a version behind was invisible, which is the one thing a paired
+// release cannot afford: the two are built together and the add-on reaches into
+// the tool's internals, so a mismatched pair is exactly what the version
+// numbers exist to prevent.
+//
+// So the check now resolves every INSTALLED component, works out which are
+// behind, and stages all of them in one transaction. An add-on-only update is a
+// normal outcome, not a special case.
+// ---------------------------------------------------------------------------
+struct FBF6Component
+{
+	FString Label;        // matches the .uplugin name, and the applier's folder
+	FString Api;          // its releases/latest endpoint
+	FString DestDir;
+	FString Installed;    // the version on disk right now
+	FString Tag, Url;     // filled in by resolution
+	uint64  Bytes = 0;
+	bool    bBehind = false;
+	bool    bResolved = false;
+	FString Why;          // when it could not be resolved
+};
+
+// One release, one zip. The asset is chosen by name where the name is
+// distinctive, because a release can carry more than one archive.
+static void BF6_ResolveLatest(TSharedPtr<FBF6Component> C, const FString& Prefer,
+                              TFunction<void()> OnDone)
+{
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
+	Req->SetURL(C->Api);
+	Req->SetVerb(TEXT("GET"));
+	Req->SetHeader(TEXT("User-Agent"), TEXT("BF6UnrealSDK"));
+	Req->SetHeader(TEXT("Accept"), TEXT("application/vnd.github+json"));
+	Req->OnProcessRequestComplete().BindLambda(
+		[C, Prefer, OnDone](FHttpRequestPtr, FHttpResponsePtr Resp, bool bOk)
+	{
+		if (!bOk || !Resp.IsValid() || Resp->GetResponseCode() != 200)
+		{
+			C->Why = TEXT("could not be reached");
+			OnDone();
+			return;
+		}
+		TSharedPtr<FJsonObject> Root;
+		const TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(Resp->GetContentAsString());
+		if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid())
+		{
+			C->Why = TEXT("sent a release list that could not be read");
+			OnDone();
+			return;
+		}
+		Root->TryGetStringField(TEXT("tag_name"), C->Tag);
+		const TArray<TSharedPtr<FJsonValue>>* Assets = nullptr;
+		if (Root->TryGetArrayField(TEXT("assets"), Assets))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *Assets)
+			{
+				const TSharedPtr<FJsonObject> A = V->AsObject();
+				if (!A.IsValid()) { continue; }
+				FString Nm, Url;
+				A->TryGetStringField(TEXT("name"), Nm);
+				A->TryGetStringField(TEXT("browser_download_url"), Url);
+				if (!Nm.EndsWith(TEXT(".zip"))) { continue; }
+				if (C->Url.IsEmpty() || Nm.Contains(Prefer))
+				{
+					C->Url = Url;
+					double Sz = 0;
+					A->TryGetNumberField(TEXT("size"), Sz);
+					C->Bytes = Sz > 0 ? (uint64)Sz : 0;
+				}
+				if (Nm.Contains(Prefer)) { break; }
+			}
+		}
+		if (C->Tag.IsEmpty())      { C->Why = TEXT("has no published release"); }
+		else if (C->Url.IsEmpty()) { C->Why = FString::Printf(TEXT("%s has no package attached yet"), *C->Tag); }
+		else
+		{
+			C->bResolved = true;
+			C->bBehind = BF6_IsNewer(C->Tag, C->Installed);
+		}
+		OnDone();
+	});
+	Req->ProcessRequest();
+}
+
+// Fetch each component's bytes in turn, then hand the whole set to the applier
+// as ONE transaction. All of them land or none of them do, which is the only
+// way a pair stays in step across a failure.
+static void BF6_DownloadAllThenStage(TSharedPtr<TArray<TSharedPtr<FBF6Component>>> Plan,
+                                     TSharedPtr<TArray<FBF6UpdatePart>> Done, int32 Index)
+{
+	if (Index >= Plan->Num())
+	{
+		if (Done->Num() == 0) { return; }
+		BF6_StageUpdateAndRestart(*Done);
+		return;
+	}
+	TSharedPtr<FBF6Component> C = (*Plan)[Index];
+
+	FNotificationInfo Info(FText::FromString(FString::Printf(
+		TEXT("Downloading %s %s..."), *C->Label, *C->Tag)));
+	Info.bFireAndForget = false;
+	Info.bUseThrobber = true;
+	TSharedPtr<SNotificationItem> Toast = FSlateNotificationManager::Get().AddNotification(Info);
+	if (Toast.IsValid()) { Toast->SetCompletionState(SNotificationItem::CS_Pending); }
+
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
+	Req->SetURL(C->Url);
+	Req->SetVerb(TEXT("GET"));
+	Req->SetHeader(TEXT("User-Agent"), TEXT("BF6UnrealSDK"));
+	Req->OnRequestProgress64().BindLambda([C, Toast](FHttpRequestPtr, uint64, uint64 Received)
+	{
+		if (!Toast.IsValid()) { return; }
+		const double GotMB = double(Received) / (1024.0 * 1024.0);
+		Toast->SetText(FText::FromString(C->Bytes > 0
+			? FString::Printf(TEXT("Downloading %s %s... %d%% (%.1f / %.1f MB)"),
+				*C->Label, *C->Tag, int32(Received * 100 / C->Bytes), GotMB, double(C->Bytes) / (1024.0 * 1024.0))
+			: FString::Printf(TEXT("Downloading %s %s... %.1f MB"), *C->Label, *C->Tag, GotMB)));
+	});
+	Req->OnProcessRequestComplete().BindLambda(
+		[Plan, Done, Index, C, Toast](FHttpRequestPtr, FHttpResponsePtr Resp, bool bOk)
+	{
+		if (Toast.IsValid()) { Toast->SetCompletionState(SNotificationItem::CS_None); Toast->ExpireAndFadeout(); }
+		const bool bGood = bOk && Resp.IsValid() && Resp->GetResponseCode() == 200;
+		// A zip starts PK. Anything else is a redirect or an error page, and
+		// unzipping it later would fail with a stranger message than this one.
+		const TArray<uint8>& Bytes = bGood ? Resp->GetContent() : TArray<uint8>();
+		if (!bGood || Bytes.Num() < 4 || Bytes[0] != 'P' || Bytes[1] != 'K')
+		{
+			// One component failing cancels the whole plan. Applying half a pair
+			// is the failure this design exists to avoid.
+			Notify(FString::Printf(
+				TEXT("%s %s could not be downloaded, so nothing was changed."), *C->Label, *C->Tag));
+			UE_LOG(LogBF6, Warning, TEXT("update cancelled: %s did not download"), *C->Label);
+			return;
+		}
+		FBF6UpdatePart Part;
+		Part.Label   = C->Label;
+		Part.DestDir = C->DestDir;
+		Part.Zip     = Bytes;
+		Part.Tag     = C->Tag;
+		Done->Add(MoveTemp(Part));
+		BF6_DownloadAllThenStage(Plan, Done, Index + 1);
+	});
+	Req->ProcessRequest();
+}
+
+// First launch after an update restart: say whether the update actually
+// applied, per component, so the user is not left comparing version labels by
+// hand.
+//
+// It reads the transaction the "active" pointer names. It used to read a fixed
+// pending.txt under update/, which stopped being where anything was written the
+// moment each transaction got its own directory: a real update then reported
+// nothing at all, and any stale file left at the old path would have been
+// reported as though it described this run.
+//
+// It also used to check the SDK's version alone. A paired update where the
+// add-on failed and the tool succeeded therefore said "Updated" and meant it
+// about half the work.
 static void BF6_ReportUpdateOutcome()
 {
-	const FString Marker = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("update"), TEXT("pending.txt"));
-	FString Tag;
-	if (!FFileHelper::LoadFileToString(Tag, *Marker)) return;
-	IFileManager::Get().Delete(*Marker);
-	Tag.TrimStartAndEndInline();
-	FString Expected = Tag; Expected.RemoveFromStart(TEXT("v"));
-	const FString Local = BF6Api::PluginVersion();
-	if (Local == Expected)
+	const FString Root   = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK"), TEXT("update"));
+	const FString Active = FPaths::Combine(Root, TEXT("active.txt"));
+	FString TxnId;
+	if (!FFileHelper::LoadFileToString(TxnId, *Active)) { return; }
+	TxnId.TrimStartAndEndInline();
+	// Consumed straight away: a report is about one restart, and a pointer left
+	// behind would describe this run again on the next launch.
+	IFileManager::Get().Delete(*Active);
+	if (TxnId.IsEmpty()) { return; }
+
+	const FString TxnDir = FPaths::Combine(Root, TxnId);
+	FString Text;
+	if (!FFileHelper::LoadFileToString(Text, *FPaths::Combine(TxnDir, TEXT("pending.json")))) { return; }
+	TSharedPtr<FJsonObject> M;
+	const TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(Text);
+	if (!FJsonSerializer::Deserialize(R, M) || !M.IsValid()) { return; }
+
+	FString Names;
+	M->TryGetStringField(TEXT("names"), Names);
+	const TArray<TSharedPtr<FJsonValue>>* Comps = nullptr;
+	if (!M->TryGetArrayField(TEXT("components"), Comps) || !Comps) { return; }
+
+	// Every planned component, checked against what is actually on disk now.
+	TArray<FString> Landed, Missed;
+	for (const TSharedPtr<FJsonValue>& V : *Comps)
 	{
-		FNotificationInfo Info(FText::FromString(FString::Printf(TEXT("Updated to v%s."), *Local)));
-		Info.ExpireDuration = 6.0f;
-		TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(Info);
-		if (N.IsValid()) N->SetCompletionState(SNotificationItem::CS_Success);
+		const TSharedPtr<FJsonObject> C = V->AsObject();
+		if (!C.IsValid()) { continue; }
+		FString Label, Tag, Dest;
+		C->TryGetStringField(TEXT("label"), Label);
+		C->TryGetStringField(TEXT("tag"), Tag);
+		C->TryGetStringField(TEXT("dest"), Dest);
+		FString Want = Tag;
+		Want.TrimStartAndEndInline();
+		Want.RemoveFromStart(TEXT("v"));
+
+		// Read from the descriptor rather than from the running module: the
+		// add-on's module may not have loaded this session, and "did the files
+		// change" is the question being asked.
+		FString Have;
+		FString Desc;
+		if (FFileHelper::LoadFileToString(Desc, *FPaths::Combine(Dest, Label + TEXT(".uplugin"))))
+		{
+			const int32 At = Desc.Find(TEXT("\"VersionName\""));
+			if (At != INDEX_NONE)
+			{
+				const int32 Open = Desc.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, At + 14);
+				const int32 Close = Open != INDEX_NONE
+					? Desc.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, Open + 1)
+					: INDEX_NONE;
+				if (Open != INDEX_NONE && Close != INDEX_NONE) { Have = Desc.Mid(Open + 1, Close - Open - 1); }
+			}
+		}
+		if (!Have.IsEmpty() && Have == Want) { Landed.Add(FString::Printf(TEXT("%s v%s"), *Label, *Have)); }
+		else { Missed.Add(FString::Printf(TEXT("%s (wanted %s, found %s)"), *Label, *Want,
+			Have.IsEmpty() ? TEXT("nothing readable") : *Have)); }
 	}
-	else
+
+	const FString Log = FPaths::Combine(TxnDir, TEXT("apply_update.log"));
+	if (Missed.Num() == 0 && Landed.Num() > 0)
 	{
 		FNotificationInfo Info(FText::FromString(FString::Printf(
-			TEXT("The update to %s did not apply. You are still on v%s. Close the editor and unzip the plugin package from github.com/TabbedScamper/BF6_Unreal_SDK/releases over Plugins/BF6UnrealSDK. When reporting this, attach Saved/BF6UnrealSDK/update/apply_update.log."),
-			*Tag, *Local)));
-		Info.ExpireDuration = 20.0f;
+			TEXT("Updated: %s."), *FString::Join(Landed, TEXT(", ")))));
+		Info.ExpireDuration = 6.0f;
 		TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(Info);
-		if (N.IsValid()) N->SetCompletionState(SNotificationItem::CS_Fail);
+		if (N.IsValid()) { N->SetCompletionState(SNotificationItem::CS_Success); }
+		UE_LOG(LogBF6, Display, TEXT("update %s applied: %s"), *TxnId, *FString::Join(Landed, TEXT(", ")));
+		return;
 	}
+
+	// Partly applied is its own outcome and the most important one to be plain
+	// about: the pair is what has to match, so a half-applied update needs
+	// saying even when the tool itself updated fine.
+	FNotificationInfo Info(FText::FromString(FString::Printf(
+		TEXT("The update to %s did not fully apply.\n\nNot updated: %s.%s\n\nClose the editor and unzip each package over its plugin folder. When reporting this, attach %s."),
+		Names.IsEmpty() ? TEXT("the latest release") : *Names,
+		*FString::Join(Missed, TEXT(", ")),
+		Landed.Num() ? *FString::Printf(TEXT("\nUpdated: %s."), *FString::Join(Landed, TEXT(", "))) : TEXT(""),
+		*Log)));
+	Info.ExpireDuration = 20.0f;
+	TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(Info);
+	if (N.IsValid()) { N->SetCompletionState(SNotificationItem::CS_Fail); }
+	UE_LOG(LogBF6, Warning, TEXT("update %s did not fully apply. Missing: %s. See %s"),
+		*TxnId, *FString::Join(Missed, TEXT(", ")), *Log);
 }
 
 // defined after the namespace (it's the post-undo geometry resync); the focus
@@ -6248,8 +8599,13 @@ namespace BF6Api
 			if (!L.StartsWith(TEXT("export "))) continue;
 			L.RightChopInline(7);
 			if (L.StartsWith(TEXT("declare "))) L.RightChopInline(8);
+			// "type" is here because the archive-side miner counts type aliases
+			// and this did not, so the two disagreed about what the SDK
+			// contains and a release that only added or removed aliases looked
+			// different depending on which side you asked.
 			FString Kind;
-			for (const TCHAR* K : { TEXT("function "), TEXT("enum "), TEXT("const "), TEXT("class "), TEXT("interface ") })
+			for (const TCHAR* K : { TEXT("function "), TEXT("enum "), TEXT("const "),
+									TEXT("class "), TEXT("interface "), TEXT("type ") })
 				if (L.StartsWith(K)) { Kind = FString(K).TrimEnd(); L.RightChopInline(FCString::Strlen(K)); break; }
 			if (Kind.IsEmpty()) continue;
 			FString Name;
@@ -6339,7 +8695,11 @@ namespace BF6Api
 		if (MDel.Num()) Md += FString::Printf(TEXT("- Models removed: %s\n"), *BF6_JoinCapped(MDel, 15));
 		if (AAdd.Num()) Md += FString::Printf(TEXT("- New scripting API: %s\n"), *BF6_JoinCapped(AAdd, 40));
 		if (ADel.Num()) Md += FString::Printf(TEXT("- Scripting API removed: %s\n"), *BF6_JoinCapped(ADel, 40));
-		if (TAdd.Num() + TDel.Num() + AAdd.Num() + ADel.Num() + LAdd.Num() + MAdd.Num() == 0)
+		// Every difference, not just the additions. LDel and MDel were missing
+		// here, so an update that only took maps or models away listed the
+		// removals above and then said nothing had changed, in the same report.
+		if (TAdd.Num() + TDel.Num() + AAdd.Num() + ADel.Num()
+			+ LAdd.Num() + LDel.Num() + MAdd.Num() + MDel.Num() == 0)
 			Md += TEXT("- No placeable, map, model, or scripting API changes detected.\n");
 		Md += TEXT("\n");
 		FFileHelper::SaveStringToFile(Md, *(BF6_SdkHistoryDir() / FString::Printf(TEXT("changes_%s.md"), *NewVer)));
@@ -6390,14 +8750,38 @@ namespace BF6Api
 	// The unlock dot. Battlefield marks new unlocks with an orange dot on the
 	// button's corner; ours means "this version has notes you have not read".
 	// Cleared the moment the panel opens, remembered across sessions.
+	// TWO COMPONENTS, TWO MEMORIES.
+	//
+	// The dot used to mean "the tool has notes you have not read". With the
+	// add-on shipping alongside, one memory is not enough: installing High Poly
+	// on a tool whose notes were already read would light no dot at all, and
+	// the release the user just chose to install is exactly the one they want
+	// to read about. Each component remembers its own last-seen version, and
+	// the dot is on while EITHER has something new.
 	static int32 GHistNews = -1;   // -1 unknown, 0 seen, 1 news
+
+	static FString BF6_HighPolyVersionOrEmpty()
+	{
+		FString Ver;
+		const EBF6AddOnState St = BF6_HighPolyState(Ver);
+		return (St == EBF6AddOnState::Absent || St == EBF6AddOnState::Unreadable) ? FString() : Ver;
+	}
+
 	bool HistoryHasNews()
 	{
 		if (GHistNews < 0)
 		{
-			FString Seen;
-			GConfig->GetString(TEXT("BF6UnrealSDK"), TEXT("HistorySeenVersion"), Seen, GEditorPerProjectIni);
-			GHistNews = (Seen == PluginVersion()) ? 0 : 1;
+			FString SeenTool, SeenAddOn;
+			GConfig->GetString(TEXT("BF6UnrealSDK"), TEXT("HistorySeenVersion"), SeenTool, GEditorPerProjectIni);
+			GConfig->GetString(TEXT("BF6UnrealSDK"), TEXT("HistorySeenHighPoly"), SeenAddOn, GEditorPerProjectIni);
+
+			const bool bToolNew = (SeenTool != PluginVersion());
+			const FString AddOn = BF6_HighPolyVersionOrEmpty();
+			// An absent add-on has no news; it is optional, and nagging about
+			// something the user has not installed is noise.
+			const bool bAddOnNew = !AddOn.IsEmpty() && (SeenAddOn != AddOn);
+
+			GHistNews = (bToolNew || bAddOnNew) ? 1 : 0;
 		}
 		return GHistNews == 1;
 	}
@@ -6405,6 +8789,11 @@ namespace BF6Api
 	{
 		GHistNews = 0;
 		GConfig->SetString(TEXT("BF6UnrealSDK"), TEXT("HistorySeenVersion"), *PluginVersion(), GEditorPerProjectIni);
+		const FString AddOn = BF6_HighPolyVersionOrEmpty();
+		if (!AddOn.IsEmpty())
+		{
+			GConfig->SetString(TEXT("BF6UnrealSDK"), TEXT("HistorySeenHighPoly"), *AddOn, GEditorPerProjectIni);
+		}
 		GConfig->Flush(false, GEditorPerProjectIni);
 	}
 
@@ -6413,6 +8802,33 @@ namespace BF6Api
 		FString Out, S;
 		if (FFileHelper::LoadFileToString(S, *(g_pluginDir / TEXT("Resources/CHANGELOG.md"))))
 			Out += S + TEXT("\n");
+
+		// The add-on's own notes, when it is installed. Its history is a
+		// separate story from the tool's and is kept as one rather than
+		// interleaved by date: somebody reading about High Poly wants the High
+		// Poly entries together.
+		{
+			FString Ver;
+			const EBF6AddOnState St = BF6_HighPolyState(Ver);
+			if (St == EBF6AddOnState::Present || St == EBF6AddOnState::Loaded)
+			{
+				FString Hp;
+				if (FFileHelper::LoadFileToString(Hp,
+					*(BF6_HighPolyDir() / TEXT("Resources/CHANGELOG.md"))))
+				{
+					Out += Hp + TEXT("\n");
+				}
+				else
+				{
+					// Installed but shipping no notes is worth saying, rather
+					// than looking like the add-on has no history at all.
+					Out += FString::Printf(
+						TEXT("# BF6 High Poly version history\n\nInstalled: v%s. ")
+						TEXT("This build ships no release notes.\n\n"),
+						Ver.IsEmpty() ? TEXT("?") : *Ver);
+				}
+			}
+		}
 		Out += TEXT("# Portal SDK version history\n\n");
 		// locally generated updates first (SDKs newer than the baked history)
 		TArray<FString> Changes;
@@ -6621,56 +9037,166 @@ namespace BF6Api
 		});
 	}
 
+	bool HighPolyIsInstalled()
+	{
+		FString Ver;
+		const EBF6AddOnState St = BF6_HighPolyState(Ver);
+		// Unreadable counts as installed on purpose: something is there, and the
+		// button must not offer to write over it.
+		return St != EBF6AddOnState::Absent;
+	}
+
+	void InstallHighPoly()
+	{
+		Notify(TEXT("Fetching the High Poly add-on..."));
+		BF6_FetchHighPoly(true, [](bool bOk, const FString& What)
+		{
+			if (bOk) { UE_LOG(LogBF6, Display, TEXT("High Poly %s downloaded; applying and restarting."), *What); }
+			else     { Notify(FString::Printf(TEXT("High Poly install: %s"), *What)); }
+		});
+	}
 	void CheckForUpdates(bool bManual)
 	{
-		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req = FHttpModule::Get().CreateRequest();
-		Req->SetURL(kUpdateRepoApi);
-		Req->SetVerb(TEXT("GET"));
-		Req->SetHeader(TEXT("User-Agent"), TEXT("BF6UnrealSDK"));
-		Req->SetHeader(TEXT("Accept"), TEXT("application/vnd.github+json"));
-		Req->OnProcessRequestComplete().BindLambda([bManual](FHttpRequestPtr, FHttpResponsePtr Resp, bool bOk)
+		// Everything that is actually installed, so an add-on-only update is
+		// noticed. The tool is always in the list; the add-on joins it only when
+		// it is there, because offering to update something the user does not
+		// have is noise.
+		TSharedPtr<TArray<TSharedPtr<FBF6Component>>> All = MakeShared<TArray<TSharedPtr<FBF6Component>>>();
 		{
-			if (!bOk || !Resp.IsValid() || Resp->GetResponseCode() != 200)
-			{ if (bManual) Notify(TEXT("Update check failed (no connection, or no releases yet).")); return; }
-			TSharedPtr<FJsonObject> Root;
-			TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(Resp->GetContentAsString());
-			if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid())
-			{ if (bManual) Notify(TEXT("Update check failed (bad response).")); return; }
+			TSharedPtr<FBF6Component> Sdk = MakeShared<FBF6Component>();
+			Sdk->Label = TEXT("BF6UnrealSDK");
+			Sdk->Api = kUpdateRepoApi;
+			Sdk->DestDir = g_pluginDir;
+			Sdk->Installed = PluginVersion();
+			All->Add(Sdk);
+		}
+		FString HpVer;
+		const EBF6AddOnState HpState = BF6_HighPolyState(HpVer);
+		if (HpState == EBF6AddOnState::Present || HpState == EBF6AddOnState::Loaded)
+		{
+			TSharedPtr<FBF6Component> Hp = MakeShared<FBF6Component>();
+			Hp->Label = TEXT("BF6HighPoly");
+			Hp->Api = kHighPolyRepoApi;
+			Hp->DestDir = BF6_HighPolyDir();
+			Hp->Installed = HpVer.IsEmpty() ? TEXT("0.0.0") : HpVer;
+			All->Add(Hp);
+		}
 
-			FString Tag; Root->TryGetStringField(TEXT("tag_name"), Tag);
-			const FString Local = PluginVersion();
-			if (Tag.IsEmpty() || !BF6_IsNewer(Tag, Local))
-			{ if (bManual) Notify(FString::Printf(TEXT("You're up to date (v%s)."), *Local)); return; }
-
-			// find the plugin zip asset ("...Plugin....zip" preferred, else first zip)
-			FString AssetUrl, AssetName;
-			uint64 AssetBytes = 0;
-			const TArray<TSharedPtr<FJsonValue>>* Assets = nullptr;
-			if (Root->TryGetArrayField(TEXT("assets"), Assets))
-				for (const auto& v : *Assets)
+		// Resolve them one at a time and decide once they are all in. Deciding
+		// per component is what produced "you are up to date" from the SDK alone.
+		TSharedPtr<int32> Pending = MakeShared<int32>(All->Num());
+		auto Decide = [All, bManual]()
+		{
+			TSharedPtr<TArray<TSharedPtr<FBF6Component>>> Plan = MakeShared<TArray<TSharedPtr<FBF6Component>>>();
+			FString Behind, Current, Trouble;
+			for (const TSharedPtr<FBF6Component>& C : *All)
+			{
+				if (!C->bResolved)
 				{
-					const TSharedPtr<FJsonObject> a = v->AsObject(); if (!a.IsValid()) continue;
-					FString Nm, Url;
-					a->TryGetStringField(TEXT("name"), Nm);
-					a->TryGetStringField(TEXT("browser_download_url"), Url);
-					if (!Nm.EndsWith(TEXT(".zip"))) continue;
-					if (AssetUrl.IsEmpty() || Nm.Contains(TEXT("Plugin")))
-					{
-						AssetUrl = Url; AssetName = Nm;
-						double Sz = 0; a->TryGetNumberField(TEXT("size"), Sz);
-						AssetBytes = Sz > 0 ? (uint64)Sz : 0;
-					}
-					if (Nm.Contains(TEXT("Plugin"))) break;
+					Trouble += FString::Printf(TEXT("\n  %s: %s"), *C->Label, *C->Why);
+					continue;
 				}
-			if (AssetUrl.IsEmpty())
-			{ if (bManual) Notify(FString::Printf(TEXT("%s is out, but has no plugin package attached yet."), *Tag)); return; }
+				if (C->bBehind)
+				{
+					Plan->Add(C);
+					Behind += FString::Printf(TEXT("\n  %s  v%s to %s"), *C->Label, *C->Installed, *C->Tag);
+				}
+				else
+				{
+					Current += FString::Printf(TEXT("\n  %s  v%s"), *C->Label, *C->Installed);
+				}
+			}
 
-			const EAppReturnType::Type Choice = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(
-				TEXT("BF6 Unreal SDK %s is available (you have v%s).\n\nDownload now? The editor will close itself to apply the update and reopen when it's done. The whole thing takes a minute or two, most of it the editor restarting. You'll see \"Updated to %s\" when it's back."),
-				*Tag, *Local, *Tag)));
-			if (Choice == EAppReturnType::Yes) BF6_DownloadUpdate(AssetUrl, Tag, AssetBytes);
-		});
-		Req->ProcessRequest();
+			// THE PAIR HAS TO COME OUT MATCHING.
+			//
+			// The tool and the add-on are released together and the add-on
+			// reaches into the tool's internals, so their versions are a
+			// compatibility statement, not decoration. Planning each component
+			// against its own latest release independently was enough to notice
+			// an add-on that had fallen behind, and not enough to guarantee the
+			// result: if one lookup failed, or the two repositories were not at
+			// the same version yet, this would happily update one half and leave
+			// a mismatched pair, which is the exact state the version numbers
+			// exist to prevent.
+			//
+			// So the plan is checked as a whole before anything is offered.
+			if (All->Num() > 1)
+			{
+				auto AfterUpdate = [](const TSharedPtr<FBF6Component>& C)
+				{
+					return C->bBehind ? C->Tag : C->Installed;
+				};
+				auto Bare = [](FString V) { V.TrimStartAndEndInline(); V.RemoveFromStart(TEXT("v")); return V; };
+
+				FString Wanted;
+				bool bMismatch = false;
+				for (const TSharedPtr<FBF6Component>& C : *All)
+				{
+					// A component we could not resolve keeps whatever it has, and
+					// that still has to match, so it is included in the test.
+					const FString V = Bare(AfterUpdate(C));
+					if (Wanted.IsEmpty()) { Wanted = V; }
+					else if (V != Wanted) { bMismatch = true; }
+				}
+				if (bMismatch)
+				{
+					FString Rows;
+					for (const TSharedPtr<FBF6Component>& C : *All)
+					{
+						Rows += FString::Printf(TEXT("\n  %s  v%s"), *C->Label, *Bare(AfterUpdate(C)));
+						if (!C->bResolved) { Rows += FString::Printf(TEXT("  (%s)"), *C->Why); }
+					}
+					const FString Msg = FString::Printf(TEXT(
+						"An update is available, but applying it would leave the tool and the High Poly "
+						"add-on on different versions:%s\n\nThey are built and released together, so nothing "
+						"was changed. Try again once both have the same version published, or install the "
+						"matching pair by hand from the releases page."), *Rows);
+					UE_LOG(LogBF6, Warning, TEXT("update refused: the plan would leave a mismatched pair.%s"), *Rows);
+					if (bManual) { FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Msg)); }
+					return;
+				}
+			}
+
+			if (Plan->Num() == 0)
+			{
+				if (!bManual) { return; }
+				Notify(Trouble.IsEmpty()
+					? FString::Printf(TEXT("You are up to date.%s"), *Current)
+					: FString::Printf(TEXT("Up to date as far as could be checked.%s\nCould not check:%s"),
+						*Current, *Trouble));
+				return;
+			}
+
+			FString Message = FString::Printf(
+				TEXT("An update is available.\n%s\n"), *Behind);
+			if (!Current.IsEmpty()) { Message += FString::Printf(TEXT("\nAlready current:%s\n"), *Current); }
+			if (!Trouble.IsEmpty())
+			{
+				// Say so rather than quietly updating half a pair. The user may
+				// well prefer to wait until both halves can be fetched.
+				Message += FString::Printf(TEXT("\nCould not be checked:%s\n"), *Trouble);
+			}
+			if (Plan->Num() > 1)
+			{
+				Message += TEXT("\nBoth are applied together, or neither is.\n");
+			}
+			Message += TEXT("\nDownload now? The editor closes to apply this and reopens when it is done.");
+
+			if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(Message)) != EAppReturnType::Yes)
+			{
+				return;
+			}
+			BF6_DownloadAllThenStage(Plan, MakeShared<TArray<FBF6UpdatePart>>(), 0);
+		};
+
+		for (const TSharedPtr<FBF6Component>& C : *All)
+		{
+			const FString Prefer = (C->Label == TEXT("BF6HighPoly")) ? TEXT("HighPoly") : TEXT("Plugin");
+			BF6_ResolveLatest(C, Prefer, [Pending, Decide]()
+			{
+				if (--(*Pending) == 0) { Decide(); }
+			});
+		}
 	}
 
 	FString  GameInstallDir() { return g_gameDir; }
@@ -6825,17 +9351,26 @@ namespace BF6Api
 		// Closing happens BEFORE the file goes, so there is no window in which
 		// a save could land on the path we are about to delete.
 		const bool bWasOpen = g_ss.CurrentLevel == Level && g_ss.CurrentSave == Name;
-		if (bWasOpen)
-		{
-			g_ss.CurrentSave.Empty();
-			g_ss.bEditing = false;
-		}
+		if (bWasOpen) g_ss.CurrentSave.Empty();
 
 		bool bAny = false;
 		const FString N = BF6_SessionPathNew(Level, Name);
 		const FString O = BF6_SessionPathOld(Level, Name);
 		if (FPaths::FileExists(N)) bAny |= !!IFileManager::Get().Delete(*N);
 		if (FPaths::FileExists(O)) bAny |= !!IFileManager::Get().Delete(*O);
+		// ---- BF6Project ----
+		// ONE MAP OF AN EXPERIENCE, never the experience. Deleting a map takes
+		// its own folder - the save, its spatial, its scene file and its
+		// backups - and leaves the script, the settings, the workspace and the
+		// other ten maps exactly where they are. Removing a whole experience is
+		// a different act and is not this button.
+		if (BF6_IsExperienceSave(Name))
+		{
+			const FString MapDir = BF6_ExperienceDir(Name) / TEXT("maps") / Level;
+			if (FPaths::DirectoryExists(MapDir))
+				bAny |= !!IFileManager::Get().DeleteDirectory(*MapDir, false, true);
+		}
+		// ---- end BF6Project ----
 		// an emptied custom-map folder goes with its last level file
 		const FString Dir = BF6_SavesRoot() / Name;
 		TArray<FString> Left;
@@ -6845,11 +9380,12 @@ namespace BF6Api
 		// The world still holds the objects that save described, and they now
 		// belong to nothing. Reopening the base puts the map back in a state
 		// that matches the files, which is the honest outcome of deleting the
-		// only record of that work.
+		// only record of that work. The session stays editable and unnamed -
+		// there is nothing left to be read-only about.
 		if (bWasOpen)
 		{
 			BF6_OpenMapWorldImpl(Level, FString());
-			Notify(FString::Printf(TEXT("Deleted '%s'. This map is back to its read-only base."), *Name));
+			Notify(FString::Printf(TEXT("Deleted '%s'. This map is back to its base setup, unnamed - the temp backups of it are kept."), *Name));
 		}
 		return bAny;
 	}
@@ -6899,6 +9435,13 @@ namespace BF6Api
 		g_ss.CurrentLevel.Empty();
 		g_ss.CurrentSave.Empty();
 		g_ss.bEditing = false;
+		// Nothing is open, so nothing was interrupted: the crash marker goes.
+		// The temp backups themselves stay - that is the whole promise of
+		// "leaving without saving keeps the file".
+		BF6_ClearRunningMarker();
+		g_autoDirty = false;
+		g_autoPending = false;
+		g_autoFpValid = false;
 		BF6_RecomputeBudget();
 		RefreshSceneTree();
 	}
@@ -6913,38 +9456,114 @@ namespace BF6Api
 		BF6_ExportSpatial(Choice == EAppReturnType::Yes);
 	}
 	bool ImportSpatial() { return BF6_ImportSpatialDialog(); }
+	FTscnCompare CompareTscn(const FString& File) { return BF6_CompareTscn(File); }
+	bool MergeTscnTree(const FString& File, FTscnMerge& Out) { return BF6_MergeTscnTree(File, Out); }
+	bool ImportTscnAsSave(const FString& File) { return BF6_ImportTscnFile(File); }
 
-	// ---- autosave, OFF by default -----------------------------------------
+	// ---- temp backups: always on, and never a save ------------------------
 	//
-	// A minute of lost work is cheap; an hour of deliberate experiment written
-	// over the top of a map somebody wanted to keep is not. The common way this
-	// tool gets used on an existing map is heavy, throwaway change - try
-	// something, look at it, revert - and an autosave turns "revert" into "the
-	// file already has it".
-	//
-	// So it is a choice, remembered per project, and it starts off. Saving is
-	// one button and one keystroke away; nobody loses work they meant to keep
-	// without being asked to press it.
-	static bool GAutosaveLoaded = false;
-	static bool GAutosave = false;
+	// The old toggle asked the creator to choose between losing an hour to a
+	// crash and having an experiment written over a map they wanted to keep.
+	// The answer was never a switch - it was to stop writing backups into the
+	// saved map at all. A backup goes to its own folder, a named save changes
+	// only when SAVE is pressed, and both can be true at once.
+	int32 GetAutosaveMax()          { return BF6_AutosaveMax(); }
+	void  SetAutosaveMax(int32 N)   { BF6_SetAutosaveMax(N); }
+	void  TickAutosave()            { BF6_TickAutosave(); }
+	bool  HasUnsavedChanges()       { return g_autoDirty; }
+	void  MarkSessionChanged()      { g_autoDirty = true; g_autoPending = true; g_autoChangeT = FPlatformTime::Seconds(); }
+	void  ClearRunningMarker()      { BF6_ClearRunningMarker(); }
 
-	bool GetAutosave()
+	bool AutosaveNow(bool bSync)
 	{
-		if (!GAutosaveLoaded)
+		if (!BF6_WriteTempBackup(bSync)) return false;
+		g_autoPending = false;
+		return true;
+	}
+
+	// Just the count, for a map card: reading ten documents to draw one number
+	// is the kind of thing that makes a menu feel slow for no reason at all.
+	int32 BackupCount(const FString& Level)
+	{
+		TArray<FString> Files;
+		IFileManager::Get().FindFiles(Files, *(BF6_AutosaveDirFor(Level) / TEXT("*.json")), true, false);
+		return Files.Num();
+	}
+
+	TArray<FBackupInfo> ListBackups(const FString& Level)
+	{
+		TArray<FBackupInfo> Out;
+		for (const FBF6BackupHeader& H : BF6_ListBackups(Level))
 		{
-			GAutosaveLoaded = true;
-			GConfig->GetBool(TEXT("BF6UnrealSDK"), TEXT("Autosave"), GAutosave, GEditorPerProjectIni);
+			FBackupInfo I;
+			I.Path = H.Path; I.Level = H.Level.IsEmpty() ? Level : H.Level;
+			I.Save = H.Save; I.When = H.When; I.Objects = H.Objects;
+			Out.Add(I);
 		}
-		return GAutosave;
+		return Out;
 	}
 
-	void SetAutosave(bool bOn)
+	// Load a backup as the UNNAMED session: it describes work that was never
+	// given a name, and adopting the name it was taken under would put the next
+	// SAVE on top of a file the creator never asked to change.
+	bool RestoreBackup(const FString& Path)
 	{
-		GetAutosave();            // load first, so the write is not against a stale default
-		GAutosave = bOn;
-		GConfig->SetBool(TEXT("BF6UnrealSDK"), TEXT("Autosave"), GAutosave, GEditorPerProjectIni);
-		GConfig->Flush(false, GEditorPerProjectIni);
+		FBF6BackupHeader H;
+		if (!BF6_ReadBackupHeader(Path, H)) { Notify(TEXT("That temp backup could not be read.")); return false; }
+		const FString Level = H.Level;
+		if (Level.IsEmpty()) { Notify(TEXT("That temp backup does not say which map it belongs to.")); return false; }
+		BF6_OpenMapWorldImpl(Level, FString());
+		BF6_LoadSessionFile(Level, Path);
+		BF6_ReapplyVolumeColors();
+		BF6_RecomputeBudget();
+		RefreshSceneTree();
+		// It is restored work, not saved work: the session is unnamed and dirty
+		// from the first frame, so leaving still warns and SAVE AS still asks.
+		g_autoFpValid = false;
+		g_autoDirty = true;
+		Notify(FString::Printf(TEXT("Restored the temp backup from %s - %d object(s). Press SAVE AS to give it a name."), *H.When, H.Objects));
+		return true;
 	}
+
+	// The crash marker, if one is lying about from an editor that is no longer
+	// running. Its own pid is excluded, so a second editor started alongside
+	// this one never claims the first one's work.
+	bool PendingCrashBackup(FBackupInfo& Out)
+	{
+		FString In;
+		if (!FFileHelper::LoadFileToString(In, *BF6_RunningMarkerPath())) return false;
+		TSharedPtr<FJsonObject> Root;
+		TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(In);
+		if (!FJsonSerializer::Deserialize(R, Root) || !Root.IsValid()) return false;
+		double Pid = 0.0;
+		Root->TryGetNumberField(TEXT("pid"), Pid);
+		const uint32 P = (uint32)Pid;
+		if (P == 0) return false;
+		if (P == FPlatformProcess::GetCurrentProcessId()) return false;
+		if (FPlatformProcess::IsApplicationRunning(P)) return false;   // still open elsewhere
+		FString Level, Backup, When;
+		Root->TryGetStringField(TEXT("level"), Level);
+		Root->TryGetStringField(TEXT("backup"), Backup);
+		Root->TryGetStringField(TEXT("time"), When);
+		if (Level.IsEmpty()) return false;
+		// The marker names the last backup it wrote, but the folder is the
+		// authority: a backup that landed after the marker was stamped, or one
+		// the marker never got to record, is still the creator's newest work.
+		TArray<FBF6BackupHeader> All = BF6_ListBackups(Level);
+		if (All.Num() == 0) return false;
+		FBF6BackupHeader Pick = All[0];
+		if (!Backup.IsEmpty())
+			for (const FBF6BackupHeader& H : All)
+				if (H.Path == Backup) { if (H.Path != All[0].Path) Pick = All[0]; break; }
+		Out.Path = Pick.Path; Out.Level = Level; Out.Save = Pick.Save;
+		Out.When = Pick.When.IsEmpty() ? When : Pick.When;
+		Out.Objects = Pick.Objects;
+		return true;
+	}
+
+	// Shown once. Whether they restore, browse or dismiss, the marker goes -
+	// the same offer on every launch is how a warning turns into wallpaper.
+	void DismissCrashBackup() { BF6_ClearRunningMarker(); }
 
 	// ---- Save As -> Godot .tscn -------------------------------------------
 	//
@@ -7293,47 +9912,69 @@ namespace BF6Api
 
 	void SaveCurrent(bool bSilent)
 	{
-		if (g_ss.CurrentSave.IsEmpty()) { if (!bSilent) Notify(TEXT("Name and create your custom map first.")); return; }
+		// An unnamed session has nowhere to go yet. It is not lost - the temp
+		// backups have it - it just needs the name that SAVE AS asks for.
+		if (g_ss.CurrentSave.IsEmpty())
+		{
+			if (!bSilent) Notify(TEXT("This map has no name yet - type one and press SAVE AS, bottom right."));
+			return;
+		}
 		if (!SaveSession(g_ss.CurrentLevel, g_ss.CurrentSave))
 		{
 			// Always spoken, even on the silent autosave path: a save that is
 			// not happening is exactly what a creator must not find out later.
+			// ---- BF6UiSound ----
+			BF6UiSound::Play(EBF6UiSound::Error);
 			Notify(FString::Printf(TEXT("Could not save '%s' - the file could not be written."), *g_ss.CurrentSave));
 			return;
 		}
+		// ---- BF6UiSound ---- an autosave is silent for the same reason it is
+		// toast-free: the user did not ask for it.
+		if (!bSilent) BF6UiSound::Play(EBF6UiSound::Save);
 		if (!bSilent) Notify(FString::Printf(TEXT("Saved '%s'."), *g_ss.CurrentSave));
+		// The named file now matches the world, so leaving is safe again.
+		g_autoDirty = false;
 	}
 
+	// SAVE AS. The first save of an unnamed session, and the way to fork a
+	// named one - the world in front of you goes out under the name given, and
+	// the session adopts it.
+	//
+	// (Signature kept: other modules and the Portal import call CreateCustom.)
 	void CreateCustom(const FString& Name)
 	{
 		const FString Clean = Name.TrimStartAndEnd();
 		FString Why;
 		if (!BF6_ValidSaveName(Clean, Why)) { Notify(Why); return; }
-		// An existing name would be OVERWRITTEN, and creating happens from the
-		// read-only base, so the world being written is empty - the old save
-		// would not be merged into, it would be erased. Ask.
-		if (FPaths::FileExists(BF6_SessionPathFor(g_ss.CurrentLevel, Clean)))
+		if (g_ss.CurrentLevel.IsEmpty()) { Notify(TEXT("Open a map first.")); return; }
+		// An existing name would be OVERWRITTEN by what is on screen now. That
+		// is a real answer for "save over it", and a disaster if the name was
+		// picked by accident, so it is asked either way.
+		if (Clean != g_ss.CurrentSave && FPaths::FileExists(BF6_SessionPathFor(g_ss.CurrentLevel, Clean)))
 		{
-			const FString Q = FString::Printf(TEXT("A custom map called '%s' already exists for this level.\n\nCreating it again REPLACES it with an empty one. The objects in the old save are lost.\n\nReplace it?"), *Clean);
+			const FString Q = FString::Printf(TEXT("A saved map called '%s' already exists for this level.\n\nSaving replaces it with what is on screen now. The objects in the old save are lost.\n\nReplace it?"), *Clean);
 			if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(Q)) != EAppReturnType::Yes)
 			{
-				Notify(TEXT("Left the existing custom map alone."));
+				Notify(TEXT("Left the existing save alone."));
 				return;
 			}
 		}
 		// Session state changes only once the file is really there. Adopting the
 		// name first meant a failed write left the tool "editing" a save that
 		// did not exist, and the next save would look like it had worked too.
-		const FString Was = g_ss.CurrentSave; const bool bWas = g_ss.bEditing;
+		const FString Was = g_ss.CurrentSave;
 		g_ss.CurrentSave = Clean;
 		g_ss.bEditing = true;
 		if (!SaveSession(g_ss.CurrentLevel, g_ss.CurrentSave))
 		{
-			g_ss.CurrentSave = Was; g_ss.bEditing = bWas;
-			Notify(FString::Printf(TEXT("Could not create '%s' - the file could not be written. Try a simpler name."), *Clean));
+			g_ss.CurrentSave = Was;
+			Notify(FString::Printf(TEXT("Could not save '%s' - the file could not be written. Try a simpler name."), *Clean));
 			return;
 		}
-		Notify(FString::Printf(TEXT("Custom map '%s' created - aim and press SPACE to place objects."), *Clean));
+		g_autoDirty = false;
+		BF6_WriteRunningMarker();   // the marker now names the save this session belongs to
+		BF6UiSound::Play(EBF6UiSound::Save);
+		Notify(FString::Printf(TEXT("Saved as '%s'. SAVE keeps it up to date from here."), *Clean));
 	}
 
 	// ---- object attributes ----
@@ -7416,6 +10057,23 @@ namespace BF6Api
 
 	// ---- zone point editing ----
 	bool IsVolumeActor(AActor* A) { return A && GVolumeLoops.Contains(A); }
+
+	// The add-on seam's loop write: the same three steps every loop edit in
+	// this file takes, so a loop an add-on set undoes, saves and lints like one
+	// drawn by hand.
+	bool SetVolumeLoop(AActor* Volume, const TArray<FVector>& WorldPoints)
+	{
+		if (!Volume || WorldPoints.Num() < 3) return false;
+		if (!Volume->Tags.Contains(kPlacedTag) && !Volume->Tags.Contains(kBaseTag)) return false;
+		if (!Cast<UProceduralMeshComponent>(Volume->GetRootComponent())) return false;
+		Volume->Modify();
+		GVolumeLoops.Add(Volume, WorldPoints);
+		BF6_WriteLoopTags(Volume);
+		RebuildVolumeWalls(Volume, WorldPoints);
+		return true;
+	}
+
+	void SetActorPrettyLabel(AActor* A, const FString& Label) { BF6_SetPrettyLabel(A, Label); }
 	bool IsVolumeEditing() { return GVolEdit.Volume.IsValid(); }
 	static void BF6_ProjectZoneDots();   // defined with the dots section below
 
@@ -8671,6 +11329,8 @@ namespace BF6Api
 		Child->AttachToActor(Owner, FAttachmentTransformRules::KeepWorldTransform);
 	}
 
+	void ParentUnder(AActor* Child, AActor* Parent) { BF6_ParentUnder(Child, Parent); }
+
 	AActor* HQCreateSpawn(AActor* HQ, const FString& Field)
 	{
 		if (Field.IsEmpty() || !HQ) return nullptr;
@@ -9072,8 +11732,11 @@ namespace BF6Api
 			Names.Add(Nm);
 			if (!GLinkPick.bArray) break;
 		}
-		if (Names.Num() == 0) { Notify(TEXT("Nothing assignable was selected - link unchanged.")); return; }
+		// ---- BF6UiSound ----
+		if (Names.Num() == 0) { BF6UiSound::Play(EBF6UiSound::Error); Notify(TEXT("Nothing assignable was selected - link unchanged.")); return; }
 		SetActorProp(Owner, GLinkPick.Prop, FString::Join(Names, TEXT(",")));
+		// ---- BF6UiSound ----
+		BF6UiSound::Play(EBF6UiSound::Link);
 		Notify(FString::Printf(TEXT("%s = %s"), *GLinkPick.Prop, *FString::Join(Names, TEXT(", "))));
 		GEditor->SelectNone(false, true, false);
 		GEditor->SelectActor(Owner, true, true);
@@ -9091,6 +11754,8 @@ namespace BF6Api
 			GEditor->SelectNone(false, true, false);
 			if (AActor* Owner = GLinkPick.Owner.Get()) GEditor->SelectActor(Owner, true, true);
 		}
+		// ---- BF6UiSound ----
+		BF6UiSound::Play(EBF6UiSound::Unlink);
 		Notify(TEXT("Link assignment cancelled."));
 	}
 
@@ -9325,7 +11990,7 @@ namespace BF6Api
 
 	AActor* PlaceType(const FString& Type, const FVector& WorldPos)
 	{
-		if (!g_ss.bEditing) { BF6Api::RefuseReadOnly(TEXT("Objects can only be placed on a custom map. Name one and press Create, bottom right.")); return nullptr; }
+		if (!g_ss.bEditing) { BF6Api::RefuseReadOnly(TEXT("Open a map first - objects are placed into the map you have open.")); return nullptr; }
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 
 		// A NODE is placeable like any object, so the whole tree can be built
@@ -9376,7 +12041,8 @@ namespace BF6Api
 		}
 
 		const FString Mesh = BF6_ResolveMeshForType(Type);
-		if (Mesh.IsEmpty()) { Notify(FString::Printf(TEXT("No SDK model for '%s'."), *Type)); return nullptr; }
+		// ---- BF6UiSound ---- a refusal is a refusal, not a placement.
+		if (Mesh.IsEmpty()) { BF6UiSound::Play(EBF6UiSound::Error); Notify(FString::Printf(TEXT("No SDK model for '%s'."), *Type)); return nullptr; }
 		FScopedTransaction Tx(FText::FromString(FString::Printf(TEXT("Place %s"), *Type)));
 		AActor* A = SpawnSdkModel(Mesh, Type, FTransform(WorldPos));
 		// A type that carries a WaypointPath is born WITH one. An AI_WaypointPath
@@ -9400,6 +12066,8 @@ namespace BF6Api
 		}
 		if (A && GEditor) { GEditor->SelectNone(false, true, false); GEditor->SelectActor(A, true, true); }
 		BF6_RecomputeBudget();
+		// ---- BF6UiSound ---- the object is placed, selected and counted.
+		if (A) BF6UiSound::Play(EBF6UiSound::Place);
 		return A;
 	}
 
@@ -12587,16 +15255,42 @@ namespace BF6Api
 	int32 ClassifyCursorForGodotClick(AActor*& OutActor)
 	{
 		OutActor = nullptr;
-		FLevelEditorViewportClient* VC = GCurrentLevelEditingViewportClient;
+		// Hit-proxy reads may render. Never enter that path during serialization.
+		if (UE::IsSavingPackage() || IsGarbageCollecting()) return 2;
+		FLevelEditorViewportClient* VC = BF6_ViewportToFly();
 		if (!VC || !VC->Viewport || !GEditor) return 0;
 		UWorld* W = GEditor->GetEditorWorldContext().World(); if (!W) return 0;
+		if (VC->GetCurrentWidgetAxis() != EAxisList::None) return 2;
+
+		// A visible replacement belongs to the editable actor. Prefer the actual
+		// rendered hit over its bounds: large cliff bounds can enclose the camera,
+		// and hidden SDK scenery must not veto a visible high-poly surface.
+		FIntPoint Mouse;
+		VC->Viewport->GetMousePos(Mouse);
+		const FIntPoint ViewSize = VC->Viewport->GetSizeXY();
+		if (Mouse.X >= 0 && Mouse.Y >= 0 && Mouse.X < ViewSize.X && Mouse.Y < ViewSize.Y)
+		{
+			if (HHitProxy* Hit = VC->Viewport->GetHitProxy(Mouse.X, Mouse.Y))
+				if (Hit->IsA(HActor::StaticGetType()))
+				{
+					AActor* A = static_cast<HActor*>(Hit)->Actor;
+					if (A && A->GetWorld() == W && !A->IsHiddenEd()
+						&& !A->Tags.Contains(kHandleTag) && !GVolumeLoops.Contains(A)
+						&& (A->Tags.Contains(kPlacedTag) || A->Tags.Contains(kBaseTag) || A->Tags.Contains(kGroupTag)))
+					{
+						const UPrimitiveComponent* Root = Cast<UPrimitiveComponent>(A->GetRootComponent());
+						if (!Root || Root->bSelectable) OutActor = A;
+					}
+				}
+		}
+		const bool bRenderedActor = OutActor != nullptr;
 
 		// our actors, by nearest ray-vs-bounds entry (volumes by their walls)
 		const FViewportCursorLocation Cur = VC->GetCursorWorldLocationFromMousePos();
 		const FVector O = Cur.GetOrigin(), Dir = Cur.GetDirection();
 		const FVector End = O + Dir * 500000.0;
 		double BestT = 1e18;
-		for (TActorIterator<AActor> It(W); It; ++It)
+		for (TActorIterator<AActor> It(W); !bRenderedActor && It; ++It)
 		{
 			// nodes are pickable too - the marker is the only way to grab one in the
 			// viewport instead of hunting for it in the tree
@@ -12626,7 +15320,7 @@ namespace BF6Api
 		}
 		// the map surface wins when it is CLOSER than the object's bounds -
 		// that click was on the ground in front of the object
-		if (OutActor)
+		if (OutActor && !bRenderedActor)
 		{
 			FVector CtxHit;
 			double CtxU = 1.0;
@@ -12703,6 +15397,8 @@ namespace BF6Api
 		BF6_PruneDeadLinks();
 		GEditor->NoteSelectionChange();
 		BF6_RecomputeBudget();
+		// ---- BF6UiSound ---- once for the operation, not once per actor.
+		if (n > 0) BF6UiSound::Play(EBF6UiSound::Delete);
 		UE_LOG(LogBF6, Log, TEXT("fast delete: %d actor(s) in %.0f ms"), n, (FPlatformTime::Seconds() - T0) * 1000.0);
 		return true;
 	}
@@ -12911,6 +15607,11 @@ namespace BF6Api
 			GEditor->NoteSelectionChange();
 			const double EndMs = (FPlatformTime::Seconds() - EndT0) * 1000.0;
 			if (EndMs > 100.0) UE_LOG(LogBF6, Warning, TEXT("drag end took %.0f ms"), EndMs);
+			// ---- BF6UiSound ---- this branch runs once per real drag. Arming here and
+			// playing immediately keeps the tool's own one-per-drag gate honest
+			// while still making exactly one sound.
+			BF6UiSound::ArmMoveEnd();
+			BF6UiSound::Play(EBF6UiSound::MoveEnd);
 		}
 		GDragMove = FBF6DragMove();
 	}
@@ -13478,7 +16179,7 @@ namespace BF6Api
 
 	bool PlaceBlock(const FString& Name, const FVector& WorldPos)
 	{
-		if (!g_ss.bEditing) { BF6Api::RefuseReadOnly(TEXT("Objects can only be placed on a custom map. Name one and press Create, bottom right.")); return false; }
+		if (!g_ss.bEditing) { BF6Api::RefuseReadOnly(TEXT("Open a map first - objects are placed into the map you have open.")); return false; }
 		TSharedPtr<FJsonObject> B = BF6_LoadBlock(Name);
 		if (!B.IsValid()) { Notify(FString::Printf(TEXT("Block '%s' could not be read."), *Name)); return false; }
 		FString Level; B->TryGetStringField(TEXT("level"), Level);
@@ -14128,21 +16829,11 @@ namespace BF6Api
 		// ids ACROSS types (a DeployCam 1 next to an HQ 1), so cross-type reuse
 		// is only advice; the same id on two objects of the SAME type is the
 		// real problem.
-		{
-			TArray<FObjIdRow> Ids = GatherObjIds();
-			TMap<int32, TArray<FObjIdRow*>> ByIdMap;
-			for (FObjIdRow& R : Ids) if (R.Id >= 0) ByIdMap.FindOrAdd(R.Id).Add(&R);
-			for (auto& P : ByIdMap)
-			{
-				if (P.Value.Num() < 2) continue;
-				TSet<FString> Types;
-				for (FObjIdRow* R : P.Value) Types.Add(R->Type);
-				const bool bSameType = Types.Num() < P.Value.Num();
-				Add(bSameType ? (uint8)0 : (uint8)2, P.Value[0]->Actor.Get(), bSameType
-					? FString::Printf(TEXT("ObjId %d is used by %d objects of the same type - scripts can't tell them apart. Fix it in OBJECT IDS."), P.Key, P.Value.Num())
-					: FString::Printf(TEXT("ObjId %d is shared by %d objects of different types. The base maps do this too, but unique ids everywhere are safer for scripts."), P.Key, P.Value.Num()));
-			}
-		}
+		// ---- BF6ObjIds ----
+		// The rule itself moved to BF6ObjIds.cpp, where the panel reads it from
+		// the same registry. Severities and wording are unchanged.
+		BF6ObjIds::LintDuplicates([&Add](uint8 Sev, AActor* A, const FString& Msg){ Add(Sev, A, Msg); });
+		// ---- end BF6ObjIds ----
 
 		// upload size: the site rejects a per-map file over the limit outright,
 		// so a map that would bounce is a problem, and one near the line is a warning
@@ -15208,7 +17899,7 @@ static void BF6_CancelSelectionOnBase(UObject*)
 	{
 		if (GEditor) { GEditor->SelectNone(true, true, false); GEditor->NoteSelectionChange(); }
 		GCancellingSelection = false;
-		BF6Api::RefuseReadOnly(TEXT("Nothing on a base map can be selected or changed. Name it and press Create, bottom right, to build on it."));
+		BF6Api::RefuseReadOnly(TEXT("Open a map first - there is nothing here to select."));
 		return false;
 	}));
 }
@@ -15294,7 +17985,12 @@ void FBF6UnrealSDKModule::StartupModule()
 			}
 		});
 	g_postUndoHandle = FEditorDelegates::PostUndoRedo.AddStatic(&BF6_RepairAfterUndo);
+	// ---- BF6UiSound ---- one delegate covers undo and redo; the redo chord in
+	// BF6BuildMode.cpp plays Redo itself and suppresses the Undo here.
+	FEditorDelegates::PostUndoRedo.AddLambda([]{ BF6UiSound::Play(EBF6UiSound::Undo); });
 	BF6_HookTransBuffer();
+	// ---- BF6UiSound ---- reads the ini and installs the console commands.
+	BF6UiSound::Startup();
 	FCoreDelegates::GetOnPostEngineInit().AddStatic(&BF6_HookTransBuffer);
 	g_preDeleteHandle = FEditorDelegates::OnDeleteActorsBegin.AddStatic(&BF6_StripMeshesBeforeStockDelete);
 	g_selChangedHandle = USelection::SelectionChangedEvent.AddStatic(&BF6_CancelSelectionOnBase);
@@ -15446,14 +18142,26 @@ void FBF6UnrealSDKModule::StartupModule()
 	if (!g_open || !g_close || !g_cat || !g_read || !g_free) { UE_LOG(LogBF6, Error, TEXT("missing core export")); return; }
 
 	char err[256] = {0};
-	g_ctx = g_open(kGameDir, err, sizeof(err));
-	if (g_ctx) g_gameDir = UTF8_TO_TCHAR(kGameDir);
+	TArray<FString> Tried;
+	const FString Found = BF6_DiscoverGameInstall(&Tried);
+	if (!Found.IsEmpty())
+	{
+		UE_LOG(LogBF6, Display, TEXT("game install: %s"), *Found);
+		g_ctx = g_open(TCHAR_TO_UTF8(*Found), err, sizeof(err));
+		if (g_ctx) { g_gameDir = Found; }
+	}
 	if (!g_ctx)
 	{
-		// No game install on this machine (or not at the Steam path). Fall back
-		// to libbf6's no-install mode: mesh decode is unavailable, but the
-		// placeable catalogue is SDK data and works fully without the game.
-		UE_LOG(LogBF6, Log, TEXT("no game install (%hs); running catalogue-only"), err);
+		// No game install found. Fall back to libbf6's no-install mode: mesh
+		// decode is unavailable, but the placeable catalogue is SDK data and
+		// works fully without the game.
+		//
+		// The places looked in are logged, because "no game install" on a
+		// machine where the game is installed is a confusing thing to be told
+		// and the answer is almost always a folder nobody thought to check.
+		UE_LOG(LogBF6, Log, TEXT("no game install (%hs); running catalogue-only. Looked in: %s. ")
+			TEXT("Use BF6.Install.Set <folder> to point at it."),
+			err, Tried.Num() ? *FString::Join(Tried, TEXT("; ")) : TEXT("nowhere"));
 		g_ctx = g_open("", err, sizeof(err));
 		g_gameDir.Reset();
 	}
@@ -15511,6 +18219,15 @@ void FBF6UnrealSDKModule::StartupModule()
 		// its tab manager - does not exist that early.
 		BF6Api::RegisterOutlinerTab();
 		BF6Api::RegisterContextMenu();
+		// The tool starts on the map screen, which has no scene, so the Scene tab
+		// stays out of the way until a map opens. The saved layout may restore
+		// the tab a frame after this runs, so the close is repeated once later.
+		BF6Api::CloseOutlinerTab();
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+		{
+			if (!BF6Api::IsEditing()) BF6Api::CloseOutlinerTab();
+			return false;
+		}), 1.5f);
 
 		// UNREAL'S OWN CAMERA PREVIEW, OFF.
 		//
@@ -15607,6 +18324,186 @@ void FBF6UnrealSDKModule::StartupModule()
 		});
 	}
 
+	// ---- BF6PortalWeb: dock tab, BF6.Portal.* commands, session store ----
+	BF6PortalWeb::Register();
+
+	// ---- BF6UiBuilder ----
+	// Dock tab, the bridge object on the builder page, and
+	// BF6.UI.Open / BF6.UI.Load / BF6.UI.Export / BF6.UI.Status.
+	// Registered after the two editors it hands work to, so that
+	// INSERT INTO BLOCKS and INSERT INTO SCRIPT have somewhere to go.
+	BF6UiBuilder::Register();
+	// ---- end BF6UiBuilder ----
+	// ---- BF6Script ----
+	// After the panel, which owns the browser seam this hangs off.
+	BF6Script::Register();
+	// ---- end BF6Script ----
+
+	// ---- BF6Project ----
+	// After the script module, whose template discovery it borrows to scaffold
+	// a save into a complete project.
+	BF6Project::Register();
+	// ---- end BF6Project ----
+
+	// ---- BF6Blocks: the Portal block editor tab and BF6.Blocks.* commands ----
+	// After the panel: it registers a bridge object and an injected script on it.
+	BF6Blocks::Register();
+	// ---- end BF6Blocks ----
+
+	// ---- BF6Assist: BF6.Assist.* ----
+	// Registers commands only. Nothing is contacted until the user links a
+	// provider through the environment and asks a question.
+	BF6Assist::Register();
+	// ---- end BF6Assist ----
+
+	// ---- BF6GameLog: BF6.Log.* ----
+	BF6GameLog::Register();
+	BF6Caps::Register();
+	// ---- end BF6GameLog ----
+	// ---- end BF6PortalWeb ----
+
+	// WHICH INSTALL, AND POINT IT SOMEWHERE ELSE.
+	//
+	// Discovery covers the EA App and Steam in their usual places and then
+	// sweeps the fixed drives, but somebody will always have it somewhere
+	// nobody guessed. Set takes a folder, validates it the same way discovery
+	// does, and remembers it for every future session.
+	// Write the update script for the current pair WITHOUT running it, so the
+	// one piece of the tool that rewrites the plugin while the editor is closed
+	// can be read and parse checked before it is trusted.
+	// The add-on, in the words a user needs: is it there, is it running, and
+	// does it match the tool. Absent and present-but-not-loaded are different
+	// answers and deserve different sentences.
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.HighPoly.Status"),
+		TEXT("Say whether the High Poly add-on is installed, loaded, and in step with the tool."),
+		FConsoleCommandDelegate::CreateLambda([]
+		{
+			FString Ver;
+			const EBF6AddOnState St = BF6_HighPolyState(Ver);
+			const FString Tool = BF6Api::PluginVersion();
+			UE_LOG(LogBF6, Display, TEXT("BF6 High Poly"));
+			UE_LOG(LogBF6, Display, TEXT("  folder    : %s"), *BF6_HighPolyDir());
+			switch (St)
+			{
+			case EBF6AddOnState::Absent:
+				UE_LOG(LogBF6, Display, TEXT("  state     : not installed. BF6.HighPoly.Install fetches it."));
+				break;
+			case EBF6AddOnState::Unreadable:
+				UE_LOG(LogBF6, Warning, TEXT("  state     : a folder is there but its descriptor could not be read. ")
+					TEXT("Nothing will be overwritten automatically; move it aside if it is not wanted."));
+				break;
+			case EBF6AddOnState::Present:
+				UE_LOG(LogBF6, Display, TEXT("  state     : installed (v%s) but not loaded in this session. Restart the editor."),
+					Ver.IsEmpty() ? TEXT("?") : *Ver);
+				break;
+			case EBF6AddOnState::Loaded:
+				UE_LOG(LogBF6, Display, TEXT("  state     : installed and running (v%s)"),
+					Ver.IsEmpty() ? TEXT("?") : *Ver);
+				break;
+			}
+			UE_LOG(LogBF6, Display, TEXT("  tool      : v%s"), *Tool);
+			if (!Ver.IsEmpty() && Ver != Tool)
+			{
+				UE_LOG(LogBF6, Warning, TEXT("  pair      : OUT OF STEP. The two are released together; update both."));
+			}
+			else if (!Ver.IsEmpty())
+			{
+				UE_LOG(LogBF6, Display, TEXT("  pair      : in step"));
+			}
+		}), ECVF_Default);
+
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.HighPoly.Install"),
+		TEXT("Download and install the High Poly add-on. The editor restarts to apply it."),
+		FConsoleCommandDelegate::CreateLambda([]
+		{
+			FString Ver;
+			const EBF6AddOnState St = BF6_HighPolyState(Ver);
+			if (St == EBF6AddOnState::Unreadable)
+			{
+				// Never overwrite an installation we cannot identify. A modified
+				// copy or a source checkout looks exactly like this, and it is
+				// somebody's work.
+				UE_LOG(LogBF6, Warning,
+					TEXT("There is already something at %s that this tool cannot identify. ")
+					TEXT("It has NOT been touched. Move it aside first if you want a clean install."),
+					*BF6_HighPolyDir());
+				return;
+			}
+			UE_LOG(LogBF6, Display, TEXT("fetching the High Poly add-on..."));
+			BF6_FetchHighPoly(true, [](bool bOk, const FString& What)
+			{
+				if (bOk) { UE_LOG(LogBF6, Display, TEXT("High Poly %s downloaded; applying and restarting."), *What); }
+				else     { UE_LOG(LogBF6, Warning, TEXT("High Poly install: %s"), *What); }
+			});
+		}), ECVF_Default);
+
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.Update.DryRun"),
+		TEXT("Write the paired update script and stop. Nothing is downloaded, applied or closed."),
+		FConsoleCommandDelegate::CreateLambda([]
+		{
+			TArray<FBF6UpdatePart> Parts;
+			FBF6UpdatePart Sdk;
+			Sdk.Label = TEXT("BF6UnrealSDK");
+			Sdk.DestDir = g_pluginDir;
+			Sdk.Tag = TEXT("v0.0.0-dryrun");
+			Sdk.Zip.Add(0);
+			Parts.Add(Sdk);
+			FBF6UpdatePart Hp;
+			Hp.Label = TEXT("BF6HighPoly");
+			// The same resolver the real update uses, so a dry run rehearses the
+			// paths that would actually be written rather than a dev-only guess.
+			Hp.DestDir = BF6_HighPolyDir();
+			Hp.Tag = TEXT("v0.0.0-dryrun");
+			Hp.Zip.Add(0);
+			Parts.Add(Hp);
+			BF6_StageUpdateAndRestart(Parts, /*bDryRun*/ true);
+		}), ECVF_Default);
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.Install.Status"),
+		TEXT("Say which Battlefield install the tool is reading, and where it looked."),
+		FConsoleCommandDelegate::CreateLambda([]
+		{
+			TArray<FString> Tried;
+			const FString Found = BF6_DiscoverGameInstall(&Tried);
+			UE_LOG(LogBF6, Display, TEXT("BF6 install"));
+			UE_LOG(LogBF6, Display, TEXT("  reading now : %s"),
+				g_gameDir.IsEmpty() ? TEXT("nothing (catalogue only)") : *g_gameDir);
+			UE_LOG(LogBF6, Display, TEXT("  discovery   : %s"),
+				Found.IsEmpty() ? TEXT("found nothing") : *Found);
+			UE_LOG(LogBF6, Display, TEXT("  looked in   : %s"),
+				Tried.Num() ? *FString::Join(Tried, TEXT("  |  ")) : TEXT("nowhere"));
+		}), ECVF_Default);
+
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.Install.Set"),
+		TEXT("BF6.Install.Set <folder>  Use this Battlefield install. Validated and remembered. No folder clears the choice."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const FString Dir = Args.Num() ? FString::Join(Args, TEXT(" ")).TrimQuotes().TrimStartAndEnd() : FString();
+			if (Dir.IsEmpty())
+			{
+				if (GConfig)
+				{
+					GConfig->RemoveKey(kInstallIni, kInstallKey, GEditorPerProjectIni);
+					GConfig->Flush(false, GEditorPerProjectIni);
+				}
+				UE_LOG(LogBF6, Display, TEXT("install choice cleared; discovery decides from now on. Restart to reopen the core."));
+				return;
+			}
+			if (!BF6_LooksLikeInstall(Dir))
+			{
+				// Named rather than merely refused, so the answer to "why not" is
+				// in the message instead of in this file.
+				UE_LOG(LogBF6, Warning,
+					TEXT("%s does not look like a Battlefield install: it has no bf6.exe and no Data/Win32/*.toc."), *Dir);
+				return;
+			}
+			if (GConfig)
+			{
+				GConfig->SetString(kInstallIni, kInstallKey, *Dir, GEditorPerProjectIni);
+				GConfig->Flush(false, GEditorPerProjectIni);
+			}
+			UE_LOG(LogBF6, Display,
+				TEXT("install set to %s. Restart the editor so the core reopens on it."), *Dir);
+		}), ECVF_Default);
 	IConsoleManager::Get().RegisterConsoleCommand(TEXT("bf6.mesh"),
 		TEXT("Spawn a BF6 mesh by full resource name."),
 		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
@@ -15614,10 +18511,71 @@ void FBF6UnrealSDKModule::StartupModule()
 			SpawnResource(Args.Num() > 0 ? Args[0] : FString(TEXT("common/hardware/weapons/assaultrifle/m16a3/art/ob_wep_assaultrifle_m16a3_receiverauto_3p_mesh")),
 				FString(), FTransform(FVector(0,0,100)), true);
 		}));
+
+	// ---- temp backups, from the console ----
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.Autosave.Now"),
+		TEXT("Write a temp backup of the open session right now."),
+		FConsoleCommandDelegate::CreateLambda([]
+		{
+			if (BF6Api::AutosaveNow())
+			{
+				UE_LOG(LogBF6, Display, TEXT("temp backup written"));
+			}
+			else
+			{
+				UE_LOG(LogBF6, Warning, TEXT("nothing open to back up"));
+			}
+		}));
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.Autosave.List"),
+		TEXT("List the temp backups for the open map (or for the level named as the argument)."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const FString Level = Args.Num() > 0 ? Args[0] : BF6Api::CurrentLevel();
+			if (Level.IsEmpty()) { UE_LOG(LogBF6, Warning, TEXT("no map open - pass a level name")); return; }
+			const TArray<BF6Api::FBackupInfo> All = BF6Api::ListBackups(Level);
+			UE_LOG(LogBF6, Display, TEXT("%d temp backup(s) for %s:"), All.Num(), *Level);
+			for (const BF6Api::FBackupInfo& B : All)
+				UE_LOG(LogBF6, Display, TEXT("  %s  %d object(s)  %s  %s"),
+					*B.When, B.Objects, B.Save.IsEmpty() ? TEXT("(untitled)") : *B.Save, *B.Path);
+		}));
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.Autosave.Restore"),
+		TEXT("Load a temp backup by path (BF6.Autosave.List prints them)."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if (Args.Num() == 0) { UE_LOG(LogBF6, Warning, TEXT("usage: BF6.Autosave.Restore <path>")); return; }
+			BF6Api::RestoreBackup(Args[0]);
+		}));
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("BF6.Autosave.Max"),
+		TEXT("How many temp backups to keep per level (no argument prints it)."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if (Args.Num() > 0) BF6Api::SetAutosaveMax(FCString::Atoi(*Args[0]));
+			UE_LOG(LogBF6, Display, TEXT("temp backups kept per level: %d"), BF6Api::GetAutosaveMax());
+		}));
+
+	// The crash offer, once the editor has a main frame to put a dialog on.
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+	{
+		BF6Api::CheckCrashRecovery();
+		return false;   // one-shot
+	}), 6.0f);
 }
 
 void FBF6UnrealSDKModule::ShutdownModule()
 {
+	// FLOATING WINDOWS FIRST. One of these holds an add-on's widgets, and it
+	// outlives the tab it came from - so it has to be closed before anything it
+	// is showing is torn down, not after.
+	BF6Ext::CloseAllAddonWindows();
+
+	// ---- BF6Script ----
+	// First: it holds a bridge object, a browser window and three
+	// tickers that all reach back into the panel.
+	BF6Script::Unregister();
+	// ---- end BF6Script ----
+	// ---- BF6Project ----
+	BF6Project::Unregister();
+	// ---- end BF6Project ----
 	if (g_postUndoHandle.IsValid()) { FEditorDelegates::PostUndoRedo.Remove(g_postUndoHandle); g_postUndoHandle.Reset(); }
 	if (g_preUndoHandle.IsValid())
 	{
@@ -15635,10 +18593,25 @@ void FBF6UnrealSDKModule::ShutdownModule()
 	for (int32 s = 0; s < 3; s++) GLinkPick.Mid[s].Reset();
 	// Park the download toast (never destruct widgets during exit).
 	if (GUpdateToast.IsValid()) { new TSharedPtr<SNotificationItem>(GUpdateToast); GUpdateToast.Reset(); }
+	BF6GameLog::Unregister();
+	BF6Caps::Unregister();
+	BF6Assist::Unregister();
+	BF6Blocks::Unregister();   // BF6Blocks: before the panel it hangs off
+	// ---- BF6UiBuilder ----
+	BF6UiBuilder::Unregister();   // the builder tab, before the UI goes
+	// ---- end BF6UiBuilder ----
+	BF6PortalWeb::Unregister();   // BF6PortalWeb: before the UI goes
+	// ---- BF6UiSound ---- before the UI goes, so a preview cannot outlive it.
+	BF6UiSound::Shutdown();
 	BF6Api::DetachUI();
 	BF6Api::RemoveInputHandler();
 	BF6Api::UnregisterOutlinerTab();
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(kTabName);
+	// A CLEAN exit: one last temp backup of whatever was open, and then the
+	// running marker goes. Its absence is the only thing that tells the next
+	// launch this editor closed on purpose.
+	if (BF6Api::IsEditing() && BF6Api::HasUnsavedChanges()) BF6Api::AutosaveNow(true);
+	BF6Api::ClearRunningMarker();
 	if (g_ctx && g_close) { g_close(g_ctx); g_ctx = nullptr; }
 	if (DllHandle) { FPlatformProcess::FreeDllHandle(DllHandle); DllHandle = nullptr; }
 }

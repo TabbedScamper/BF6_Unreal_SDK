@@ -1,0 +1,159 @@
+{
+ "name": "Area trigger: an enter and exit pair",
+ "note": "Two rules on the same trigger id, one for entering and one for leaving, each telling the player what happened. Every block and event name here appears in the reference project. Both rules share the ObjId placeholder, so filling it once fills both.",
+ "blocks": {
+  "languageVersion": 0,
+  "blocks": [
+   {
+    "type": "ruleBlock",
+    "x": 40,
+    "y": 40,
+    "extraState": {
+     "isOngoingEvent": false
+    },
+    "fields": {
+     "NAME": "Trigger Enter",
+     "EVENTTYPE": "OnPlayerEnterAreaTrigger"
+    },
+    "inputs": {
+     "CONDITIONS": {
+      "block": {
+       "type": "conditionBlock",
+       "inputs": {
+        "CONDITION": {
+         "block": {
+          "type": "Equals",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "GetObjId",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "EventAreaTrigger"
+               }
+              }
+             }
+            }
+           },
+           "VALUE-1": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": "{{OBJID:AreaTrigger}}"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "ACTIONS": {
+      "block": {
+       "type": "DisplayNotificationMessage",
+       "inputs": {
+        "VALUE-0": {
+         "block": {
+          "type": "Message",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "Text",
+             "fields": {
+              "TEXT": "You are in the zone"
+             }
+            }
+           }
+          }
+         }
+        },
+        "VALUE-1": {
+         "block": {
+          "type": "EventPlayer"
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "type": "ruleBlock",
+    "x": 40,
+    "y": 340,
+    "extraState": {
+     "isOngoingEvent": false
+    },
+    "fields": {
+     "NAME": "Trigger Exit",
+     "EVENTTYPE": "OnPlayerExitAreaTrigger"
+    },
+    "inputs": {
+     "CONDITIONS": {
+      "block": {
+       "type": "conditionBlock",
+       "inputs": {
+        "CONDITION": {
+         "block": {
+          "type": "Equals",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "GetObjId",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "EventAreaTrigger"
+               }
+              }
+             }
+            }
+           },
+           "VALUE-1": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": "{{OBJID:AreaTrigger}}"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "ACTIONS": {
+      "block": {
+       "type": "DisplayNotificationMessage",
+       "inputs": {
+        "VALUE-0": {
+         "block": {
+          "type": "Message",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "Text",
+             "fields": {
+              "TEXT": "You left the zone"
+             }
+            }
+           }
+          }
+         }
+        },
+        "VALUE-1": {
+         "block": {
+          "type": "EventPlayer"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  ]
+ }
+}

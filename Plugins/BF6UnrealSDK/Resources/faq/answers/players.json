@@ -1,0 +1,3371 @@
+{
+  "v": 1,
+  "theme": "players",
+  "builtAt": "2026-09-06T07:27:57.724Z",
+  "entries": [
+    {
+      "id": "players-put-player-on-a-team",
+      "themes": [
+        "teams",
+        "spawn"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I move a player onto a specific team?",
+      "short": "Call SetTeam with the player and the team you want, and only after the match has actually started.",
+      "answer": "A team is an object you ask the game for by number. Team 1 is the first team in your experience, team 2 the second, and team 0 means \"nobody owns this\" (it is used for neutral capture points, not for players). You get the object with GetTeam and hand it to SetTeam together with the player. The usual reason this fails is timing: the moment a player joins, their slot is not fully set up yet, so run it on deploy instead of on join, or retry every half second until it takes. The other usual reason is that the team you asked for does not exist in the experience settings, which shows up in the log as \"Team change failed because the team entry is invalid\". Switching a player to another team respawns them, so do not call it every tick, and check whether they are already on that team first.",
+      "gotchas": [
+        "Calling SetTeam inside OnPlayerJoinGame very often does nothing; OnPlayerDeployed is the reliable place.",
+        "\"Team change failed because the team entry is invalid\" means that team number is not configured in the experience, not that your code is wrong.",
+        "SetTeam respawns the player, so guard it with a check that they are not already on that team.",
+        "Team 0 is the neutral team. Do not put players on it."
+      ],
+      "blocks": {
+        "ruleName": "Set Team On Deploy",
+        "eventType": "OnPlayerDeployed",
+        "note": "One rule on OnPlayerDeployed. The If block stops the rule respawning a player who is already on team 2.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r12",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Set Team On Deploy",
+                  "EVENTTYPE": "OnPlayerDeployed"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "If",
+                      "id": "i11",
+                      "extraState": {},
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "Not",
+                            "id": "c6",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "Equals",
+                                  "id": "c5",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "GetTeam",
+                                        "id": "c2",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "EventPlayer",
+                                              "id": "c1"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "VALUE-1": {
+                                      "block": {
+                                        "type": "GetTeam",
+                                        "id": "c4",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "Number",
+                                              "id": "n3",
+                                              "fields": {
+                                                "NUM": 2
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "DO": {
+                          "block": {
+                            "type": "SetTeam",
+                            "id": "c10",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "EventPlayer",
+                                  "id": "c7"
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "GetTeam",
+                                  "id": "c9",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "Number",
+                                        "id": "n8",
+                                        "fields": {
+                                          "NUM": 2
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "Same rule as the block example. IsPlayerValid guards against a player who left between the event and this line.",
+        "code": "// Move everyone who deploys onto team 2.\nconst TARGET_TEAM = 2;\n\nexport function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    if (!mod.IsPlayerValid(eventPlayer)) return;\n\n    const target = mod.GetTeam(TARGET_TEAM);\n\n    // Already there. Calling SetTeam again would respawn them for nothing.\n    if (mod.Equals(mod.GetTeam(eventPlayer), target)) return;\n\n    mod.SetTeam(eventPlayer, target);\n}"
+      },
+      "sources": [
+        "Is there a script available to allow for players to switch teams (scripts-blocks)",
+        "Is there a way to force swap teams or a work around for this function (scripts-blocks)",
+        "How can I change a player team when interacting with an InteractPoint (scripts-blocks)",
+        "Why is it not possible to set the Team on join (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "players-loop-over-every-player",
+      "themes": [
+        "teams",
+        "events"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I loop over every player? AllPlayers gives me something I cannot use as a normal list.",
+      "short": "AllPlayers returns an engine array, so read its length with CountOf and pull each entry out with ValueInArray.",
+      "answer": "AllPlayers hands back a mod.Array, which is a handle to a list that lives inside the game, not a JavaScript array. That is why for-of, map and length do not work on it. You ask the engine how long it is with CountOf, and you pull item number i out of it with ValueInArray. In the block editor the same loop is the For block, which counts a variable from 0 up to CountOf of the array. Always check IsPlayerValid on each entry, because a player can leave the server in the middle of your loop and the handle you are holding then points at nothing.",
+      "gotchas": [
+        "A mod.Array is not a JavaScript array. length, map, filter and for-of all fail on it.",
+        "ValueInArray returns a loose value, so in TypeScript cast it to the type you expect, for example \"as mod.Player\".",
+        "Check IsPlayerValid inside the loop; a player can disconnect while you are iterating.",
+        "The loop bound counts from 0, so the last index is CountOf minus one."
+      ],
+      "blocks": {
+        "ruleName": "Count Alive Players",
+        "eventType": "OnGameModeStarted",
+        "note": "A For block walks the index from 0 to the count of AllPlayers. The two variables, Index and AliveCount, are global variables declared in the workspace.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r23",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Count Alive Players",
+                  "EVENTTYPE": "OnGameModeStarted"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "SetVariable",
+                      "id": "c7",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "variableReferenceBlock",
+                            "id": "v6",
+                            "extraState": {
+                              "isObjectVar": false
+                            },
+                            "fields": {
+                              "OBJECTTYPE": "Global",
+                              "VAR": {
+                                "id": "faqAlive"
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n5",
+                            "fields": {
+                              "NUM": 0
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "ForVariable",
+                          "id": "f22",
+                          "inputs": {
+                            "VALUE-0": {
+                              "block": {
+                                "type": "variableReferenceBlock",
+                                "id": "v8",
+                                "extraState": {
+                                  "isObjectVar": false
+                                },
+                                "fields": {
+                                  "OBJECTTYPE": "Global",
+                                  "VAR": {
+                                    "id": "faqIndex"
+                                  }
+                                }
+                              }
+                            },
+                            "VALUE-1": {
+                              "block": {
+                                "type": "Number",
+                                "id": "n9",
+                                "fields": {
+                                  "NUM": 0
+                                }
+                              }
+                            },
+                            "VALUE-2": {
+                              "block": {
+                                "type": "CountOf",
+                                "id": "c11",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "AllPlayers",
+                                      "id": "c10"
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "VALUE-3": {
+                              "block": {
+                                "type": "Number",
+                                "id": "n12",
+                                "fields": {
+                                  "NUM": 1
+                                }
+                              }
+                            },
+                            "DO": {
+                              "block": {
+                                "type": "If",
+                                "id": "i21",
+                                "extraState": {},
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "GetSoldierState",
+                                      "id": "c14",
+                                      "inputs": {
+                                        "VALUE-0": {
+                                          "block": {
+                                            "type": "ValueInArray",
+                                            "id": "c4",
+                                            "inputs": {
+                                              "VALUE-0": {
+                                                "block": {
+                                                  "type": "AllPlayers",
+                                                  "id": "c1"
+                                                }
+                                              },
+                                              "VALUE-1": {
+                                                "block": {
+                                                  "type": "GetVariable",
+                                                  "id": "c3",
+                                                  "inputs": {
+                                                    "VALUE-0": {
+                                                      "block": {
+                                                        "type": "variableReferenceBlock",
+                                                        "id": "v2",
+                                                        "extraState": {
+                                                          "isObjectVar": false
+                                                        },
+                                                        "fields": {
+                                                          "OBJECTTYPE": "Global",
+                                                          "VAR": {
+                                                            "id": "faqIndex"
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        },
+                                        "VALUE-1": {
+                                          "block": {
+                                            "type": "SoldierStateBoolItem",
+                                            "id": "e13",
+                                            "fields": {
+                                              "VALUE-0": "SoldierStateBool",
+                                              "VALUE-1": "IsAlive"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "DO": {
+                                    "block": {
+                                      "type": "SetVariable",
+                                      "id": "c20",
+                                      "inputs": {
+                                        "VALUE-0": {
+                                          "block": {
+                                            "type": "variableReferenceBlock",
+                                            "id": "v19",
+                                            "extraState": {
+                                              "isObjectVar": false
+                                            },
+                                            "fields": {
+                                              "OBJECTTYPE": "Global",
+                                              "VAR": {
+                                                "id": "faqAlive"
+                                              }
+                                            }
+                                          }
+                                        },
+                                        "VALUE-1": {
+                                          "block": {
+                                            "type": "Add",
+                                            "id": "c18",
+                                            "inputs": {
+                                              "VALUE-0": {
+                                                "block": {
+                                                  "type": "GetVariable",
+                                                  "id": "c16",
+                                                  "inputs": {
+                                                    "VALUE-0": {
+                                                      "block": {
+                                                        "type": "variableReferenceBlock",
+                                                        "id": "v15",
+                                                        "extraState": {
+                                                          "isObjectVar": false
+                                                        },
+                                                        "fields": {
+                                                          "OBJECTTYPE": "Global",
+                                                          "VAR": {
+                                                            "id": "faqAlive"
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              },
+                                              "VALUE-1": {
+                                                "block": {
+                                                  "type": "Number",
+                                                  "id": "n17",
+                                                  "fields": {
+                                                    "NUM": 1
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": [
+            {
+              "name": "Index",
+              "id": "faqIndex",
+              "type": "Global"
+            },
+            {
+              "name": "AliveCount",
+              "id": "faqAlive",
+              "type": "Global"
+            }
+          ]
+        }
+      },
+      "ts": {
+        "note": "CountOf plus ValueInArray is the only way to read a mod.Array. The cast tells TypeScript what came out.",
+        "code": "let aliveCount = 0;\n\nexport function OnGameModeStarted(): void {\n    const players = mod.AllPlayers(); // a mod.Array, not a JavaScript array\n    const count = mod.CountOf(players); // ask the engine how long it is\n\n    aliveCount = 0;\n\n    for (let i = 0; i < count; i++) {\n        const player = mod.ValueInArray(players, i) as mod.Player;\n\n        // A player can leave mid loop, which leaves a handle pointing at nothing.\n        if (!mod.IsPlayerValid(player)) continue;\n\n        if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) aliveCount++;\n    }\n\n    console.log(`Alive players: ${aliveCount}`);\n}"
+      },
+      "sources": [
+        "Does anyone know how do i iterate over all players (scripts-blocks)",
+        "AllPlayers throws an error because it is a mod.Array (scripts-blocks)",
+        "How to get the players in a team (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "teams-put-joiner-on-smaller-team",
+      "themes": [
+        "teams",
+        "spawn"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I keep the teams even, so a player who deploys goes to whichever side has fewer people?",
+      "short": "Count both teams by walking AllPlayers, then only move the player if one side is ahead by more than one.",
+      "answer": "There is no built in balancer you can call, so you count the sides yourself. Walk the AllPlayers list once, ask GetTeam for each player and add one to a counter per side. Then compare the two counters and move the player who just deployed if the difference is bigger than one. Leaving a slack of one matters, because if you move on any difference at all, two players deploying at the same moment will bounce back and forth. Remember that SetTeam respawns the player, so run this on deploy rather than every tick.",
+      "gotchas": [
+        "Do not balance on an exact match of counts, or players ping pong between sides.",
+        "SetTeam respawns the player, so a balancer that runs every tick is a respawn loop.",
+        "Bots count as players in AllPlayers, so a backfilled lobby is already balanced by the game.",
+        "Run this on OnPlayerDeployed, not OnPlayerJoinGame, or the team change is silently dropped."
+      ],
+      "blocks": {
+        "ruleName": "Balance On Deploy",
+        "eventType": "OnPlayerDeployed",
+        "note": "Two counters, one loop, then two If blocks. There is no Else block in the Portal editor, so the two directions are two separate Ifs.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r67",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Balance On Deploy",
+                  "EVENTTYPE": "OnPlayerDeployed"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "SetVariable",
+                      "id": "c3",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "variableReferenceBlock",
+                            "id": "v2",
+                            "extraState": {
+                              "isObjectVar": false
+                            },
+                            "fields": {
+                              "OBJECTTYPE": "Global",
+                              "VAR": {
+                                "id": "faqTeam1"
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n1",
+                            "fields": {
+                              "NUM": 0
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "SetVariable",
+                          "id": "c6",
+                          "inputs": {
+                            "VALUE-0": {
+                              "block": {
+                                "type": "variableReferenceBlock",
+                                "id": "v5",
+                                "extraState": {
+                                  "isObjectVar": false
+                                },
+                                "fields": {
+                                  "OBJECTTYPE": "Global",
+                                  "VAR": {
+                                    "id": "faqTeam2"
+                                  }
+                                }
+                              }
+                            },
+                            "VALUE-1": {
+                              "block": {
+                                "type": "Number",
+                                "id": "n4",
+                                "fields": {
+                                  "NUM": 0
+                                }
+                              }
+                            }
+                          },
+                          "next": {
+                            "block": {
+                              "type": "ForVariable",
+                              "id": "f42",
+                              "inputs": {
+                                "VALUE-0": {
+                                  "block": {
+                                    "type": "variableReferenceBlock",
+                                    "id": "v7",
+                                    "extraState": {
+                                      "isObjectVar": false
+                                    },
+                                    "fields": {
+                                      "OBJECTTYPE": "Global",
+                                      "VAR": {
+                                        "id": "faqIndex"
+                                      }
+                                    }
+                                  }
+                                },
+                                "VALUE-1": {
+                                  "block": {
+                                    "type": "Number",
+                                    "id": "n8",
+                                    "fields": {
+                                      "NUM": 0
+                                    }
+                                  }
+                                },
+                                "VALUE-2": {
+                                  "block": {
+                                    "type": "CountOf",
+                                    "id": "c10",
+                                    "inputs": {
+                                      "VALUE-0": {
+                                        "block": {
+                                          "type": "AllPlayers",
+                                          "id": "c9"
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "VALUE-3": {
+                                  "block": {
+                                    "type": "Number",
+                                    "id": "n11",
+                                    "fields": {
+                                      "NUM": 1
+                                    }
+                                  }
+                                },
+                                "DO": {
+                                  "block": {
+                                    "type": "If",
+                                    "id": "i26",
+                                    "extraState": {},
+                                    "inputs": {
+                                      "VALUE-0": {
+                                        "block": {
+                                          "type": "Equals",
+                                          "id": "c19",
+                                          "inputs": {
+                                            "VALUE-0": {
+                                              "block": {
+                                                "type": "GetTeam",
+                                                "id": "c16",
+                                                "inputs": {
+                                                  "VALUE-0": {
+                                                    "block": {
+                                                      "type": "ValueInArray",
+                                                      "id": "c15",
+                                                      "inputs": {
+                                                        "VALUE-0": {
+                                                          "block": {
+                                                            "type": "AllPlayers",
+                                                            "id": "c12"
+                                                          }
+                                                        },
+                                                        "VALUE-1": {
+                                                          "block": {
+                                                            "type": "GetVariable",
+                                                            "id": "c14",
+                                                            "inputs": {
+                                                              "VALUE-0": {
+                                                                "block": {
+                                                                  "type": "variableReferenceBlock",
+                                                                  "id": "v13",
+                                                                  "extraState": {
+                                                                    "isObjectVar": false
+                                                                  },
+                                                                  "fields": {
+                                                                    "OBJECTTYPE": "Global",
+                                                                    "VAR": {
+                                                                      "id": "faqIndex"
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            "VALUE-1": {
+                                              "block": {
+                                                "type": "GetTeam",
+                                                "id": "c18",
+                                                "inputs": {
+                                                  "VALUE-0": {
+                                                    "block": {
+                                                      "type": "Number",
+                                                      "id": "n17",
+                                                      "fields": {
+                                                        "NUM": 1
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "DO": {
+                                        "block": {
+                                          "type": "SetVariable",
+                                          "id": "c25",
+                                          "inputs": {
+                                            "VALUE-0": {
+                                              "block": {
+                                                "type": "variableReferenceBlock",
+                                                "id": "v24",
+                                                "extraState": {
+                                                  "isObjectVar": false
+                                                },
+                                                "fields": {
+                                                  "OBJECTTYPE": "Global",
+                                                  "VAR": {
+                                                    "id": "faqTeam1"
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            "VALUE-1": {
+                                              "block": {
+                                                "type": "Add",
+                                                "id": "c23",
+                                                "inputs": {
+                                                  "VALUE-0": {
+                                                    "block": {
+                                                      "type": "GetVariable",
+                                                      "id": "c21",
+                                                      "inputs": {
+                                                        "VALUE-0": {
+                                                          "block": {
+                                                            "type": "variableReferenceBlock",
+                                                            "id": "v20",
+                                                            "extraState": {
+                                                              "isObjectVar": false
+                                                            },
+                                                            "fields": {
+                                                              "OBJECTTYPE": "Global",
+                                                              "VAR": {
+                                                                "id": "faqTeam1"
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  },
+                                                  "VALUE-1": {
+                                                    "block": {
+                                                      "type": "Number",
+                                                      "id": "n22",
+                                                      "fields": {
+                                                        "NUM": 1
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "next": {
+                                      "block": {
+                                        "type": "If",
+                                        "id": "i41",
+                                        "extraState": {},
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "Equals",
+                                              "id": "c34",
+                                              "inputs": {
+                                                "VALUE-0": {
+                                                  "block": {
+                                                    "type": "GetTeam",
+                                                    "id": "c31",
+                                                    "inputs": {
+                                                      "VALUE-0": {
+                                                        "block": {
+                                                          "type": "ValueInArray",
+                                                          "id": "c30",
+                                                          "inputs": {
+                                                            "VALUE-0": {
+                                                              "block": {
+                                                                "type": "AllPlayers",
+                                                                "id": "c27"
+                                                              }
+                                                            },
+                                                            "VALUE-1": {
+                                                              "block": {
+                                                                "type": "GetVariable",
+                                                                "id": "c29",
+                                                                "inputs": {
+                                                                  "VALUE-0": {
+                                                                    "block": {
+                                                                      "type": "variableReferenceBlock",
+                                                                      "id": "v28",
+                                                                      "extraState": {
+                                                                        "isObjectVar": false
+                                                                      },
+                                                                      "fields": {
+                                                                        "OBJECTTYPE": "Global",
+                                                                        "VAR": {
+                                                                          "id": "faqIndex"
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                },
+                                                "VALUE-1": {
+                                                  "block": {
+                                                    "type": "GetTeam",
+                                                    "id": "c33",
+                                                    "inputs": {
+                                                      "VALUE-0": {
+                                                        "block": {
+                                                          "type": "Number",
+                                                          "id": "n32",
+                                                          "fields": {
+                                                            "NUM": 2
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          },
+                                          "DO": {
+                                            "block": {
+                                              "type": "SetVariable",
+                                              "id": "c40",
+                                              "inputs": {
+                                                "VALUE-0": {
+                                                  "block": {
+                                                    "type": "variableReferenceBlock",
+                                                    "id": "v39",
+                                                    "extraState": {
+                                                      "isObjectVar": false
+                                                    },
+                                                    "fields": {
+                                                      "OBJECTTYPE": "Global",
+                                                      "VAR": {
+                                                        "id": "faqTeam2"
+                                                      }
+                                                    }
+                                                  }
+                                                },
+                                                "VALUE-1": {
+                                                  "block": {
+                                                    "type": "Add",
+                                                    "id": "c38",
+                                                    "inputs": {
+                                                      "VALUE-0": {
+                                                        "block": {
+                                                          "type": "GetVariable",
+                                                          "id": "c36",
+                                                          "inputs": {
+                                                            "VALUE-0": {
+                                                              "block": {
+                                                                "type": "variableReferenceBlock",
+                                                                "id": "v35",
+                                                                "extraState": {
+                                                                  "isObjectVar": false
+                                                                },
+                                                                "fields": {
+                                                                  "OBJECTTYPE": "Global",
+                                                                  "VAR": {
+                                                                    "id": "faqTeam2"
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      },
+                                                      "VALUE-1": {
+                                                        "block": {
+                                                          "type": "Number",
+                                                          "id": "n37",
+                                                          "fields": {
+                                                            "NUM": 1
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "next": {
+                                "block": {
+                                  "type": "If",
+                                  "id": "i54",
+                                  "extraState": {},
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "GreaterThan",
+                                        "id": "c49",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "GetVariable",
+                                              "id": "c44",
+                                              "inputs": {
+                                                "VALUE-0": {
+                                                  "block": {
+                                                    "type": "variableReferenceBlock",
+                                                    "id": "v43",
+                                                    "extraState": {
+                                                      "isObjectVar": false
+                                                    },
+                                                    "fields": {
+                                                      "OBJECTTYPE": "Global",
+                                                      "VAR": {
+                                                        "id": "faqTeam1"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          },
+                                          "VALUE-1": {
+                                            "block": {
+                                              "type": "Add",
+                                              "id": "c48",
+                                              "inputs": {
+                                                "VALUE-0": {
+                                                  "block": {
+                                                    "type": "GetVariable",
+                                                    "id": "c46",
+                                                    "inputs": {
+                                                      "VALUE-0": {
+                                                        "block": {
+                                                          "type": "variableReferenceBlock",
+                                                          "id": "v45",
+                                                          "extraState": {
+                                                            "isObjectVar": false
+                                                          },
+                                                          "fields": {
+                                                            "OBJECTTYPE": "Global",
+                                                            "VAR": {
+                                                              "id": "faqTeam2"
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                },
+                                                "VALUE-1": {
+                                                  "block": {
+                                                    "type": "Number",
+                                                    "id": "n47",
+                                                    "fields": {
+                                                      "NUM": 1
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "DO": {
+                                      "block": {
+                                        "type": "SetTeam",
+                                        "id": "c53",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "EventPlayer",
+                                              "id": "c50"
+                                            }
+                                          },
+                                          "VALUE-1": {
+                                            "block": {
+                                              "type": "GetTeam",
+                                              "id": "c52",
+                                              "inputs": {
+                                                "VALUE-0": {
+                                                  "block": {
+                                                    "type": "Number",
+                                                    "id": "n51",
+                                                    "fields": {
+                                                      "NUM": 2
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "next": {
+                                    "block": {
+                                      "type": "If",
+                                      "id": "i66",
+                                      "extraState": {},
+                                      "inputs": {
+                                        "VALUE-0": {
+                                          "block": {
+                                            "type": "GreaterThan",
+                                            "id": "c61",
+                                            "inputs": {
+                                              "VALUE-0": {
+                                                "block": {
+                                                  "type": "GetVariable",
+                                                  "id": "c56",
+                                                  "inputs": {
+                                                    "VALUE-0": {
+                                                      "block": {
+                                                        "type": "variableReferenceBlock",
+                                                        "id": "v55",
+                                                        "extraState": {
+                                                          "isObjectVar": false
+                                                        },
+                                                        "fields": {
+                                                          "OBJECTTYPE": "Global",
+                                                          "VAR": {
+                                                            "id": "faqTeam2"
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              },
+                                              "VALUE-1": {
+                                                "block": {
+                                                  "type": "Add",
+                                                  "id": "c60",
+                                                  "inputs": {
+                                                    "VALUE-0": {
+                                                      "block": {
+                                                        "type": "GetVariable",
+                                                        "id": "c58",
+                                                        "inputs": {
+                                                          "VALUE-0": {
+                                                            "block": {
+                                                              "type": "variableReferenceBlock",
+                                                              "id": "v57",
+                                                              "extraState": {
+                                                                "isObjectVar": false
+                                                              },
+                                                              "fields": {
+                                                                "OBJECTTYPE": "Global",
+                                                                "VAR": {
+                                                                  "id": "faqTeam1"
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    },
+                                                    "VALUE-1": {
+                                                      "block": {
+                                                        "type": "Number",
+                                                        "id": "n59",
+                                                        "fields": {
+                                                          "NUM": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        },
+                                        "DO": {
+                                          "block": {
+                                            "type": "SetTeam",
+                                            "id": "c65",
+                                            "inputs": {
+                                              "VALUE-0": {
+                                                "block": {
+                                                  "type": "EventPlayer",
+                                                  "id": "c62"
+                                                }
+                                              },
+                                              "VALUE-1": {
+                                                "block": {
+                                                  "type": "GetTeam",
+                                                  "id": "c64",
+                                                  "inputs": {
+                                                    "VALUE-0": {
+                                                      "block": {
+                                                        "type": "Number",
+                                                        "id": "n63",
+                                                        "fields": {
+                                                          "NUM": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": [
+            {
+              "name": "Index",
+              "id": "faqIndex",
+              "type": "Global"
+            },
+            {
+              "name": "Team1Count",
+              "id": "faqTeam1",
+              "type": "Global"
+            },
+            {
+              "name": "Team2Count",
+              "id": "faqTeam2",
+              "type": "Global"
+            }
+          ]
+        }
+      },
+      "ts": {
+        "note": "countTeam is a small helper doing the same CountOf and ValueInArray walk as the block For loop.",
+        "code": "function countTeam(team: mod.Team): number {\n    const players = mod.AllPlayers();\n    const count = mod.CountOf(players);\n    let total = 0;\n\n    for (let i = 0; i < count; i++) {\n        const player = mod.ValueInArray(players, i) as mod.Player;\n        if (!mod.IsPlayerValid(player)) continue;\n        if (mod.Equals(mod.GetTeam(player), team)) total++;\n    }\n\n    return total;\n}\n\nexport function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    if (!mod.IsPlayerValid(eventPlayer)) return;\n\n    const teamOne = mod.GetTeam(1);\n    const teamTwo = mod.GetTeam(2);\n    const oneCount = countTeam(teamOne);\n    const twoCount = countTeam(teamTwo);\n\n    // Slack of one, otherwise two players deploying together bounce back and forth.\n    if (oneCount > twoCount + 1) mod.SetTeam(eventPlayer, teamTwo);\n    if (twoCount > oneCount + 1) mod.SetTeam(eventPlayer, teamOne);\n}"
+      },
+      "sources": [
+        "It will only swap a player if the teams are unbalanced by more than one (scripts-blocks)",
+        "How to get the players in a team (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "spawn-instant-respawn-on-death",
+      "themes": [
+        "spawn",
+        "events"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I make players respawn instantly instead of waiting on the deploy screen?",
+      "short": "On the death event, wait a moment and then call SpawnPlayerFromSpawnPoint, which puts the player straight back in the world.",
+      "answer": "SpawnPlayerFromSpawnPoint puts a player into the world at a spawn point you name, without showing the deploy screen at all. Hook it to the death event, wait a short moment so the death has finished processing, then spawn. The spawn point is an object you place in the map in Godot and give an ObjId to, and you fetch it with GetSpawnPoint. Because the deploy screen never appears, players cannot change their loadout between lives, and the body vanishes at once instead of leaving a corpse. If you only want a shorter wait rather than no wait, use SetRedeployTime instead, which the engine clamps to somewhere between zero and sixty seconds.",
+      "gotchas": [
+        "Skipping the deploy screen means players can never change loadout, so give them another way if the mode needs it.",
+        "Bodies disappear immediately because the game never runs the normal death to deploy flow.",
+        "SetRedeployTime is clamped to 0 to 60 seconds. Values above 60 may simply do nothing.",
+        "Never call deploy related functions on a player who is sitting in death spectate under SetSpawnMode Spectating. It locks them into a broken spectator screen."
+      ],
+      "blocks": {
+        "ruleName": "Instant Respawn",
+        "eventType": "OnPlayerDied",
+        "note": "The Wait block inside a rule is handled for you by the editor, so no extra setup is needed.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r7",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Instant Respawn",
+                  "EVENTTYPE": "OnPlayerDied"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "Wait",
+                      "id": "c2",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n1",
+                            "fields": {
+                              "NUM": 0.5
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "SpawnPlayerFromSpawnPoint",
+                          "id": "c6",
+                          "inputs": {
+                            "VALUE-0": {
+                              "block": {
+                                "type": "EventPlayer",
+                                "id": "c3"
+                              }
+                            },
+                            "VALUE-1": {
+                              "block": {
+                                "type": "GetSpawnPoint",
+                                "id": "c5",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "Number",
+                                      "id": "n4",
+                                      "fields": {
+                                        "NUM": 1001
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "The handler must be async because it awaits. Re-check IsPlayerValid after the wait, because the player may have left during it.",
+        "code": "const SPAWN_POINT_ID = 1001; // the ObjId you gave the SpawnPoint node in Godot\n\nexport async function OnPlayerDied(\n    eventPlayer: mod.Player,\n    eventOtherPlayer: mod.Player,\n    eventDeathType: mod.DeathType,\n    eventWeaponUnlock: mod.WeaponUnlock\n): Promise<void> {\n    // Let the death finish before putting them back in.\n    await mod.Wait(0.5);\n\n    // They may have left the server during that half second.\n    if (!mod.IsPlayerValid(eventPlayer)) return;\n\n    mod.SpawnPlayerFromSpawnPoint(eventPlayer, mod.GetSpawnPoint(SPAWN_POINT_ID));\n}"
+      },
+      "sources": [
+        "How did you do the fast respawn, do you force deploy on playerdied (scripts-blocks)",
+        "Is there any way to change soldier deploy speed now (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "spawn-choose-which-spawn-point",
+      "themes": [
+        "spawn"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "Everyone keeps spawning on top of each other. How do I decide which spawn point a player uses?",
+      "short": "Place several SpawnPoint nodes with consecutive ObjIds and rotate through them yourself with SpawnPlayerFromSpawnPoint.",
+      "answer": "The game will happily send several players to the same spawn point, so if you want them spread out you have to choose the point yourself. Place your SpawnPoint nodes in Godot, give each one an ObjId, and keep the numbers consecutive so you can walk them with simple maths. Then keep a counter, step it forward on every spawn, wrap it back to zero at the end, and pass the matching ObjId to SpawnPlayerFromSpawnPoint. A counter like this is a round robin, which just means each spawn takes the next point in the list. The very first spawn of a round often ignores your choice, because the game deploys everyone from the HQ before your rule gets a chance to run.",
+      "gotchas": [
+        "SpawnPoint nodes must exist in the Godot scene and each needs its own ObjId, or GetSpawnPoint gives you nothing.",
+        "The first spawn of the round tends to come from the HQ regardless, so do not judge the rotation by the opening seconds.",
+        "GetObjectPosition returns roughly 0,0,0 for spawners, spawn points and interact points. If you need a readable coordinate, place a physical marker prop and read that instead.",
+        "A round robin does not check whether anyone is standing on the point. For that you need a distance check as well."
+      ],
+      "blocks": {
+        "ruleName": "Rotate Spawn Points",
+        "eventType": "OnPlayerDied",
+        "note": "NextSpawn is a global variable counting 0 to 4. The spawn point ObjId is 1001 plus that counter, so this expects SpawnPoints 1001 through 1005.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r24",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Rotate Spawn Points",
+                  "EVENTTYPE": "OnPlayerDied"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "SetVariable",
+                      "id": "c6",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "variableReferenceBlock",
+                            "id": "v5",
+                            "extraState": {
+                              "isObjectVar": false
+                            },
+                            "fields": {
+                              "OBJECTTYPE": "Global",
+                              "VAR": {
+                                "id": "faqNextSpawn"
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Add",
+                            "id": "c4",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetVariable",
+                                  "id": "c2",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "variableReferenceBlock",
+                                        "id": "v1",
+                                        "extraState": {
+                                          "isObjectVar": false
+                                        },
+                                        "fields": {
+                                          "OBJECTTYPE": "Global",
+                                          "VAR": {
+                                            "id": "faqNextSpawn"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n3",
+                                  "fields": {
+                                    "NUM": 1
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "If",
+                          "id": "i14",
+                          "extraState": {},
+                          "inputs": {
+                            "VALUE-0": {
+                              "block": {
+                                "type": "GreaterThan",
+                                "id": "c10",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "GetVariable",
+                                      "id": "c8",
+                                      "inputs": {
+                                        "VALUE-0": {
+                                          "block": {
+                                            "type": "variableReferenceBlock",
+                                            "id": "v7",
+                                            "extraState": {
+                                              "isObjectVar": false
+                                            },
+                                            "fields": {
+                                              "OBJECTTYPE": "Global",
+                                              "VAR": {
+                                                "id": "faqNextSpawn"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "VALUE-1": {
+                                    "block": {
+                                      "type": "Number",
+                                      "id": "n9",
+                                      "fields": {
+                                        "NUM": 4
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "DO": {
+                              "block": {
+                                "type": "SetVariable",
+                                "id": "c13",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "variableReferenceBlock",
+                                      "id": "v12",
+                                      "extraState": {
+                                        "isObjectVar": false
+                                      },
+                                      "fields": {
+                                        "OBJECTTYPE": "Global",
+                                        "VAR": {
+                                          "id": "faqNextSpawn"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "VALUE-1": {
+                                    "block": {
+                                      "type": "Number",
+                                      "id": "n11",
+                                      "fields": {
+                                        "NUM": 0
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "next": {
+                            "block": {
+                              "type": "Wait",
+                              "id": "c16",
+                              "inputs": {
+                                "VALUE-0": {
+                                  "block": {
+                                    "type": "Number",
+                                    "id": "n15",
+                                    "fields": {
+                                      "NUM": 0.5
+                                    }
+                                  }
+                                }
+                              },
+                              "next": {
+                                "block": {
+                                  "type": "SpawnPlayerFromSpawnPoint",
+                                  "id": "c23",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "EventPlayer",
+                                        "id": "c17"
+                                      }
+                                    },
+                                    "VALUE-1": {
+                                      "block": {
+                                        "type": "GetSpawnPoint",
+                                        "id": "c22",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "Add",
+                                              "id": "c21",
+                                              "inputs": {
+                                                "VALUE-0": {
+                                                  "block": {
+                                                    "type": "Number",
+                                                    "id": "n18",
+                                                    "fields": {
+                                                      "NUM": 1001
+                                                    }
+                                                  }
+                                                },
+                                                "VALUE-1": {
+                                                  "block": {
+                                                    "type": "GetVariable",
+                                                    "id": "c20",
+                                                    "inputs": {
+                                                      "VALUE-0": {
+                                                        "block": {
+                                                          "type": "variableReferenceBlock",
+                                                          "id": "v19",
+                                                          "extraState": {
+                                                            "isObjectVar": false
+                                                          },
+                                                          "fields": {
+                                                            "OBJECTTYPE": "Global",
+                                                            "VAR": {
+                                                              "id": "faqNextSpawn"
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": [
+            {
+              "name": "NextSpawn",
+              "id": "faqNextSpawn",
+              "type": "Global"
+            }
+          ]
+        }
+      },
+      "ts": {
+        "note": "The modulo operator wraps the counter, which is the same thing the If block does in the block example.",
+        "code": "const FIRST_SPAWN_POINT_ID = 1001;\nconst SPAWN_POINT_COUNT = 5; // ObjIds 1001 to 1005\n\nlet nextSpawn = 0;\n\nexport async function OnPlayerDied(\n    eventPlayer: mod.Player,\n    eventOtherPlayer: mod.Player,\n    eventDeathType: mod.DeathType,\n    eventWeaponUnlock: mod.WeaponUnlock\n): Promise<void> {\n    // Step to the next point and wrap back round at the end of the list.\n    nextSpawn = (nextSpawn + 1) % SPAWN_POINT_COUNT;\n\n    await mod.Wait(0.5);\n    if (!mod.IsPlayerValid(eventPlayer)) return;\n\n    mod.SpawnPlayerFromSpawnPoint(eventPlayer, mod.GetSpawnPoint(FIRST_SPAWN_POINT_ID + nextSpawn));\n}"
+      },
+      "sources": [
+        "Is it possible to use the logic to prevent players spawning on the same spawn (scripts-blocks)",
+        "All players deploy at the 13th spawn point at the very start (scripts-blocks)",
+        "Free For All Spawning Module (community-tools)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "spawn-deployplayer-does-nothing",
+      "themes": [
+        "spawn",
+        "events"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "DeployPlayer and DeployAllPlayers do nothing for me. How do I force everyone into the match?",
+      "short": "DeployPlayer is a request, not a command, so it only lands when deploying is allowed; SpawnPlayerFromSpawnPoint is the version that always works.",
+      "answer": "DeployPlayer asks the game to run its normal deploy for that player. If deploying is switched off, or the player is watching the deploy screen at a moment the game will not accept, the request is quietly dropped and nothing happens. That is why it looks broken. Two things fix it. First, turn deploying back on with EnableAllPlayerDeploy before you ask. Second, treat it as something that may need repeating, and keep checking whether the player is actually alive. If you want a result you can rely on with no deploy screen at all, use SpawnPlayerFromSpawnPoint instead, which places the soldier directly and does not depend on the deploy flow.",
+      "gotchas": [
+        "DeployPlayer can fail silently. Always verify with the IsAlive soldier state rather than assuming it worked.",
+        "If your mod called EnableAllPlayerDeploy with false earlier, every later deploy request is dropped.",
+        "Do not touch deploy functions for a player sitting in death spectate under SetSpawnMode Spectating; it sticks them in a broken spectator screen.",
+        "SpawnPlayerFromSpawnPoint bypasses the deploy screen entirely, so the player cannot pick a loadout."
+      ],
+      "blocks": {
+        "ruleName": "Force Everyone In",
+        "eventType": "OnGameModeStarted",
+        "note": "Enable deploying, wait for the lobby to settle, then spawn anyone still not alive directly from spawn point 1001.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r26",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Force Everyone In",
+                  "EVENTTYPE": "OnGameModeStarted"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "EnableAllPlayerDeploy",
+                      "id": "c2",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "Boolean",
+                            "id": "o1",
+                            "fields": {
+                              "BOOL": "TRUE"
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "Wait",
+                          "id": "c4",
+                          "inputs": {
+                            "VALUE-0": {
+                              "block": {
+                                "type": "Number",
+                                "id": "n3",
+                                "fields": {
+                                  "NUM": 1
+                                }
+                              }
+                            }
+                          },
+                          "next": {
+                            "block": {
+                              "type": "ForVariable",
+                              "id": "f25",
+                              "inputs": {
+                                "VALUE-0": {
+                                  "block": {
+                                    "type": "variableReferenceBlock",
+                                    "id": "v5",
+                                    "extraState": {
+                                      "isObjectVar": false
+                                    },
+                                    "fields": {
+                                      "OBJECTTYPE": "Global",
+                                      "VAR": {
+                                        "id": "faqIndex"
+                                      }
+                                    }
+                                  }
+                                },
+                                "VALUE-1": {
+                                  "block": {
+                                    "type": "Number",
+                                    "id": "n6",
+                                    "fields": {
+                                      "NUM": 0
+                                    }
+                                  }
+                                },
+                                "VALUE-2": {
+                                  "block": {
+                                    "type": "CountOf",
+                                    "id": "c8",
+                                    "inputs": {
+                                      "VALUE-0": {
+                                        "block": {
+                                          "type": "AllPlayers",
+                                          "id": "c7"
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "VALUE-3": {
+                                  "block": {
+                                    "type": "Number",
+                                    "id": "n9",
+                                    "fields": {
+                                      "NUM": 1
+                                    }
+                                  }
+                                },
+                                "DO": {
+                                  "block": {
+                                    "type": "If",
+                                    "id": "i24",
+                                    "extraState": {},
+                                    "inputs": {
+                                      "VALUE-0": {
+                                        "block": {
+                                          "type": "Not",
+                                          "id": "c16",
+                                          "inputs": {
+                                            "VALUE-0": {
+                                              "block": {
+                                                "type": "GetSoldierState",
+                                                "id": "c15",
+                                                "inputs": {
+                                                  "VALUE-0": {
+                                                    "block": {
+                                                      "type": "ValueInArray",
+                                                      "id": "c13",
+                                                      "inputs": {
+                                                        "VALUE-0": {
+                                                          "block": {
+                                                            "type": "AllPlayers",
+                                                            "id": "c10"
+                                                          }
+                                                        },
+                                                        "VALUE-1": {
+                                                          "block": {
+                                                            "type": "GetVariable",
+                                                            "id": "c12",
+                                                            "inputs": {
+                                                              "VALUE-0": {
+                                                                "block": {
+                                                                  "type": "variableReferenceBlock",
+                                                                  "id": "v11",
+                                                                  "extraState": {
+                                                                    "isObjectVar": false
+                                                                  },
+                                                                  "fields": {
+                                                                    "OBJECTTYPE": "Global",
+                                                                    "VAR": {
+                                                                      "id": "faqIndex"
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  },
+                                                  "VALUE-1": {
+                                                    "block": {
+                                                      "type": "SoldierStateBoolItem",
+                                                      "id": "e14",
+                                                      "fields": {
+                                                        "VALUE-0": "SoldierStateBool",
+                                                        "VALUE-1": "IsAlive"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "DO": {
+                                        "block": {
+                                          "type": "SpawnPlayerFromSpawnPoint",
+                                          "id": "c23",
+                                          "inputs": {
+                                            "VALUE-0": {
+                                              "block": {
+                                                "type": "ValueInArray",
+                                                "id": "c20",
+                                                "inputs": {
+                                                  "VALUE-0": {
+                                                    "block": {
+                                                      "type": "AllPlayers",
+                                                      "id": "c17"
+                                                    }
+                                                  },
+                                                  "VALUE-1": {
+                                                    "block": {
+                                                      "type": "GetVariable",
+                                                      "id": "c19",
+                                                      "inputs": {
+                                                        "VALUE-0": {
+                                                          "block": {
+                                                            "type": "variableReferenceBlock",
+                                                            "id": "v18",
+                                                            "extraState": {
+                                                              "isObjectVar": false
+                                                            },
+                                                            "fields": {
+                                                              "OBJECTTYPE": "Global",
+                                                              "VAR": {
+                                                                "id": "faqIndex"
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            "VALUE-1": {
+                                              "block": {
+                                                "type": "GetSpawnPoint",
+                                                "id": "c22",
+                                                "inputs": {
+                                                  "VALUE-0": {
+                                                    "block": {
+                                                      "type": "Number",
+                                                      "id": "n21",
+                                                      "fields": {
+                                                        "NUM": 1001
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": [
+            {
+              "name": "Index",
+              "id": "faqIndex",
+              "type": "Global"
+            }
+          ]
+        }
+      },
+      "ts": {
+        "note": "The same idea with a small retry loop, since a single pass can miss a player who was still loading.",
+        "code": "const SPAWN_POINT_ID = 1001;\n\nexport async function OnGameModeStarted(): Promise<void> {\n    // A mod that disabled deploying earlier would swallow every deploy request.\n    mod.EnableAllPlayerDeploy(true);\n\n    // Three passes, a second apart, catches players who were still loading.\n    for (let attempt = 0; attempt < 3; attempt++) {\n        await mod.Wait(1);\n\n        const players = mod.AllPlayers();\n        const count = mod.CountOf(players);\n\n        for (let i = 0; i < count; i++) {\n            const player = mod.ValueInArray(players, i) as mod.Player;\n            if (!mod.IsPlayerValid(player)) continue;\n            if (mod.GetSoldierState(player, mod.SoldierStateBool.IsAlive)) continue;\n\n            // Direct placement, which does not depend on the deploy screen.\n            mod.SpawnPlayerFromSpawnPoint(player, mod.GetSpawnPoint(SPAWN_POINT_ID));\n        }\n    }\n}"
+      },
+      "sources": [
+        "Force spawn solution, this replaces the non functional DeployPlayer and DeployAllPlayers (scripts-blocks)",
+        "Force Deploy only works when redeploy timer reaches 0 (bug-reports)",
+        "mod.deploy does not work for AI or I am missing something (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "area-trigger-run-code-on-enter",
+      "themes": [
+        "area triggers",
+        "events"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I run something when a player walks into an area, and how do I tell which area it was?",
+      "short": "Use the OnPlayerEnterAreaTrigger event and compare GetObjId of the trigger against the ObjId you set in Godot.",
+      "answer": "An AreaTrigger is a node you place in Godot. It needs three things or it will never fire: an ObjId number, a CollisionPolygon3D volume assigned to it, and a height on that volume greater than zero. A flat volume with no height is the single most common reason a trigger appears dead. Every AreaTrigger in the map calls the same enter event, so the first line of your handler should check which one it was by comparing GetObjId of the event trigger against the number you set. Comparing the ObjId numbers is more reliable than comparing the objects themselves. There is a matching exit event with the same shape.",
+      "gotchas": [
+        "A volume with zero height never fires. Give the CollisionPolygon3D a real height.",
+        "The AreaTrigger needs an ObjId and a volume assigned in Godot, or GetAreaTrigger and the events return nothing useful.",
+        "Every trigger raises the same event, so always check the ObjId first.",
+        "The enter event can fire again if the player crosses the boundary repeatedly, so anything expensive should be guarded."
+      ],
+      "blocks": {
+        "ruleName": "Score Zone Entered",
+        "eventType": "OnPlayerEnterAreaTrigger",
+        "note": "The ObjId check sits in the CONDITIONS slot, so the actions only run for trigger 201.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r14",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Score Zone Entered",
+                  "EVENTTYPE": "OnPlayerEnterAreaTrigger"
+                },
+                "inputs": {
+                  "CONDITIONS": {
+                    "block": {
+                      "type": "conditionBlock",
+                      "id": "q5",
+                      "inputs": {
+                        "CONDITION": {
+                          "block": {
+                            "type": "Equals",
+                            "id": "c4",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetObjId",
+                                  "id": "c2",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "EventAreaTrigger",
+                                        "id": "c1"
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n3",
+                                  "fields": {
+                                    "NUM": 201
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "ACTIONS": {
+                    "block": {
+                      "type": "SetGameModeScore",
+                      "id": "c13",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "GetTeam",
+                            "id": "c7",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "EventPlayer",
+                                  "id": "c6"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Add",
+                            "id": "c12",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetGameModeScore",
+                                  "id": "c10",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "GetTeam",
+                                        "id": "c9",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "EventPlayer",
+                                              "id": "c8"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n11",
+                                  "fields": {
+                                    "NUM": 1
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "Both the enter and the exit handler are shown. The early return is the same thing the block CONDITIONS slot does.",
+        "code": "const SCORE_ZONE_ID = 201; // the ObjId on the AreaTrigger node in Godot\n\nexport function OnPlayerEnterAreaTrigger(eventPlayer: mod.Player, eventAreaTrigger: mod.AreaTrigger): void {\n    // Every AreaTrigger raises this same event, so check which one fired.\n    if (mod.GetObjId(eventAreaTrigger) !== SCORE_ZONE_ID) return;\n\n    const team = mod.GetTeam(eventPlayer);\n    mod.SetGameModeScore(team, mod.GetGameModeScore(team) + 1);\n}\n\nexport function OnPlayerExitAreaTrigger(eventPlayer: mod.Player, eventAreaTrigger: mod.AreaTrigger): void {\n    if (mod.GetObjId(eventAreaTrigger) !== SCORE_ZONE_ID) return;\n\n    console.log(`Player ${mod.GetObjId(eventPlayer)} left the score zone.`);\n}"
+      },
+      "sources": [
+        "How does capturing work in godot and script, nothing happens when a player enters (godot-support)",
+        "Why would you make checks using IDs of objects instead of checking them directly (scripts-blocks)",
+        "Anyone knows why my areatrigger does not teleport me (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "area-trigger-kill-enemies-in-home-base",
+      "themes": [
+        "area triggers",
+        "teams"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I kill enemy players who walk into my team base, the way normal Conquest does?",
+      "short": "Put an AreaTrigger over the base, check on enter that the player is on the wrong team, wait a few seconds and then kill them.",
+      "answer": "Copy the shape of the HQ volume into an AreaTrigger, give the trigger its own ObjId, and give a separate trigger to each base. On the enter event you check two things: that the trigger is the one you care about, and that the player is not on the team that owns the base. Then wait a few seconds so someone brushing the edge is not killed instantly, and kill them. The delay is what makes it feel like the base protection in the normal modes rather than an instant trap. The combat area itself cannot do this for you, because there is no script access to it at all.",
+      "gotchas": [
+        "This simple version still kills a player who steps back out during the delay. Track the exit event and clear a per player flag if you need that to be fair.",
+        "Give each base its own AreaTrigger and its own ObjId, or you cannot tell which base was entered.",
+        "The trigger volume needs a height above zero, exactly like any other AreaTrigger.",
+        "Do not resize the HQ polygon itself to do this. Editing an HQ volume has been reported to make the game fold the HQ into the combat area."
+      ],
+      "blocks": {
+        "ruleName": "Enemy In Home Base",
+        "eventType": "OnPlayerEnterAreaTrigger",
+        "note": "Two condition blocks chained in CONDITIONS behave as an AND. Trigger 201 covers the team 1 base.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r21",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Enemy In Home Base",
+                  "EVENTTYPE": "OnPlayerEnterAreaTrigger"
+                },
+                "inputs": {
+                  "CONDITIONS": {
+                    "block": {
+                      "type": "conditionBlock",
+                      "id": "q11",
+                      "inputs": {
+                        "CONDITION": {
+                          "block": {
+                            "type": "Equals",
+                            "id": "c4",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetObjId",
+                                  "id": "c2",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "EventAreaTrigger",
+                                        "id": "c1"
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n3",
+                                  "fields": {
+                                    "NUM": 201
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "conditionBlock",
+                          "id": "q12",
+                          "inputs": {
+                            "CONDITION": {
+                              "block": {
+                                "type": "Not",
+                                "id": "c10",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "Equals",
+                                      "id": "c9",
+                                      "inputs": {
+                                        "VALUE-0": {
+                                          "block": {
+                                            "type": "GetTeam",
+                                            "id": "c6",
+                                            "inputs": {
+                                              "VALUE-0": {
+                                                "block": {
+                                                  "type": "EventPlayer",
+                                                  "id": "c5"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        },
+                                        "VALUE-1": {
+                                          "block": {
+                                            "type": "GetTeam",
+                                            "id": "c8",
+                                            "inputs": {
+                                              "VALUE-0": {
+                                                "block": {
+                                                  "type": "Number",
+                                                  "id": "n7",
+                                                  "fields": {
+                                                    "NUM": 1
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "ACTIONS": {
+                    "block": {
+                      "type": "Wait",
+                      "id": "c14",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n13",
+                            "fields": {
+                              "NUM": 3
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "If",
+                          "id": "i20",
+                          "extraState": {},
+                          "inputs": {
+                            "VALUE-0": {
+                              "block": {
+                                "type": "GetSoldierState",
+                                "id": "c17",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "EventPlayer",
+                                      "id": "c15"
+                                    }
+                                  },
+                                  "VALUE-1": {
+                                    "block": {
+                                      "type": "SoldierStateBoolItem",
+                                      "id": "e16",
+                                      "fields": {
+                                        "VALUE-0": "SoldierStateBool",
+                                        "VALUE-1": "IsAlive"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "DO": {
+                              "block": {
+                                "type": "Kill",
+                                "id": "c19",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "EventPlayer",
+                                      "id": "c18"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "The two early returns are the two condition blocks. The handler is async because it waits.",
+        "code": "const TEAM_ONE_BASE_TRIGGER = 201;\nconst BASE_OWNER_TEAM = 1;\nconst GRACE_SECONDS = 3;\n\nexport async function OnPlayerEnterAreaTrigger(\n    eventPlayer: mod.Player,\n    eventAreaTrigger: mod.AreaTrigger\n): Promise<void> {\n    if (mod.GetObjId(eventAreaTrigger) !== TEAM_ONE_BASE_TRIGGER) return;\n\n    // Players who own this base are allowed in.\n    if (mod.Equals(mod.GetTeam(eventPlayer), mod.GetTeam(BASE_OWNER_TEAM))) return;\n\n    await mod.Wait(GRACE_SECONDS);\n\n    if (!mod.IsPlayerValid(eventPlayer)) return;\n    if (!mod.GetSoldierState(eventPlayer, mod.SoldierStateBool.IsAlive)) return;\n\n    mod.Kill(eventPlayer);\n}"
+      },
+      "sources": [
+        "Is there a way to make players die a few seconds after entering the enemy HQ (scripts-blocks)",
+        "Any changes to the HQ polygon volume makes the game change the HQ to the combat area (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "area-trigger-combat-area-is-not-scriptable",
+      "themes": [
+        "area triggers",
+        "spawn"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I move, resize or switch off the out of bounds combat area from a script?",
+      "short": "You cannot. The combat area exists only in the map data, so build your own boundary out of an AreaTrigger and handle it yourself.",
+      "answer": "There is no script or block that creates, moves, resizes or disables the combat area, and there is no event that tells you a player went out of bounds. The only two combat area functions in the whole API are about abandoned vehicles, not about the boundary. The boundary lives in the map itself, in the exported spatial data you build in Godot, and that is the only place it can be changed. If you need a boundary your mod controls, place your own AreaTrigger covering the area you want to allow, then react to the exit event yourself, which is what the example below does. It reads the position of a marker prop and teleports the player back to it.",
+      "gotchas": [
+        "There is no out of bounds event. Anything boundary shaped has to be built from your own AreaTrigger.",
+        "The combat area polygon must be wound clockwise in the map data, otherwise the inside and the outside are swapped.",
+        "The flat horizontal footprint is what decides in or out. The floor height of the volume is not a hard vertical gate.",
+        "HQs belong outside the combat volume, each with its own area. Extra player spawners near it are a known way to break the boundary.",
+        "GetObjectPosition returns roughly 0,0,0 for spawners and interact points, so read the position of a real prop instead."
+      ],
+      "blocks": {
+        "ruleName": "Pull Player Back",
+        "eventType": "OnPlayerExitAreaTrigger",
+        "note": "AreaTrigger 300 is your own playable zone. SpatialObject 500 is a marker prop placed at the middle of it.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r12",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Pull Player Back",
+                  "EVENTTYPE": "OnPlayerExitAreaTrigger"
+                },
+                "inputs": {
+                  "CONDITIONS": {
+                    "block": {
+                      "type": "conditionBlock",
+                      "id": "q5",
+                      "inputs": {
+                        "CONDITION": {
+                          "block": {
+                            "type": "Equals",
+                            "id": "c4",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetObjId",
+                                  "id": "c2",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "EventAreaTrigger",
+                                        "id": "c1"
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n3",
+                                  "fields": {
+                                    "NUM": 300
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "ACTIONS": {
+                    "block": {
+                      "type": "Teleport",
+                      "id": "c11",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "EventPlayer",
+                            "id": "c6"
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "GetObjectPosition",
+                            "id": "c9",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetSpatialObject",
+                                  "id": "c8",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "Number",
+                                        "id": "n7",
+                                        "fields": {
+                                          "NUM": 500
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-2": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n10",
+                            "fields": {
+                              "NUM": 0
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "The third argument to Teleport is the direction the soldier ends up facing, in degrees.",
+        "code": "const PLAY_AREA_TRIGGER = 300; // your own boundary, an AreaTrigger in Godot\nconst CENTRE_MARKER = 500; // a real prop, because spawners report position 0,0,0\n\nexport function OnPlayerExitAreaTrigger(eventPlayer: mod.Player, eventAreaTrigger: mod.AreaTrigger): void {\n    if (mod.GetObjId(eventAreaTrigger) !== PLAY_AREA_TRIGGER) return;\n    if (!mod.IsPlayerValid(eventPlayer)) return;\n\n    const centre = mod.GetObjectPosition(mod.GetSpatialObject(CENTRE_MARKER));\n\n    // Third argument is the facing angle in degrees.\n    mod.Teleport(eventPlayer, centre, 0);\n}"
+      },
+      "sources": [
+        "Combat Area volume, players leaving it get the out of bounds warning (scripts-blocks)",
+        "Been having issues with the combat area, only safe in the HQ volume (scripts-blocks)",
+        "Combat Area and Sector Area Conflict (bug-reports)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "capture-point-set-capture-and-neutralise-times",
+      "themes": [
+        "capture points"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I change how long a flag takes to capture, and why do my capture point settings do nothing?",
+      "short": "Enable the objective first, then set the times, and do it in the game mode started event.",
+      "answer": "A capture point has two timers. The capturing time is how long it takes to take an already neutral point, and the neutralization time is how long it takes to strip it away from whoever owns it. You set both with a call each, and you set the multiplier for extra attackers with SetMaxCaptureMultiplier. The usual reason nothing happens is order. A capture point that is switched off in Godot ignores these calls, so enable the objective first and set the timers straight after, inside the game mode started event. Older SDK builds had a bug where setting one timer reset the other, which was fixed in 1.2.1.0, so if you are on an older build set the one you care about last.",
+      "gotchas": [
+        "Call EnableGameModeObjective before the timers, or a point that is disabled in Godot ignores them.",
+        "Set the timers in OnGameModeStarted. Doing it earlier, from module level code, is too soon.",
+        "On SDK builds before 1.2.1.0 the two timer calls cancelled each other out. Fixed since.",
+        "The capture point needs a polygon volume with a height above zero, exactly like an AreaTrigger, or nobody can capture it."
+      ],
+      "blocks": {
+        "ruleName": "Set Up All Flags",
+        "eventType": "OnGameModeStarted",
+        "note": "The For block walks every capture point in the map, so you do not have to list ObjIds one by one.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r31",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Set Up All Flags",
+                  "EVENTTYPE": "OnGameModeStarted"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "ForVariable",
+                      "id": "f30",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "variableReferenceBlock",
+                            "id": "v1",
+                            "extraState": {
+                              "isObjectVar": false
+                            },
+                            "fields": {
+                              "OBJECTTYPE": "Global",
+                              "VAR": {
+                                "id": "faqIndex"
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n2",
+                            "fields": {
+                              "NUM": 0
+                            }
+                          }
+                        },
+                        "VALUE-2": {
+                          "block": {
+                            "type": "CountOf",
+                            "id": "c4",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "AllCapturePoints",
+                                  "id": "c3"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-3": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n5",
+                            "fields": {
+                              "NUM": 1
+                            }
+                          }
+                        },
+                        "DO": {
+                          "block": {
+                            "type": "EnableGameModeObjective",
+                            "id": "c11",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "ValueInArray",
+                                  "id": "c9",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "AllCapturePoints",
+                                        "id": "c6"
+                                      }
+                                    },
+                                    "VALUE-1": {
+                                      "block": {
+                                        "type": "GetVariable",
+                                        "id": "c8",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "variableReferenceBlock",
+                                              "id": "v7",
+                                              "extraState": {
+                                                "isObjectVar": false
+                                              },
+                                              "fields": {
+                                                "OBJECTTYPE": "Global",
+                                                "VAR": {
+                                                  "id": "faqIndex"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Boolean",
+                                  "id": "o10",
+                                  "fields": {
+                                    "BOOL": "TRUE"
+                                  }
+                                }
+                              }
+                            },
+                            "next": {
+                              "block": {
+                                "type": "SetCapturePointCapturingTime",
+                                "id": "c17",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "ValueInArray",
+                                      "id": "c15",
+                                      "inputs": {
+                                        "VALUE-0": {
+                                          "block": {
+                                            "type": "AllCapturePoints",
+                                            "id": "c12"
+                                          }
+                                        },
+                                        "VALUE-1": {
+                                          "block": {
+                                            "type": "GetVariable",
+                                            "id": "c14",
+                                            "inputs": {
+                                              "VALUE-0": {
+                                                "block": {
+                                                  "type": "variableReferenceBlock",
+                                                  "id": "v13",
+                                                  "extraState": {
+                                                    "isObjectVar": false
+                                                  },
+                                                  "fields": {
+                                                    "OBJECTTYPE": "Global",
+                                                    "VAR": {
+                                                      "id": "faqIndex"
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "VALUE-1": {
+                                    "block": {
+                                      "type": "Number",
+                                      "id": "n16",
+                                      "fields": {
+                                        "NUM": 15
+                                      }
+                                    }
+                                  }
+                                },
+                                "next": {
+                                  "block": {
+                                    "type": "SetCapturePointNeutralizationTime",
+                                    "id": "c23",
+                                    "inputs": {
+                                      "VALUE-0": {
+                                        "block": {
+                                          "type": "ValueInArray",
+                                          "id": "c21",
+                                          "inputs": {
+                                            "VALUE-0": {
+                                              "block": {
+                                                "type": "AllCapturePoints",
+                                                "id": "c18"
+                                              }
+                                            },
+                                            "VALUE-1": {
+                                              "block": {
+                                                "type": "GetVariable",
+                                                "id": "c20",
+                                                "inputs": {
+                                                  "VALUE-0": {
+                                                    "block": {
+                                                      "type": "variableReferenceBlock",
+                                                      "id": "v19",
+                                                      "extraState": {
+                                                        "isObjectVar": false
+                                                      },
+                                                      "fields": {
+                                                        "OBJECTTYPE": "Global",
+                                                        "VAR": {
+                                                          "id": "faqIndex"
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "VALUE-1": {
+                                        "block": {
+                                          "type": "Number",
+                                          "id": "n22",
+                                          "fields": {
+                                            "NUM": 10
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "next": {
+                                      "block": {
+                                        "type": "SetMaxCaptureMultiplier",
+                                        "id": "c29",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "ValueInArray",
+                                              "id": "c27",
+                                              "inputs": {
+                                                "VALUE-0": {
+                                                  "block": {
+                                                    "type": "AllCapturePoints",
+                                                    "id": "c24"
+                                                  }
+                                                },
+                                                "VALUE-1": {
+                                                  "block": {
+                                                    "type": "GetVariable",
+                                                    "id": "c26",
+                                                    "inputs": {
+                                                      "VALUE-0": {
+                                                        "block": {
+                                                          "type": "variableReferenceBlock",
+                                                          "id": "v25",
+                                                          "extraState": {
+                                                            "isObjectVar": false
+                                                          },
+                                                          "fields": {
+                                                            "OBJECTTYPE": "Global",
+                                                            "VAR": {
+                                                              "id": "faqIndex"
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          },
+                                          "VALUE-1": {
+                                            "block": {
+                                              "type": "Number",
+                                              "id": "n28",
+                                              "fields": {
+                                                "NUM": 2
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": [
+            {
+              "name": "Index",
+              "id": "faqIndex",
+              "type": "Global"
+            }
+          ]
+        }
+      },
+      "ts": {
+        "note": "AllCapturePoints is a mod.Array, so it is read with CountOf and ValueInArray like any other engine list.",
+        "code": "const CAPTURING_SECONDS = 15; // taking a neutral flag\nconst NEUTRALISE_SECONDS = 10; // stripping a flag off the other team\n\nexport function OnGameModeStarted(): void {\n    const points = mod.AllCapturePoints();\n    const count = mod.CountOf(points);\n\n    for (let i = 0; i < count; i++) {\n        const point = mod.ValueInArray(points, i) as mod.CapturePoint;\n\n        // Enable first. A disabled point ignores the timer calls.\n        mod.EnableGameModeObjective(point, true);\n\n        mod.SetCapturePointCapturingTime(point, CAPTURING_SECONDS);\n        mod.SetCapturePointNeutralizationTime(point, NEUTRALISE_SECONDS);\n\n        // How much faster a full squad captures than one player.\n        mod.SetMaxCaptureMultiplier(point, 2);\n    }\n}"
+      },
+      "sources": [
+        "SetCapturePointCapturingTime and SetCapturePointNeutralizationTime cancel out (bug-reports)",
+        "I set an objective and I could not capture it (scripts-blocks)",
+        "Capture point neutralisation time will not change (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "capture-point-set-starting-owner",
+      "themes": [
+        "capture points",
+        "teams"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I make a team already own a capture point when the round starts?",
+      "short": "Enable the objective first, then call SetCapturePointOwner with the team, inside the game mode started event.",
+      "answer": "SetCapturePointOwner hands a point to a team. It has a reputation for not working, and the reason is almost always that the point was still disabled when the call was made. The order that works is: enable the objective, then set the owner. If you want the point to start switched off but owned, enable it, set the owner, and only then disable it again. Avoid handing a point to team 0, which is the neutral team. Several people have found that a point set to neutral by script then refuses to be captured at all. If you want a neutral point, just leave it neutral in Godot and do not set an owner from script.",
+      "gotchas": [
+        "Enable the objective before setting the owner. A disabled point silently ignores the call.",
+        "Setting the owner to team 0, the neutral team, has left points that can never be captured. Leave a point neutral in the map instead.",
+        "There is no GetCapturePointOwner. The getter is called GetCurrentOwnerTeam.",
+        "Do this in OnGameModeStarted. Calls made before the match is running are dropped."
+      ],
+      "blocks": {
+        "ruleName": "Give Flag A To Team One",
+        "eventType": "OnGameModeStarted",
+        "note": "Capture point 201 is enabled first and only then handed to team 1.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r10",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Give Flag A To Team One",
+                  "EVENTTYPE": "OnGameModeStarted"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "EnableGameModeObjective",
+                      "id": "c4",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "GetCapturePoint",
+                            "id": "c2",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n1",
+                                  "fields": {
+                                    "NUM": 201
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Boolean",
+                            "id": "o3",
+                            "fields": {
+                              "BOOL": "TRUE"
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "SetCapturePointOwner",
+                          "id": "c9",
+                          "inputs": {
+                            "VALUE-0": {
+                              "block": {
+                                "type": "GetCapturePoint",
+                                "id": "c6",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "Number",
+                                      "id": "n5",
+                                      "fields": {
+                                        "NUM": 201
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "VALUE-1": {
+                              "block": {
+                                "type": "GetTeam",
+                                "id": "c8",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "Number",
+                                      "id": "n7",
+                                      "fields": {
+                                        "NUM": 1
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "Fetching the point once into a variable keeps the two calls pointing at the same object.",
+        "code": "const FLAG_A = 201; // the ObjId on the CapturePoint node in Godot\n\nexport function OnGameModeStarted(): void {\n    const flagA = mod.GetCapturePoint(FLAG_A);\n\n    // Enable first. Setting the owner of a disabled point does nothing.\n    mod.EnableGameModeObjective(flagA, true);\n    mod.SetCapturePointOwner(flagA, mod.GetTeam(1));\n\n    // The getter is GetCurrentOwnerTeam, there is no GetCapturePointOwner.\n    console.log(`Flag A owner team id: ${mod.GetObjId(mod.GetCurrentOwnerTeam(flagA))}`);\n}"
+      },
+      "sources": [
+        "Is mod.SetCapturePointOwner still not working (scripts-blocks)",
+        "It did not work because I had the capture points disabled in the editor (scripts-blocks)",
+        "Setting CapturePoint Owner to Team Neutral causes the capture point to be uncappable (bug-reports)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "capture-point-do-something-when-captured",
+      "themes": [
+        "capture points",
+        "events"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "How do I run something when a flag is captured, for example award points to the team that took it?",
+      "short": "Use the OnCapturePointCaptured event, read the new owner with GetCurrentOwnerTeam, and give that team score.",
+      "answer": "OnCapturePointCaptured fires once, for every capture point in the map, whenever one changes hands. The event hands you the point, and you ask the point who owns it now with GetCurrentOwnerTeam. From there you can do whatever the mode needs, such as adding to that team score with SetGameModeScore. If you only care about one specific flag, compare GetObjId of the event point against the number you gave it in Godot, exactly as you would with an area trigger. There are matching events for a point starting to be captured and for a point being lost.",
+      "gotchas": [
+        "The event fires for every capture point, so check the ObjId if you only care about one.",
+        "The owner getter is GetCurrentOwnerTeam. GetOwnerProgressTeam is a different thing: it is who is currently making progress.",
+        "The player exit capture point event also fires at the moment a point is captured, so do not read it as \"walked away\".",
+        "Score set with SetGameModeScore is the mode score, which is separate from the scoreboard column layout in the experience settings."
+      ],
+      "blocks": {
+        "ruleName": "Flag Captured Bonus",
+        "eventType": "OnCapturePointCaptured",
+        "note": "GetCurrentOwnerTeam on the event capture point gives the team that just took it.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r9",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Flag Captured Bonus",
+                  "EVENTTYPE": "OnCapturePointCaptured"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "SetGameModeScore",
+                      "id": "c8",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "GetCurrentOwnerTeam",
+                            "id": "c2",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "EventCapturePoint",
+                                  "id": "c1"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Add",
+                            "id": "c7",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetGameModeScore",
+                                  "id": "c5",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "GetCurrentOwnerTeam",
+                                        "id": "c4",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "EventCapturePoint",
+                                              "id": "c3"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n6",
+                                  "fields": {
+                                    "NUM": 100
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "Reading the owner into a variable first avoids asking the engine the same question twice.",
+        "code": "const CAPTURE_BONUS = 100;\n\nexport function OnCapturePointCaptured(eventCapturePoint: mod.CapturePoint): void {\n    // Who owns it now that the capture finished.\n    const owner = mod.GetCurrentOwnerTeam(eventCapturePoint);\n\n    mod.SetGameModeScore(owner, mod.GetGameModeScore(owner) + CAPTURE_BONUS);\n\n    console.log(`Point ${mod.GetObjId(eventCapturePoint)} taken by team ${mod.GetObjId(owner)}.`);\n}"
+      },
+      "sources": [
+        "Event capturepoint was used as it was linked to the OnCapturePointCaptured rule (scripts-blocks)",
+        "OnPlayerExitCapturePoint event triggered when a capture point is captured (bug-reports)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "events-what-ongoing-rules-actually-do",
+      "themes": [
+        "events"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "What does an Ongoing rule actually do? It does not seem to loop the way I expected.",
+      "short": "An Ongoing rule watches its conditions and runs its actions once each time they turn from false to true, not once per tick.",
+      "answer": "An Ongoing rule is not a loop around your actions. The game re-checks the CONDITIONS slot constantly, and the moment the answer flips from false to true it runs the ACTIONS once. It will not run again until the conditions have gone back to false and become true again. This is called edge triggering, and it is why an Ongoing rule with no conditions at all runs exactly once at the start of the match, which surprises almost everyone. The OBJECT dropdown decides what the rule runs for: Global means once overall, Player means the whole thing is evaluated separately for each player, and so on for teams, vehicles and capture points. In TypeScript the same idea is the OngoingGlobal and OngoingPlayer functions, which the engine calls repeatedly, so there you have to remember the previous answer yourself if you want the same run once behaviour.",
+      "gotchas": [
+        "An Ongoing rule with an empty CONDITIONS slot runs its actions once, not every tick.",
+        "The actions do not repeat while the condition stays true. They fire on the change.",
+        "In TypeScript OngoingPlayer and OngoingGlobal really are called over and over, so you must track the previous state yourself.",
+        "Never write your own endless while loop as a substitute. It will hang the script."
+      ],
+      "blocks": {
+        "ruleName": "Top Up Low Health",
+        "eventType": "Ongoing",
+        "note": "An Ongoing rule with OBJECT set to Player. It runs once each time a player crosses below 25 health, not every tick while they are hurt.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r10",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": true
+                },
+                "fields": {
+                  "NAME": "Top Up Low Health",
+                  "EVENTTYPE": "Ongoing",
+                  "OBJECTTYPE": "Player"
+                },
+                "inputs": {
+                  "CONDITIONS": {
+                    "block": {
+                      "type": "conditionBlock",
+                      "id": "q6",
+                      "inputs": {
+                        "CONDITION": {
+                          "block": {
+                            "type": "LessThan",
+                            "id": "c5",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetSoldierState",
+                                  "id": "c3",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "EventPlayer",
+                                        "id": "c1"
+                                      }
+                                    },
+                                    "VALUE-1": {
+                                      "block": {
+                                        "type": "SoldierStateNumberItem",
+                                        "id": "e2",
+                                        "fields": {
+                                          "VALUE-0": "SoldierStateNumber",
+                                          "VALUE-1": "CurrentHealth"
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n4",
+                                  "fields": {
+                                    "NUM": 25
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "ACTIONS": {
+                    "block": {
+                      "type": "Heal",
+                      "id": "c9",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "EventPlayer",
+                            "id": "c7"
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n8",
+                            "fields": {
+                              "NUM": 100
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "OngoingPlayer is called repeatedly, so the wasLow map is what turns it back into a once per change rule.",
+        "code": "const LOW_HEALTH = 25;\n\n// OngoingPlayer is called over and over, so remember the previous answer per player\n// to get the once per change behaviour a block Ongoing rule gives you for free.\nconst wasLow = new Map<number, boolean>();\n\nexport function OngoingPlayer(eventPlayer: mod.Player): void {\n    if (!mod.IsPlayerValid(eventPlayer)) return;\n\n    const id = mod.GetObjId(eventPlayer);\n    const health = mod.GetSoldierState(eventPlayer, mod.SoldierStateNumber.CurrentHealth);\n    const isLow = health < LOW_HEALTH;\n\n    // Only act on the change from not low to low.\n    if (isLow && !wasLow.get(id)) mod.Heal(eventPlayer, 100);\n\n    wasLow.set(id, isLow);\n}"
+      },
+      "sources": [
+        "Has anyone figured out what the Ongoing events actually do (scripts-blocks)",
+        "Is it just an infinite while loop placed in an OnGameStart function (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "events-wait-needs-async-and-await",
+      "themes": [
+        "events"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "My script stops working as soon as I add a Wait, or I get an error about await. What is wrong?",
+      "short": "mod.Wait is a promise, so in TypeScript the function must be marked async and the call must be awaited.",
+      "answer": "mod.Wait does not pause the line it is on. It hands back a promise, which is an object meaning \"this will be finished later\". To actually pause, you write await in front of it, and any function containing an await has to be marked async and declared as returning Promise<void>. If you forget the await, the rest of the function runs immediately and the wait appears to do nothing. If you forget the async, TypeScript refuses to build. In the block editor you do not have to think about any of this, because the exporter marks the generated function async for you when it sees a Wait block. One thing to remember either way: after a wait, the world has moved on, so re-check that the player is still valid before touching them.",
+      "gotchas": [
+        "A function that uses await must be declared async and return Promise<void>.",
+        "Forgetting await makes the wait silently do nothing rather than fail.",
+        "Re-check IsPlayerValid after every wait. The player may have died or left.",
+        "Do not make OnPlayerDamaged async. Very high frequency handlers must stay synchronous."
+      ],
+      "blocks": {
+        "ruleName": "Delayed Kill Reward",
+        "eventType": "OnPlayerEarnedKill",
+        "note": "The Wait block sits between two actions. The editor handles the async part when it exports the rule.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r10",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Delayed Kill Reward",
+                  "EVENTTYPE": "OnPlayerEarnedKill"
+                },
+                "inputs": {
+                  "ACTIONS": {
+                    "block": {
+                      "type": "Wait",
+                      "id": "c2",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "Number",
+                            "id": "n1",
+                            "fields": {
+                              "NUM": 2
+                            }
+                          }
+                        }
+                      },
+                      "next": {
+                        "block": {
+                          "type": "If",
+                          "id": "i9",
+                          "extraState": {},
+                          "inputs": {
+                            "VALUE-0": {
+                              "block": {
+                                "type": "GetSoldierState",
+                                "id": "c5",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "EventPlayer",
+                                      "id": "c3"
+                                    }
+                                  },
+                                  "VALUE-1": {
+                                    "block": {
+                                      "type": "SoldierStateBoolItem",
+                                      "id": "e4",
+                                      "fields": {
+                                        "VALUE-0": "SoldierStateBool",
+                                        "VALUE-1": "IsAlive"
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "DO": {
+                              "block": {
+                                "type": "Heal",
+                                "id": "c8",
+                                "inputs": {
+                                  "VALUE-0": {
+                                    "block": {
+                                      "type": "EventPlayer",
+                                      "id": "c6"
+                                    }
+                                  },
+                                  "VALUE-1": {
+                                    "block": {
+                                      "type": "Number",
+                                      "id": "n7",
+                                      "fields": {
+                                        "NUM": 50
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "async on the function, await on the Wait, Promise<void> as the return type, and a validity re-check after the pause.",
+        "code": "export async function OnPlayerEarnedKill(\n    eventPlayer: mod.Player,\n    eventOtherPlayer: mod.Player,\n    eventDeathType: mod.DeathType,\n    eventWeaponUnlock: mod.WeaponUnlock\n): Promise<void> {\n    // await is what actually pauses. Without it the wait does nothing at all.\n    await mod.Wait(2);\n\n    // Two seconds passed, so nothing about the player can be assumed any more.\n    if (!mod.IsPlayerValid(eventPlayer)) return;\n    if (!mod.GetSoldierState(eventPlayer, mod.SoldierStateBool.IsAlive)) return;\n\n    mod.Heal(eventPlayer, 50);\n}"
+      },
+      "sources": [
+        "You need to use await mod.Wait(seconds) (scripts-blocks)",
+        "Add async to functions that use await mod.Wait (scripts-blocks)",
+        "Code uses await without declaring async (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    },
+    {
+      "id": "events-damage-and-death-without-breaking-the-script",
+      "themes": [
+        "events"
+      ],
+      "editors": [
+        "blocks",
+        "typescript"
+      ],
+      "question": "Is it safe to use the damage event, and how do I tell how a player died?",
+      "short": "Yes, as long as the handler is synchronous and you turn the player handles into numbers straight away; death type is read with EventDeathTypeCompare.",
+      "answer": "The damage event is safe to use. There is an old and widely repeated claim that it crashes the script after a few thousand hits, and that claim is wrong. The real cause was making the handler async, which leaks the objects handed to it. Keep the handler synchronous, returning nothing, do as little as possible inside it, and turn the player objects into plain numbers with GetObjId right away rather than storing the objects. The death event carries how the player died, but that value is an opaque handle rather than a plain name, so you compare it with EventDeathTypeCompare against one of the PlayerDeathTypes entries instead of using a normal equals. That gives you headshot, melee, roadkill and the rest for free.",
+      "gotchas": [
+        "Never mark the damage handler async, and never await inside it. That is what leaks and eventually kills the script.",
+        "Do not store the mod.Player objects the event gives you. Convert to a number with GetObjId and store that.",
+        "The death type cannot be compared with a normal equals. Use EventDeathTypeCompare with a PlayerDeathTypes value.",
+        "The claim that this event crashes after roughly 2,800 fires is false. It described the async version only."
+      ],
+      "blocks": {
+        "ruleName": "Headshot Bonus",
+        "eventType": "OnPlayerDied",
+        "note": "EventDeathTypeCompare sits in the CONDITIONS slot, so the score only goes to the killer on a headshot.",
+        "workspace": {
+          "blocks": {
+            "languageVersion": 0,
+            "blocks": [
+              {
+                "type": "ruleBlock",
+                "id": "r13",
+                "x": 40,
+                "y": 40,
+                "extraState": {
+                  "isOngoingEvent": false
+                },
+                "fields": {
+                  "NAME": "Headshot Bonus",
+                  "EVENTTYPE": "OnPlayerDied"
+                },
+                "inputs": {
+                  "CONDITIONS": {
+                    "block": {
+                      "type": "conditionBlock",
+                      "id": "q4",
+                      "inputs": {
+                        "CONDITION": {
+                          "block": {
+                            "type": "EventDeathTypeCompare",
+                            "id": "c3",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "EventDeathType",
+                                  "id": "c1"
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "PlayerDeathTypesItem",
+                                  "id": "e2",
+                                  "fields": {
+                                    "VALUE-0": "PlayerDeathTypes",
+                                    "VALUE-1": "Headshot"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "ACTIONS": {
+                    "block": {
+                      "type": "SetGameModeScore",
+                      "id": "c12",
+                      "inputs": {
+                        "VALUE-0": {
+                          "block": {
+                            "type": "GetTeam",
+                            "id": "c6",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "EventOtherPlayer",
+                                  "id": "c5"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "VALUE-1": {
+                          "block": {
+                            "type": "Add",
+                            "id": "c11",
+                            "inputs": {
+                              "VALUE-0": {
+                                "block": {
+                                  "type": "GetGameModeScore",
+                                  "id": "c9",
+                                  "inputs": {
+                                    "VALUE-0": {
+                                      "block": {
+                                        "type": "GetTeam",
+                                        "id": "c8",
+                                        "inputs": {
+                                          "VALUE-0": {
+                                            "block": {
+                                              "type": "EventOtherPlayer",
+                                              "id": "c7"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "VALUE-1": {
+                                "block": {
+                                  "type": "Number",
+                                  "id": "n10",
+                                  "fields": {
+                                    "NUM": 50
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "variables": []
+        }
+      },
+      "ts": {
+        "note": "Both handlers return void with no async anywhere. The damage handler only reads ids and counts.",
+        "code": "const HEADSHOT_BONUS = 50;\n\n// Keyed by player id, never by the player object itself.\nconst hitsTaken = new Map<number, number>();\n\n// Synchronous on purpose. Making this async is what leaks and kills the script.\nexport function OnPlayerDamaged(\n    eventPlayer: mod.Player,\n    eventOtherPlayer: mod.Player,\n    eventDamageType: mod.DamageType,\n    eventWeaponUnlock: mod.WeaponUnlock\n): void {\n    const id = mod.GetObjId(eventPlayer);\n    hitsTaken.set(id, (hitsTaken.get(id) ?? 0) + 1);\n}\n\nexport function OnPlayerDied(\n    eventPlayer: mod.Player,\n    eventOtherPlayer: mod.Player,\n    eventDeathType: mod.DeathType,\n    eventWeaponUnlock: mod.WeaponUnlock\n): void {\n    hitsTaken.delete(mod.GetObjId(eventPlayer));\n\n    // The death type is an opaque handle, so it needs this compare, not ===.\n    if (!mod.EventDeathTypeCompare(eventDeathType, mod.PlayerDeathTypes.Headshot)) return;\n    if (!mod.IsPlayerValid(eventOtherPlayer)) return;\n\n    const killerTeam = mod.GetTeam(eventOtherPlayer);\n    mod.SetGameModeScore(killerTeam, mod.GetGameModeScore(killerTeam) + HEADSHOT_BONUS);\n}"
+      },
+      "sources": [
+        "QuickJS Script Crash After ~2800 OnPlayerDamaged Events (bug-reports)",
+        "Does OnPlayerDamaged trigger when a human player is damaged (scripts-blocks)",
+        "How do you check if a player is damaged by a specific weapon in OnPlayerDamaged (scripts-blocks)"
+      ],
+      "verified": {
+        "blocks": true,
+        "ts": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,2233 @@
+{
+ "version": 1,
+ "appVersion": "1.4.1.0",
+ "minedAt": "2026-07-21T14:41:26.756Z",
+ "source": "portal-mine-141.json + mut-*.json (read-only site mine)",
+ "pages": [
+  {
+   "key": "mode",
+   "tab": "MODE",
+   "title": "MODE",
+   "path": "/bf6/experience/settings/mode",
+   "url": "https://portal.battlefield.com/bf6/experience/settings/mode?teams=1%2C2",
+   "testIds": [],
+   "settings": [
+    {
+     "testId": "fPortalExperienceGameTime",
+     "title": "GAME TIME",
+     "caption": "Sets the maximum time (in minutes) for the round.",
+     "kind": "slider",
+     "min": 6,
+     "max": 60,
+     "step": 1,
+     "default": 20,
+     "byTitle": false,
+     "perTeam": false
+    }
+   ]
+  },
+  {
+   "key": "map-rotation",
+   "tab": "MAP ROTATION",
+   "title": "MAP ROTATION",
+   "path": "/bf6/experience/choose-maps",
+   "url": "https://portal.battlefield.com/bf6/experience/choose-maps?teams=1%2C2",
+   "testIds": [
+    "publish-button",
+    "downloadSdkButton",
+    "add-MP_Granite_MilitaryRnD_Portal:m",
+    "add-MP_Aftermath_Portal:s",
+    "add-MP_Badlands:l",
+    "add-MP_Plaza:s",
+    "add-MP_Granite_Underground_Portal:s",
+    "add-MP_Contaminated:m",
+    "add-MP_Granite_TechCampus_Portal:m",
+    "add-MP_Granite_MainStreet_Portal:m",
+    "add-MP_Eastwood:m",
+    "add-MP_Aftermath:s",
+    "add-MP_Granite_ClubHouse_Portal:m",
+    "add-MP_GolmudRailway:l",
+    "add-MP_Subsurface:m",
+    "add-MP_Battery:m",
+    "add-MP_Capstone:m",
+    "add-MP_Dumbo:m",
+    "add-MP_Granite_Marina_Portal:m",
+    "add-MP_Tungsten:l",
+    "add-MP_Outskirts:m",
+    "add-MP_FireStorm:l",
+    "add-MP_Portal_Sand:l",
+    "add-MP_Granite_MilitaryStorage_Portal:m",
+    "add-MP_Limestone:s",
+    "add-MP_Abbasid:m",
+    "attach-MP_Abbasid:m:0",
+    "remove-MP_Abbasid:m:0",
+    "next-button"
+   ],
+   "settings": [],
+   "maps": [
+    {
+     "map": "MP_Abbasid",
+     "size": "m"
+    },
+    {
+     "map": "MP_Aftermath",
+     "size": "s"
+    },
+    {
+     "map": "MP_Aftermath_Portal",
+     "size": "s"
+    },
+    {
+     "map": "MP_Badlands",
+     "size": "l"
+    },
+    {
+     "map": "MP_Battery",
+     "size": "m"
+    },
+    {
+     "map": "MP_Capstone",
+     "size": "m"
+    },
+    {
+     "map": "MP_Contaminated",
+     "size": "m"
+    },
+    {
+     "map": "MP_Dumbo",
+     "size": "m"
+    },
+    {
+     "map": "MP_Eastwood",
+     "size": "m"
+    },
+    {
+     "map": "MP_FireStorm",
+     "size": "l"
+    },
+    {
+     "map": "MP_GolmudRailway",
+     "size": "l"
+    },
+    {
+     "map": "MP_Granite_ClubHouse_Portal",
+     "size": "m"
+    },
+    {
+     "map": "MP_Granite_MainStreet_Portal",
+     "size": "m"
+    },
+    {
+     "map": "MP_Granite_Marina_Portal",
+     "size": "m"
+    },
+    {
+     "map": "MP_Granite_MilitaryRnD_Portal",
+     "size": "m"
+    },
+    {
+     "map": "MP_Granite_MilitaryStorage_Portal",
+     "size": "m"
+    },
+    {
+     "map": "MP_Granite_TechCampus_Portal",
+     "size": "m"
+    },
+    {
+     "map": "MP_Granite_Underground_Portal",
+     "size": "s"
+    },
+    {
+     "map": "MP_Limestone",
+     "size": "s"
+    },
+    {
+     "map": "MP_Outskirts",
+     "size": "m"
+    },
+    {
+     "map": "MP_Plaza",
+     "size": "s"
+    },
+    {
+     "map": "MP_Portal_Sand",
+     "size": "l"
+    },
+    {
+     "map": "MP_Subsurface",
+     "size": "m"
+    },
+    {
+     "map": "MP_Tungsten",
+     "size": "l"
+    }
+   ]
+  },
+  {
+   "key": "teams",
+   "tab": "TEAMS",
+   "title": "TEAMS",
+   "path": "/bf6/experience/teams",
+   "url": "https://portal.battlefield.com/bf6/experience/teams?teams=1%2C2",
+   "testIds": [],
+   "settings": [
+    {
+     "testId": "title:ASSIGN TEAMS WITH CUSTOM LOGIC",
+     "title": "Assign Teams with Custom Logic",
+     "caption": "Enable to allow full control of teams assignment during gameplay via custom logic.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": true,
+     "perTeam": false
+    },
+    {
+     "testId": "title:BOT COUNT",
+     "title": "Bot Count",
+     "caption": "Sets the maximum number of static AI, this setting is not used for Backfill AI. The site does not publish this one's range, so the panel takes a number until it has read the page.",
+     "kind": "text",
+     "default": "",
+     "byTitle": true,
+     "perTeam": false
+    },
+    {
+     "testId": "title:BOT SPAWN TYPE",
+     "title": "Bot Spawn Type",
+     "caption": "Controls which type of AI to spawn. Backfill AI will automatically spawn and can be replaced by human players. Static AI is a fixed number that cannot be replaced, for Solo or Co-op experiences.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 0,
+       "label": "No Bots"
+      },
+      {
+       "value": 2,
+       "label": "Backfill"
+      },
+      {
+       "value": 1,
+       "label": "Static"
+      }
+     ],
+     "default": 0,
+     "byTitle": true,
+     "perTeam": false
+    },
+    {
+     "testId": "FactionID_PerTeam",
+     "title": "FACTION",
+     "caption": "Sets the faction for each team.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": -1865993703,
+       "label": "PAX"
+      },
+      {
+       "value": 0,
+       "label": "Map Default"
+      },
+      {
+       "value": 607944106,
+       "label": "NATO"
+      }
+     ],
+     "default": 0,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "FriendlyFireAllowed_PerTeam",
+     "title": "FRIENDLY FIRE",
+     "caption": "Controls whether damage will be applied to allies.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "title:HUMAN PLAYERS",
+     "title": "Human Players",
+     "caption": "Max Player Count Per Team",
+     "kind": "slider",
+     "min": 0,
+     "max": 64,
+     "step": 1,
+     "default": 16,
+     "byTitle": true,
+     "perTeam": false
+    },
+    {
+     "testId": "title:MAXIMUM GAME SIZE",
+     "title": "Maximum Game Size",
+     "caption": "Total number of participants allowed in a game session, including both the maximum number of human players and any static bots.",
+     "kind": "slider",
+     "min": 1,
+     "max": 64,
+     "step": 2,
+     "default": 32,
+     "byTitle": true,
+     "perTeam": false
+    },
+    {
+     "testId": "title:NUMBER OF TEAMS",
+     "title": "Number of Teams",
+     "caption": "Sets the numbers of teams that will be in the match.",
+     "kind": "slider",
+     "min": 2,
+     "max": 64,
+     "step": 1,
+     "default": 2,
+     "byTitle": true,
+     "perTeam": false
+    },
+    {
+     "testId": "DamageMultiplier_PerTeam",
+     "title": "PLAYER DAMAGE MULTIPLIER",
+     "caption": "Multiplies damage from all sources. Values less than 1.0 reduce damage from all sources, while values greater than 1.0 increase damage.",
+     "kind": "slider",
+     "min": 0,
+     "max": 500,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SquadReviveAllowed_PerTeam",
+     "title": "SQUAD REVIVE",
+     "caption": "Controls whether soldiers in a squad can revive other players in the squad, regardless of class or gadget.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SquadSpawnMode_PerTeam",
+     "title": "SQUAD SPAWN TYPE",
+     "caption": "Controls the rules for Squad Spawning, for squad members and squad leaders.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 0,
+       "label": "All"
+      },
+      {
+       "value": 1,
+       "label": "Squadmates on Leader; Leader None"
+      },
+      {
+       "value": 2,
+       "label": "Squadmates on Leader; Leader All"
+      },
+      {
+       "value": 3,
+       "label": "Disabled"
+      }
+     ],
+     "default": 0,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "title:SERVER TEAM FILL BEHAVIOR",
+     "title": "Server Team Fill Behavior",
+     "caption": "Server Team Fill Behavior",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 1,
+       "label": "Even Numbers"
+      },
+      {
+       "value": 2,
+       "label": "Even Percentage"
+      },
+      {
+       "value": 3,
+       "label": "Fill in Team Order"
+      }
+     ],
+     "default": 1,
+     "byTitle": true,
+     "perTeam": false
+    },
+    {
+     "testId": "SquadSize_PerTeam",
+     "title": "Squad Size",
+     "caption": "Sets the maximum number of members per squad.",
+     "kind": "slider",
+     "min": 1,
+     "max": 4,
+     "step": 1,
+     "default": 4,
+     "byTitle": false,
+     "perTeam": true
+    }
+   ]
+  },
+  {
+   "key": "mod-gameplay",
+   "tab": "MODIFIERS",
+   "title": "GAMEPLAY",
+   "path": "/bf6/experience/modifiers/gameplay",
+   "url": "https://portal.battlefield.com/bf6/experience/modifiers/gameplay?teams=1%2C2",
+   "testIds": [],
+   "settings": [
+    {
+     "testId": "AimAssistSlowdownEnabled",
+     "title": "AIM ASSIST",
+     "caption": "Controls whether Aim Assist is allowed for players using the Aim Assist option. When this is set to OFF, the crosshair will not adjust its speed when tracking over an enemy player.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "AimAssistSnapZoomEnabled",
+     "title": "AIM ASSIST ZOOM SNAP",
+     "caption": "Controls whether Snap-to-target is used for Aim Assisted players. When this is set to OFF, the crosshair will not snap to a nearby target when entering ADS.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "EnableClassLockedWeaponLoadouts",
+     "title": "CLASS LOCK WEAPONS",
+     "caption": "If enabled, all soldier kits will use their class locked  weapon loadout variants instead of the normal open weapon pool loadouts.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "DisableVehicle3p",
+     "title": "DISABLE THIRD PERSON VIEW",
+     "caption": "Disables the third person view on vehicles.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "DarkMode",
+     "title": "Dark Mode",
+     "caption": "Enables Dark Mode.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "IsGasMaskEnabled_Alliance",
+     "title": "Enable Gas Mask - NATO",
+     "caption": "Enables Gas Mask for NATO Faction.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "IsGasMaskEnabled_Coalition",
+     "title": "Enable Gas Mask - PAX",
+     "caption": "Enables Gas Mask for Pax Faction.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "FreezeInWaterModifyer",
+     "title": "Freeze Build-Up In Water",
+     "caption": "Freeze build-up amount while in water.",
+     "kind": "slider",
+     "min": 0,
+     "max": 10,
+     "step": 0.1,
+     "default": 5,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "FreezeModifyer",
+     "title": "Freeze Build-Up While Moving",
+     "caption": "Freeze build-up amount while moving.",
+     "kind": "slider",
+     "min": 0,
+     "max": 10,
+     "step": 0.1,
+     "default": 1.7,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "FreezeSprintingModifyer",
+     "title": "Freeze Build-Up While Sprinting",
+     "caption": "Freeze build up amount while sprinting.",
+     "kind": "slider",
+     "min": 0,
+     "max": 10,
+     "step": 0.1,
+     "default": 1.2,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "FreezeNotMovingModifyer",
+     "title": "Freeze Build-Up While Stationary",
+     "caption": "Freeze build-up amount while not moving.",
+     "kind": "slider",
+     "min": 0,
+     "max": 10,
+     "step": 0.1,
+     "default": 2.5,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "FreezeDamageInterval",
+     "title": "Freeze Damage Interval",
+     "caption": "Freeze damage tick interval.",
+     "kind": "slider",
+     "min": 0,
+     "max": 30,
+     "step": 1,
+     "default": 4,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "FreezeMaxAmount",
+     "title": "Freeze Max Amount",
+     "caption": "Sets maximum amount of time required to fully build freeze status.",
+     "kind": "slider",
+     "min": 0,
+     "max": 5000,
+     "step": 0.1,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "Freeze_SpawnProtectionTime",
+     "title": "Freeze Spawn Protection Time",
+     "caption": "Freeze build up immunity window after deploying.",
+     "kind": "slider",
+     "min": 0,
+     "max": 10,
+     "step": 1,
+     "default": 5,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "Portal_GolmudRailway_Variant",
+     "title": "GOLMUD TRAIN VARIANT",
+     "caption": "Sets which train variant will appear in the Railway to Golmud map.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 0,
+       "label": "None"
+      },
+      {
+       "value": 1,
+       "label": "Moving Train"
+      },
+      {
+       "value": 2,
+       "label": "Static Train (Breakthrough)"
+      },
+      {
+       "value": 3,
+       "label": "Static Train (Rush)"
+      }
+     ],
+     "default": 0,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "Heat_LargeModifier",
+     "title": "Large Heat Source Modifier",
+     "caption": "Heat build-up for large heat sources (Heat barrel, incendiary grenades, etc).",
+     "kind": "slider",
+     "min": 0,
+     "max": 100,
+     "step": 0.1,
+     "default": 19,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "Vehicle_AllowPassengers",
+     "title": "PASSENGER SEATS",
+     "caption": "Controls whether vehicles take passengers.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "ProjectileSpeedMultiplier",
+     "title": "PROJECTILE SPEED MULTIPLIER",
+     "caption": "Multiplies the speed of all projectiles. Values smaller than 100% will slow projectiles, values larger than 100% will increase the speed.",
+     "kind": "slider",
+     "min": 50,
+     "max": 500,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "FriendlyFireDamageReflectionEnabled",
+     "title": "REFLECT FRIENDLY FIRE DAMAGE",
+     "caption": "If the FRIENDLY FIRE modifier is enabled all damage to allies will be reflected back to a player after they kill two allies. Resets after 90 seconds.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "ReloadWholeWeaponMagazines",
+     "title": "RELOAD WHOLE MAGAZINES",
+     "caption": "Controls whether reloading a magazine causes the soldier or vehicle to lose any remaining ammo within the currently loaded magazine.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "ScoreboardType",
+     "title": "SCOREBOARD TYPE",
+     "caption": "Controls what type of scoreboard layout to use.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 0,
+       "label": "Not Set"
+      },
+      {
+       "value": 1,
+       "label": "Default FFA"
+      },
+      {
+       "value": 2,
+       "label": "Off"
+      },
+      {
+       "value": 3,
+       "label": "Custom Two Teams"
+      },
+      {
+       "value": 4,
+       "label": "Custom FFA"
+      }
+     ],
+     "default": 1,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "Portal_UseSharedAmmo",
+     "title": "SHARED AMMO",
+     "caption": "Controls whether the soldier uses the default inventory or the Battle Royale inventory.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "SpottingAllowed",
+     "title": "SPOTTING",
+     "caption": "Controls whether spotting is allowed for players.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "StationaryEmplacementsAllowed",
+     "title": "STATIONARY WEAPON EMPLACEMENTS",
+     "caption": "Controls whether Stationary Weapon Emplacements should appear in the map (where applicable).",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "Portal_GenerateNavMesh",
+     "title": "SUPPORT AI NAVIGATION",
+     "caption": "Controls whether AI can navigate the map, turning it off will decrease loading times.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "Heat_SmallModifier",
+     "title": "Small Heat Source Modifier",
+     "caption": "Heat build-up amount for small heat source (blow torch).",
+     "kind": "slider",
+     "min": 0,
+     "max": 20,
+     "step": 0.1,
+     "default": 2,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "Portal_AllowSprays",
+     "title": "Sprays",
+     "caption": "Enables or disables the use of sprays.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "WinterShader",
+     "title": "Winter Atmosphere",
+     "caption": "Enables the screen effect, map visuals and audio for the Empire State map.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "WinterMode",
+     "title": "Winter Mode",
+     "caption": "Enables Freeze Mechanic.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "bPortalRestrictedGameFeedback",
+     "title": "bPortalRestrictedGameFeedback",
+     "caption": "Controls the degree of feedback given to the player via audio or visual cues.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": false
+    }
+   ]
+  },
+  {
+   "key": "mod-soldier",
+   "tab": "MODIFIERS",
+   "title": "SOLDIER",
+   "path": "/bf6/experience/modifiers/soldier",
+   "url": "https://portal.battlefield.com/bf6/experience/modifiers/soldier?teams=1%2C2",
+   "testIds": [],
+   "settings": [
+    {
+     "testId": "BodyshotMultiplier_PerTeam",
+     "title": "BODY SHOT DAMAGE MULTIPLIER",
+     "caption": "Multiplies the damage dealt when successfully landing a body shot. Note that this modifier combines with other damage modifiers.",
+     "kind": "slider",
+     "min": 0,
+     "max": 400,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "FallDamageHeightMultiplier_PerTeam",
+     "title": "FALL DAMAGE MULTIPLIER",
+     "caption": "Multiplies damage taken from falling. Values lower than 100% reduce damage, while values greater than 100% increase damage.",
+     "kind": "slider",
+     "min": 0,
+     "max": 200,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "HeadshotMultiplier_PerTeam",
+     "title": "HEADSHOT DAMAGE MULTIPLIER",
+     "caption": "Multiplies the damage dealt when successfully landing a headshot. Note that this modifier combines with other damage modifiers.",
+     "kind": "slider",
+     "min": 0,
+     "max": 400,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "InfiniteWeaponAmmo_PerTeam",
+     "title": "INFINITE AMMO",
+     "caption": "Controls whether soldier weapons have infinite ammo and never need to reload.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "InfiniteWeaponMagazines_PerTeam",
+     "title": "INFINITE WEAPON MAGAZINES",
+     "caption": "Control if primary and secondary weapons have infinite magazines.",
+     "kind": "toggle",
+     "default": false,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "ManDownExperienceType_PerTeam",
+     "title": "MAN-DOWN TYPE",
+     "caption": "Determines the Man-Down behavior when a soldier is downed.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 0,
+       "label": "Crawl"
+      },
+      {
+       "value": 1,
+       "label": "Downed"
+      },
+      {
+       "value": 2,
+       "label": "Instant Death"
+      }
+     ],
+     "default": 1,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "OnFootSpawnAllowed_PerTeam",
+     "title": "ON-FOOT DEPLOYMENT",
+     "caption": "Controls whether players are allowed to deploy on foot as a soldier.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "ProneAllowed_PerTeam",
+     "title": "PRONE",
+     "caption": "Controls whether soldiers can go prone.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SlideAllowed_PerTeam",
+     "title": "SLIDE",
+     "caption": "Controls whether soldiers can slide.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SoldierHealthRegenAllowed_PerTeam",
+     "title": "SOLDIER HEALTH REGENERATION",
+     "caption": "Controls whether soldiers regenerate health over time after not taking damage.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SoldierRegenRateMultiplier_PerTeam",
+     "title": "SOLDIER HEALTH REGENERATION RATE",
+     "caption": "Controls the timing for soldier health regeneration. Values less than 100% slow the time it takes to regenerate to full health, while values greater than 100% regenerate health more quickly.",
+     "kind": "slider",
+     "min": 10,
+     "max": 1000,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SoldierMaxHealthMultiplier_PerTeam",
+     "title": "SOLDIER MAXIMUM HEALTH MULTIPLIER",
+     "caption": "Multiplies soldier maximum health. Values less than 100% reduce health, while values greater than 100% increase it.",
+     "kind": "slider",
+     "min": 10,
+     "max": 500,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SoldierMovementSpeedMultiplier_PerTeam",
+     "title": "SOLDIER MOVE SPEED MULTIPLIER",
+     "caption": "Controls the default speed of Soldier movement, which can then be multiplied by other movement types. Values less than 100% slow down soldier movement, while values greater than 100% increase movement speed.",
+     "kind": "slider",
+     "min": 80,
+     "max": 120,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SoldierRespawnDelayMultiplier_PerTeam",
+     "title": "SOLDIER REDEPLOY DELAY MULTIPLIER",
+     "caption": "Multiplies the time it takes for soldiers to redeploy. Values less than 100% allow soldiers to redeploy more quickly, while values greater than 100% force soldiers to wait longer before redeploying.",
+     "kind": "slider",
+     "min": 0,
+     "max": 1800,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SprintAllowed_PerTeam",
+     "title": "SPRINT",
+     "caption": "Controls whether soldiers are allowed to sprint.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "SprintStrafeAllowed_PerTeam",
+     "title": "STRAFE WHILE SPRINTING",
+     "caption": "Controls whether soldiers are allowed to strafe laterally while sprinting.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    }
+   ]
+  },
+  {
+   "key": "mod-vehicle",
+   "tab": "MODIFIERS",
+   "title": "VEHICLE",
+   "path": "/bf6/experience/modifiers/vehicle",
+   "url": "https://portal.battlefield.com/bf6/experience/modifiers/vehicle?teams=1%2C2",
+   "testIds": [],
+   "settings": [
+    {
+     "testId": "ExitVehiclesAllowed_PerTeam",
+     "title": "EXITING VEHICLES",
+     "caption": "Controls whether players inside a vehicle can exit the vehicle. When this is set to OFF, players in a vehicle must remain in the vehicle.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "VehicleDamageMultiplier_PerTeam",
+     "title": "VEHICLE DAMAGE MULTIPLIER",
+     "caption": "Multiplies the damage output of vehicles. Note that this modifier combines with other damage modifiers.",
+     "kind": "slider",
+     "min": 0,
+     "max": 500,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "VehicleHealthRegenAllowed_PerTeam",
+     "title": "VEHICLE HEALTH REGENERATION",
+     "caption": "Controls whether vehicles regenerate health over time after not taking damage.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "VehicleRegenRateMultiplier_PerTeam",
+     "title": "VEHICLE HEALTH REGENERATION RATE",
+     "caption": "Controls the timing for vehicle health regeneration. Values less than 100% slow the time it takes to regenerate to full health, while values greater than 100% regenerate health more quickly for all vehicles.",
+     "kind": "slider",
+     "min": 10,
+     "max": 1000,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "VehicleMaxHealthMultiplier_PerTeam",
+     "title": "VEHICLE MAXIMUM HEALTH MULTIPLIER",
+     "caption": "Multiplies the maximum health of all vehicles. Values less than 100% reduces the health of all vehicles, while values greater than 100% increases it.",
+     "kind": "slider",
+     "min": 10,
+     "max": 350,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "Portal_KitsLimit_VehicleSpawnDelayMultiplier_PerTeam",
+     "title": "VEHICLE SPAWN DELAY MULTIPLIER",
+     "caption": "Multiplies the default timer that spawns or respawns vehicles. Values below 100% make spawns faster, values above 100% delay spawns for longer.",
+     "kind": "slider",
+     "min": 20,
+     "max": 500,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    }
+   ]
+  },
+  {
+   "key": "mod-ui",
+   "tab": "MODIFIERS",
+   "title": "UI",
+   "path": "/bf6/experience/modifiers/ui",
+   "url": "https://portal.battlefield.com/bf6/experience/modifiers/ui?teams=1%2C2",
+   "testIds": [
+    "publish-button",
+    "FriendlyIdentificationAllowed_PerTeam",
+    "FriendlyIdentificationAllowed_PerTeam-switch-0",
+    "CompassAllowed_PerTeam",
+    "CompassAllowed_PerTeam-switch-0",
+    "CrosshairsAllowed_PerTeam",
+    "CrosshairsAllowed_PerTeam-switch-0",
+    "HUDAllowed_PerTeam",
+    "HUDAllowed_PerTeam-switch-0",
+    "MinimapAllowed_PerTeam",
+    "MinimapAllowed_PerTeam-switch-0",
+    "PingBehavior_PerTeam",
+    "next-button"
+   ],
+   "settings": [
+    {
+     "testId": "FriendlyIdentificationAllowed_PerTeam",
+     "title": "ALLY IDENTIFICATION",
+     "caption": "Controls whether allies are visibly marked as allies when viewed in-game.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "CompassAllowed_PerTeam",
+     "title": "COMPASS",
+     "caption": "Controls whether the Compass is displayed in the HUD.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "CrosshairsAllowed_PerTeam",
+     "title": "CROSSHAIR ALLOWED",
+     "caption": "Controls whether crosshairs are disabled for players.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "HUDAllowed_PerTeam",
+     "title": "HUD",
+     "caption": "Controls whether players have a Heads-Up Display. Does not disable the Full Map.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "MinimapAllowed_PerTeam",
+     "title": "MINIMAP",
+     "caption": "Controls whether the Minimap is displayed in the HUD.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "PingBehavior_PerTeam",
+     "title": "PING BEHAVIOR",
+     "caption": "Determines the behavior of the Ping command.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 0,
+       "label": "Ping Targets"
+      },
+      {
+       "value": 2,
+       "label": "Disabled"
+      }
+     ],
+     "default": 0,
+     "byTitle": false,
+     "perTeam": true
+    }
+   ]
+  },
+  {
+   "key": "mod-ai",
+   "tab": "MODIFIERS",
+   "title": "BOTS",
+   "path": "/bf6/experience/modifiers/bots",
+   "url": "https://portal.battlefield.com/bf6/experience/modifiers/bots?teams=1%2C2",
+   "testIds": [
+    "publish-button",
+    "AI_Vehicle_AllowAiInPassengerSeats",
+    "AI_Vehicle_AllowAiInPassengerSeats-switch-0",
+    "AI_ProneAllowed_PerTeam",
+    "AI_ProneAllowed_PerTeam-switch-0",
+    "AI_SlideAllowed_PerTeam",
+    "AI_SlideAllowed_PerTeam-switch-0",
+    "AI_SoldierMovementSpeedMultiplier_PerTeam",
+    "AI_SprintAllowed_PerTeam",
+    "AI_SprintAllowed_PerTeam-switch-0",
+    "AI_DamageMultiplier_PerTeam",
+    "AI_SoldierRegenRateMultiplier_PerTeam",
+    "AI_ManDownExperienceType_PerTeam",
+    "AI_OnFootSpawnAllowed_PerTeam",
+    "AI_OnFootSpawnAllowed_PerTeam-switch-0",
+    "AI_SoldierRespawnDelayMultiplier_PerTeam",
+    "AI_SoldierHealthRegenAllowed_PerTeam",
+    "AI_SoldierHealthRegenAllowed_PerTeam-switch-0",
+    "AI_SoldierMaxHealthMultiplier_PerTeam",
+    "AI_SquadReviveAllowed_PerTeam",
+    "AI_SquadReviveAllowed_PerTeam-switch-0",
+    "AI_SquadSpawnMode_PerTeam",
+    "AI_ExitVehiclesAllowed_PerTeam",
+    "AI_ExitVehiclesAllowed_PerTeam-switch-0",
+    "AI_VehicleDamageMultiplier_PerTeam",
+    "next-button"
+   ],
+   "settings": [
+    {
+     "testId": "AI_DamageMultiplier_PerTeam",
+     "title": "AI DAMAGE MULTIPLIER",
+     "caption": "Multiplies AI damage output from all sources.",
+     "kind": "slider",
+     "min": 0,
+     "max": 500,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_ExitVehiclesAllowed_PerTeam",
+     "title": "AI EXITING VEHICLES",
+     "caption": "Controls whether AI soldiers inside a vehicle can exit the vehicle. When this is set to OFF, AI soldiers in a vehicle must remain in the vehicle.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SoldierRegenRateMultiplier_PerTeam",
+     "title": "AI HEALTH REGENERATION RATE",
+     "caption": "Controls the timing for AI soldier health regeneration. Values less than 100% slow the time it takes to regenerate AI soldiers to full health, while values greater than 100% regenerate health more quickly.",
+     "kind": "slider",
+     "min": 10,
+     "max": 1000,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_ManDownExperienceType_PerTeam",
+     "title": "AI MAN-DOWN TYPE",
+     "caption": "Determines the Man-Down behavior when an AI soldier is downed.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 0,
+       "label": "Crawl"
+      },
+      {
+       "value": 1,
+       "label": "Downed"
+      },
+      {
+       "value": 2,
+       "label": "Instant Death"
+      }
+     ],
+     "default": 1,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_OnFootSpawnAllowed_PerTeam",
+     "title": "AI ON-FOOT DEPLOYMENT",
+     "caption": "Controls whether AI are allowed to deploy on foot as soldiers.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_Vehicle_AllowAiInPassengerSeats",
+     "title": "AI PASSENGER SEATS",
+     "caption": "Controls whether vehicles take AI passengers.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": false
+    },
+    {
+     "testId": "AI_ProneAllowed_PerTeam",
+     "title": "AI PRONE",
+     "caption": "Controls whether AI soldiers can go prone.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SoldierRespawnDelayMultiplier_PerTeam",
+     "title": "AI REDEPLOY DELAY MULTIPLIER",
+     "caption": "Multiplies the time it takes for AI soldiers to redeploy. Values less than 100% allow AI soldiers to redeploy more quickly, while values greater than 100% force AI soldiers to wait longer before redeploying.",
+     "kind": "slider",
+     "min": 0,
+     "max": 1800,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SlideAllowed_PerTeam",
+     "title": "AI SLIDE",
+     "caption": "Controls whether AI soldiers can slide.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SoldierHealthRegenAllowed_PerTeam",
+     "title": "AI SOLDIER HEALTH REGENERATION",
+     "caption": "Controls whether AI soldiers regenerate health over time after not taking damage.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SoldierMaxHealthMultiplier_PerTeam",
+     "title": "AI SOLDIER MAXIMUM HEALTH MULTIPLIER",
+     "caption": "Multiplies AI soldier maximum health. Values less than 100% reduce AI health, while values greater than 100% increase it.",
+     "kind": "slider",
+     "min": 10,
+     "max": 1000,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SoldierMovementSpeedMultiplier_PerTeam",
+     "title": "AI SOLDIER MOVEMENT SPEED",
+     "caption": "Controls the default speed of AI Soldier movement, which can then be multiplied by other movement types. Values less than 100% slow down AI soldier movement, while values greater than 100% increase movement speed.",
+     "kind": "slider",
+     "min": 80,
+     "max": 120,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SprintAllowed_PerTeam",
+     "title": "AI SPRINT",
+     "caption": "Controls whether AI soldiers are allowed to sprint.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SquadReviveAllowed_PerTeam",
+     "title": "AI SQUAD REVIVE",
+     "caption": "Controls whether AI soldiers in a squad can revive other players in the squad, regardless of class or gadget.",
+     "kind": "toggle",
+     "default": true,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_SquadSpawnMode_PerTeam",
+     "title": "AI SQUAD SPAWN",
+     "caption": "Controls the rules for AI Squad Spawning, for squad members and squad leaders.",
+     "kind": "dropdown",
+     "options": [
+      {
+       "value": 0,
+       "label": "All"
+      },
+      {
+       "value": 1,
+       "label": "Squadmates on Leader; Leader None"
+      },
+      {
+       "value": 2,
+       "label": "Squadmates on Leader; Leader All"
+      },
+      {
+       "value": 3,
+       "label": "Disabled"
+      }
+     ],
+     "default": 0,
+     "byTitle": false,
+     "perTeam": true
+    },
+    {
+     "testId": "AI_VehicleDamageMultiplier_PerTeam",
+     "title": "AI VEHICLE DAMAGE MULTIPLIER",
+     "caption": "Multiplies AI damage output from vehicles.",
+     "kind": "slider",
+     "min": 0,
+     "max": 500,
+     "step": 10,
+     "default": 100,
+     "byTitle": false,
+     "perTeam": true
+    }
+   ]
+  },
+  {
+   "key": "restrict-chars",
+   "tab": "RESTRICTIONS",
+   "title": "CLASSES",
+   "path": "/bf6/experience/restrictions/classes",
+   "url": "https://portal.battlefield.com/bf6/experience/restrictions/classes?teams=1%2C2",
+   "testIds": [],
+   "settings": [],
+   "categories": [
+    {
+     "name": "Classes",
+     "count": 4,
+     "items": [
+      {
+       "label": "Assault Class",
+       "index": 0
+      },
+      {
+       "label": "Engineer Class",
+       "index": 1
+      },
+      {
+       "label": "Recon Class",
+       "index": 2
+      },
+      {
+       "label": "Support Class",
+       "index": 3
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "restrict-weapons",
+   "tab": "RESTRICTIONS",
+   "title": "WEAPONS",
+   "path": "/bf6/experience/restrictions/weapons",
+   "url": "https://portal.battlefield.com/bf6/experience/restrictions/weapons?teams=1%2C2",
+   "testIds": [],
+   "settings": [],
+   "categories": [
+    {
+     "name": "Assault Rifles",
+     "count": 11,
+     "items": [
+      {
+       "label": "KORD 6P67",
+       "index": 0
+      },
+      {
+       "label": "B36A4",
+       "index": 1
+      },
+      {
+       "label": "M433",
+       "index": 2
+      },
+      {
+       "label": "AK4D",
+       "index": 3
+      },
+      {
+       "label": "L85A3",
+       "index": 4
+      },
+      {
+       "label": "NVO-228E",
+       "index": 5
+      },
+      {
+       "label": "SOR-556 Mk2",
+       "index": 6
+      },
+      {
+       "label": "TR-7",
+       "index": 7
+      },
+      {
+       "label": "VCR-2",
+       "index": 8
+      },
+      {
+       "label": "M16A4",
+       "index": 9
+      },
+      {
+       "label": "EF88",
+       "index": 10
+      }
+     ]
+    },
+    {
+     "name": "Carbines",
+     "count": 9,
+     "items": [
+      {
+       "label": "M417 A2",
+       "index": 0
+      },
+      {
+       "label": "AK-205",
+       "index": 1
+      },
+      {
+       "label": "M4A1",
+       "index": 2
+      },
+      {
+       "label": "SOR-300SC",
+       "index": 3
+      },
+      {
+       "label": "GRT-BC",
+       "index": 4
+      },
+      {
+       "label": "QBZ-192",
+       "index": 5
+      },
+      {
+       "label": "M277",
+       "index": 6
+      },
+      {
+       "label": "SG 553R",
+       "index": 7
+      },
+      {
+       "label": "BROD 3",
+       "index": 8
+      }
+     ]
+    },
+    {
+     "name": "DMRs",
+     "count": 6,
+     "items": [
+      {
+       "label": "LMR27",
+       "index": 0
+      },
+      {
+       "label": "M39 EMR",
+       "index": 1
+      },
+      {
+       "label": "SVDM",
+       "index": 2
+      },
+      {
+       "label": "SVK-8.6",
+       "index": 3
+      },
+      {
+       "label": "GRT-CPS",
+       "index": 4
+      },
+      {
+       "label": "VSSM",
+       "index": 5
+      }
+     ]
+    },
+    {
+     "name": "Machine Guns",
+     "count": 10,
+     "items": [
+      {
+       "label": "KTS100 MK8",
+       "index": 0
+      },
+      {
+       "label": "L110",
+       "index": 1
+      },
+      {
+       "label": "DRS-IAR",
+       "index": 2
+      },
+      {
+       "label": "M250",
+       "index": 3
+      },
+      {
+       "label": "M240L",
+       "index": 4
+      },
+      {
+       "label": "M123K",
+       "index": 5
+      },
+      {
+       "label": "M/60",
+       "index": 6
+      },
+      {
+       "label": "RPKM",
+       "index": 7
+      },
+      {
+       "label": "M121 A2",
+       "index": 8
+      },
+      {
+       "label": "RPK-74M",
+       "index": 9
+      }
+     ]
+    },
+    {
+     "name": "Pistols",
+     "count": 7,
+     "items": [
+      {
+       "label": "P18",
+       "index": 0
+      },
+      {
+       "label": "ES 5.7",
+       "index": 1
+      },
+      {
+       "label": "M44",
+       "index": 2
+      },
+      {
+       "label": "M357 Trait",
+       "index": 3
+      },
+      {
+       "label": "M45A1",
+       "index": 4
+      },
+      {
+       "label": "GGH-22",
+       "index": 5
+      },
+      {
+       "label": "vz. 61",
+       "index": 6
+      }
+     ]
+    },
+    {
+     "name": "Rifles",
+     "count": 6,
+     "items": [
+      {
+       "label": "M2010 ESR",
+       "index": 0
+      },
+      {
+       "label": "SV-98",
+       "index": 1
+      },
+      {
+       "label": "PSR",
+       "index": 2
+      },
+      {
+       "label": "Mini Scout",
+       "index": 3
+      },
+      {
+       "label": "L115",
+       "index": 4
+      },
+      {
+       "label": "U_DesertTechHTI",
+       "index": 5
+      }
+     ]
+    },
+    {
+     "name": "Shotguns",
+     "count": 4,
+     "items": [
+      {
+       "label": "M87A1",
+       "index": 0
+      },
+      {
+       "label": "18.5KS-K",
+       "index": 1
+      },
+      {
+       "label": "M1014",
+       "index": 2
+      },
+      {
+       "label": "DB-12",
+       "index": 3
+      }
+     ]
+    },
+    {
+     "name": "SMG-PDWs",
+     "count": 10,
+     "items": [
+      {
+       "label": "USG-90",
+       "index": 0
+      },
+      {
+       "label": "SGX",
+       "index": 1
+      },
+      {
+       "label": "UMG-40",
+       "index": 2
+      },
+      {
+       "label": "KV9",
+       "index": 3
+      },
+      {
+       "label": "PW5A3",
+       "index": 4
+      },
+      {
+       "label": "SL9",
+       "index": 5
+      },
+      {
+       "label": "PW7A2",
+       "index": 6
+      },
+      {
+       "label": "SCW-10",
+       "index": 7
+      },
+      {
+       "label": "CZ3A1",
+       "index": 8
+      },
+      {
+       "label": "PP-19",
+       "index": 9
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "restrict-vehicles",
+   "tab": "RESTRICTIONS",
+   "title": "VEHICLES",
+   "path": "/bf6/experience/restrictions/vehicles",
+   "url": "https://portal.battlefield.com/bf6/experience/restrictions/vehicles?teams=1%2C2",
+   "testIds": [],
+   "settings": [],
+   "categories": [
+    {
+     "name": "Air Combat",
+     "count": 9,
+     "items": [
+      {
+       "label": "AH-6 Little Bird",
+       "index": 0
+      },
+      {
+       "label": "Panthera KHT",
+       "index": 1
+      },
+      {
+       "label": "Su-57",
+       "index": 2
+      },
+      {
+       "label": "F-61V",
+       "index": 3
+      },
+      {
+       "label": "M77E Falchion",
+       "index": 4
+      },
+      {
+       "label": "UH-79",
+       "index": 5
+      },
+      {
+       "label": "F-97 Kestrel",
+       "index": 6
+      },
+      {
+       "label": "F-39E",
+       "index": 7
+      },
+      {
+       "label": "MH-350",
+       "index": 8
+      }
+     ]
+    },
+    {
+     "name": "Ground Combat",
+     "count": 6,
+     "items": [
+      {
+       "label": "GE-26 PAX",
+       "index": 0
+      },
+      {
+       "label": "Strf 09 A4",
+       "index": 1
+      },
+      {
+       "label": "M1A2 SEPv3",
+       "index": 2
+      },
+      {
+       "label": "Cheetah 1A2",
+       "index": 3
+      },
+      {
+       "label": "M3A3 Bradley",
+       "index": 4
+      },
+      {
+       "label": "Leo A4",
+       "index": 5
+      }
+     ]
+    },
+    {
+     "name": "Ground Transport",
+     "count": 7,
+     "items": [
+      {
+       "label": "Golf Cart",
+       "index": 0
+      },
+      {
+       "label": "Rugged MV740",
+       "index": 1
+      },
+      {
+       "label": "Glider 96",
+       "index": 2
+      },
+      {
+       "label": "Traverser Mark 2",
+       "index": 3
+      },
+      {
+       "label": "VECTOR",
+       "index": 4
+      },
+      {
+       "label": "M1030-M1",
+       "index": 5
+      },
+      {
+       "label": "TM/O 450",
+       "index": 6
+      }
+     ]
+    },
+    {
+     "name": "Naval Combat",
+     "count": 2,
+     "items": [
+      {
+       "label": "7.7m NSW RHIB",
+       "index": 0
+      },
+      {
+       "label": "RCB-90",
+       "index": 1
+      }
+     ]
+    },
+    {
+     "name": "Stationary Emplacements",
+     "count": 3,
+     "items": [
+      {
+       "label": "Ma Deuce",
+       "index": 0
+      },
+      {
+       "label": "GDF-009",
+       "index": 1
+      },
+      {
+       "label": "M41A7",
+       "index": 2
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "restrict-gadgets",
+   "tab": "RESTRICTIONS",
+   "title": "GADGETS",
+   "path": "/bf6/experience/restrictions/gadgets",
+   "url": "https://portal.battlefield.com/bf6/experience/restrictions/gadgets?teams=1%2C2",
+   "testIds": [],
+   "settings": [],
+   "categories": [
+    {
+     "name": "Armor",
+     "count": 1,
+     "items": [
+      {
+       "label": "Upgraded Armor",
+       "index": 0
+      }
+     ]
+    },
+    {
+     "name": "Class Gadgets",
+     "count": 5,
+     "items": [
+      {
+       "label": "T-UGS",
+       "index": 0
+      },
+      {
+       "label": "HOFF-1500",
+       "index": 1
+      },
+      {
+       "label": "Goliath 90L",
+       "index": 2
+      },
+      {
+       "label": "AJ-03 STIM",
+       "index": 3
+      },
+      {
+       "label": "Mobile Jammer",
+       "index": 4
+      }
+     ]
+    },
+    {
+     "name": "Deployable Gadgets",
+     "count": 11,
+     "items": [
+      {
+       "label": "QLink 6",
+       "index": 0
+      },
+      {
+       "label": "Mobile Redeploy",
+       "index": 1
+      },
+      {
+       "label": "MaxGuard 900",
+       "index": 2
+      },
+      {
+       "label": "GPDIS",
+       "index": 3
+      },
+      {
+       "label": "LWCMS",
+       "index": 4
+      },
+      {
+       "label": "XFGM-6D",
+       "index": 5
+      },
+      {
+       "label": "Field Dummy No.25",
+       "index": 6
+      },
+      {
+       "label": "MP-APS",
+       "index": 7
+      },
+      {
+       "label": "CSB IV",
+       "index": 8
+      },
+      {
+       "label": "Tarantula ALX",
+       "index": 9
+      },
+      {
+       "label": "CSS Bundle",
+       "index": 10
+      }
+     ]
+    },
+    {
+     "name": "Explosives",
+     "count": 5,
+     "items": [
+      {
+       "label": "M15",
+       "index": 0
+      },
+      {
+       "label": "C-4 Explosives",
+       "index": 1
+      },
+      {
+       "label": "PTKM-1R",
+       "index": 2
+      },
+      {
+       "label": "M4A1 SLAM",
+       "index": 3
+      },
+      {
+       "label": "M18A1",
+       "index": 4
+      }
+     ]
+    },
+    {
+     "name": "Grenade Launchers",
+     "count": 9,
+     "items": [
+      {
+       "label": "M320A1 SMK",
+       "index": 0
+      },
+      {
+       "label": "M320A1 SMK",
+       "index": 1
+      },
+      {
+       "label": "M320 Flash Grenade",
+       "index": 2
+      },
+      {
+       "label": "M320A1 THRM",
+       "index": 3
+      },
+      {
+       "label": "X95 BRE",
+       "index": 4
+      },
+      {
+       "label": "M320 LVG",
+       "index": 5
+      },
+      {
+       "label": "M320A1 HE",
+       "index": 6
+      },
+      {
+       "label": "Sich G1 WP",
+       "index": 7
+      },
+      {
+       "label": "X95 BRE",
+       "index": 8
+      }
+     ]
+    },
+    {
+     "name": "Launchers",
+     "count": 6,
+     "items": [
+      {
+       "label": "SLM-93A",
+       "index": 0
+      },
+      {
+       "label": "MAS 148 Glaive",
+       "index": 1
+      },
+      {
+       "label": "RPG-7V2",
+       "index": 2
+      },
+      {
+       "label": "9K38 Igla",
+       "index": 3
+      },
+      {
+       "label": "M136 AT",
+       "index": 4
+      },
+      {
+       "label": "MBT-LAW",
+       "index": 5
+      }
+     ]
+    },
+    {
+     "name": "Melee Weapons",
+     "count": 7,
+     "items": [
+      {
+       "label": "KBR Mark II",
+       "index": 0
+      },
+      {
+       "label": "14LB Sledgehammer",
+       "index": 1
+      },
+      {
+       "label": "Bighorn HK-16",
+       "index": 2
+      },
+      {
+       "label": "Nomad CX-12",
+       "index": 3
+      },
+      {
+       "label": "Kapok 14\"",
+       "index": 4
+      },
+      {
+       "label": "Ripper 14\"",
+       "index": 5
+      },
+      {
+       "label": "EOD Bot Arm",
+       "index": 6
+      }
+     ]
+    },
+    {
+     "name": "Misc. Equipment",
+     "count": 7,
+     "items": [
+      {
+       "label": "TRCRv2",
+       "index": 0
+      },
+      {
+       "label": "SS26",
+       "index": 1
+      },
+      {
+       "label": "SS26",
+       "index": 2
+      },
+      {
+       "label": "LTLM II",
+       "index": 3
+      },
+      {
+       "label": "PowerPulse",
+       "index": 4
+      },
+      {
+       "label": "Goliath Compact",
+       "index": 5
+      },
+      {
+       "label": "HTI-Mk2",
+       "index": 6
+      }
+     ]
+    },
+    {
+     "name": "Strike Packages",
+     "count": 11,
+     "items": [
+      {
+       "label": "Weapon Drop",
+       "index": 0
+      },
+      {
+       "label": "Air Strike",
+       "index": 1
+      },
+      {
+       "label": "Anti-Vehicle Drop",
+       "index": 2
+      },
+      {
+       "label": "UAV Overwatch",
+       "index": 3
+      },
+      {
+       "label": "Artillery Strike",
+       "index": 4
+      },
+      {
+       "label": "Mortar Strike",
+       "index": 5
+      },
+      {
+       "label": "Smoke Screen",
+       "index": 6
+      },
+      {
+       "label": "Ammo Drop",
+       "index": 7
+      },
+      {
+       "label": "Armor Drop Supply",
+       "index": 8
+      },
+      {
+       "label": "VL7 Strike",
+       "index": 9
+      },
+      {
+       "label": "JAGM Strike",
+       "index": 10
+      }
+     ]
+    },
+    {
+     "name": "Throwables",
+     "count": 9,
+     "items": [
+      {
+       "label": "AN/M14",
+       "index": 0
+      },
+      {
+       "label": "M67",
+       "index": 1
+      },
+      {
+       "label": "M18",
+       "index": 2
+      },
+      {
+       "label": "MTN-55",
+       "index": 3
+      },
+      {
+       "label": "SCG-24",
+       "index": 4
+      },
+      {
+       "label": "Steel Wing",
+       "index": 5
+      },
+      {
+       "label": "M84",
+       "index": 6
+      },
+      {
+       "label": "Mk 141 Mod 0",
+       "index": 7
+      },
+      {
+       "label": "V40",
+       "index": 8
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "publish-1",
+   "tab": "PUBLISH",
+   "title": "STEP ONE",
+   "path": "/bf6/experience/publish/step-one",
+   "url": "https://portal.battlefield.com/bf6/experience/publish/step-one?teams=1%2C2",
+   "testIds": [
+    "playground-name-input",
+    "playground-description-input",
+    "next-button"
+   ],
+   "settings": [],
+   "fields": [
+    {
+     "testId": "playground-name-input",
+     "title": "NAME",
+     "kind": "text",
+     "caption": "The experience name, up to 64 characters. Step one of publish.",
+     "maxLength": 64
+    },
+    {
+     "testId": "playground-description-input",
+     "title": "DESCRIPTION",
+     "kind": "text",
+     "caption": "The experience description, up to 256 characters. Step one of publish.",
+     "maxLength": 256
+    }
+   ]
+  },
+  {
+   "key": "publish-2",
+   "tab": "PUBLISH",
+   "title": "STEP TWO",
+   "path": "/bf6/experience/publish/step-two",
+   "url": "https://portal.battlefield.com/bf6/experience/publish/step-two?teams=1%2C2",
+   "testIds": [
+    "next-button"
+   ],
+   "settings": [],
+   "fields": [
+    {
+     "testId": "thumbnail",
+     "title": "THUMBNAIL",
+     "kind": "thumbnail",
+     "caption": "Select an image to represent your experience. The tool's THUMBNAIL panel builds a 352 x 248 JPEG under 78 KB and hands it to the site's own picker."
+    }
+   ]
+  },
+  {
+   "key": "publish-3",
+   "tab": "PUBLISH",
+   "title": "STEP THREE",
+   "path": "/bf6/experience/publish/step-three",
+   "url": "https://portal.battlefield.com/bf6/experience/publish/step-three?teams=1%2C2",
+   "testIds": [
+    "playground-name-input",
+    "playground-description-input"
+   ],
+   "settings": [],
+   "fields": [
+    {
+     "testId": "playground-name-input",
+     "title": "NAME",
+     "kind": "text",
+     "caption": "Review the name before publishing.",
+     "maxLength": 64
+    },
+    {
+     "testId": "playground-description-input",
+     "title": "DESCRIPTION",
+     "kind": "text",
+     "caption": "Review the description before publishing.",
+     "maxLength": 256
+    },
+    {
+     "testId": "publish-button",
+     "title": "PUBLISH",
+     "kind": "action",
+     "caption": "The site's own publish button. The tool never presses it: publishing is your click."
+    }
+   ]
+  }
+ ]
+}

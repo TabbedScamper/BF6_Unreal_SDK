@@ -25,7 +25,13 @@ public class BF6UnrealSDK : ModuleRules
 			"InputCore",
 			"WorkspaceMenuStructure",   // the Window > Tools menu group
 			"ImageWrapper",             // decode the map thumbnail images for Slate
-			"HTTP"                      // update check + download from GitHub releases
+			"VorbisAudioDecoder",       // play a recorded sound without the add-on
+			"TargetPlatform",           // FSoundQualityInfo, which the decoder fills in
+			"HTTP",                     // update check + download from GitHub releases
+			// ---- BF6PortalWeb ----
+			"WebBrowser",               // SWebBrowser / CEF: the Portal site panel
+			"ApplicationCore"           // clipboard for the export path
+			// ---- end BF6PortalWeb ----
 		});
 
 		if (Target.bBuildEditor)

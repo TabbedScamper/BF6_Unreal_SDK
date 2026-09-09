@@ -1,0 +1,4997 @@
+{
+	"contents": [
+		{
+			"kind": "CATEGORY",
+			"cssconfig":
+			{
+				"icon": "search"
+			},
+			"colour": "#004444",
+			"expanded": "false",
+			"name": "SEARCH RESULTS",
+			"hidden": "true",
+			"toolboxitemid": "9a001e77-4c0b-49bd-b547-e85719d3f7d9"
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ruleBlock"
+					},
+					"type": "ruleBlock",
+					"displayName": "RULE"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "conditionBlock"
+					},
+					"type": "conditionBlock",
+					"displayName": "Condition"
+				}
+			],
+			"name": "RULES",
+			"categorystyle": "rules-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-rules"
+			}
+		},
+		{
+			"kind": "SEP"
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "BEHAVIOR"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIBattlefieldBehavior"
+					},
+					"type": "AIBattlefieldBehavior"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIDefendPositionBehavior"
+					},
+					"type": "AIDefendPositionBehavior"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIIdleBehavior"
+					},
+					"type": "AIIdleBehavior"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AILOSMoveToBehavior"
+					},
+					"type": "AILOSMoveToBehavior"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIMoveToBehavior"
+					},
+					"type": "AIMoveToBehavior"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIParachuteBehavior"
+					},
+					"type": "AIParachuteBehavior"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIValidatedMoveToBehavior"
+					},
+					"type": "AIValidatedMoveToBehavior"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIWaypointIdleBehavior"
+					},
+					"type": "AIWaypointIdleBehavior"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetAiInput"
+					},
+					"type": "SetAiInput"
+				},
+				{
+					"kind": "LABEL",
+					"text": "DEPLOY"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AISetUnspawnOnDead"
+					},
+					"type": "AISetUnspawnOnDead"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUnspawnDelayInSeconds"
+					},
+					"type": "SetUnspawnDelayInSeconds"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SpawnAIFromAISpawner"
+					},
+					"type": "SpawnAIFromAISpawner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UnspawnAllAIsFromAISpawner"
+					},
+					"type": "UnspawnAllAIsFromAISpawner"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIEnableShooting"
+					},
+					"type": "AIEnableShooting"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIEnableTargeting"
+					},
+					"type": "AIEnableTargeting"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIForceFire"
+					},
+					"type": "AIForceFire"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIGadgetSettings"
+					},
+					"type": "AIGadgetSettings"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AISetFocusPoint"
+					},
+					"type": "AISetFocusPoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AISetMoveSpeed"
+					},
+					"type": "AISetMoveSpeed"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AISetStance"
+					},
+					"type": "AISetStance"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AISetTarget"
+					},
+					"type": "AISetTarget"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIStartUsingGadget"
+					},
+					"type": "AIStartUsingGadget"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AIStopUsingGadget"
+					},
+					"type": "AIStopUsingGadget"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetAIToHumanDamageModifier"
+					},
+					"type": "SetAIToHumanDamageModifier"
+				}
+			],
+			"name": "AI",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-ai"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVariableAtIndex"
+					},
+					"type": "SetVariableAtIndex"
+				}
+			],
+			"name": "ARRAYS",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-arrays"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "LoadMusic"
+					},
+					"type": "LoadMusic"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "PlayMusic"
+					},
+					"type": "PlayMusic"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "PlaySound"
+					},
+					"type": "PlaySound"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "PlayVO"
+					},
+					"type": "PlayVO"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetMusicParam"
+					},
+					"type": "SetMusicParam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetSoundAmplitude"
+					},
+					"type": "SetSoundAmplitude"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "StopSound"
+					},
+					"type": "StopSound"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UnloadMusic"
+					},
+					"type": "UnloadMusic"
+				}
+			],
+			"name": "AUDIO",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-audio"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetCameraTypeForAll"
+					},
+					"type": "SetCameraTypeForAll"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetCameraTypeForPlayer"
+					},
+					"type": "SetCameraTypeForPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetFreeCameraCollisionForAll"
+					},
+					"type": "SetFreeCameraCollisionForAll"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetFreeCameraCollisionForPlayer"
+					},
+					"type": "SetFreeCameraCollisionForPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetSpectatingFiltersForAll"
+					},
+					"type": "SetSpectatingFiltersForAll"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetSpectatingFiltersForPlayer"
+					},
+					"type": "SetSpectatingFiltersForPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetThirdPersonCameraPositionForAll"
+					},
+					"type": "SetThirdPersonCameraPositionForAll"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetThirdPersonCameraPositionForPlayer"
+					},
+					"type": "SetThirdPersonCameraPositionForPlayer"
+				}
+			],
+			"name": "CAMERA",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-camera"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "SCREENEFFECTS"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableScreenEffect"
+					},
+					"type": "EnableScreenEffect"
+				},
+				{
+					"kind": "LABEL",
+					"text": "VFX"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableVFX"
+					},
+					"type": "EnableVFX"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MoveVFX"
+					},
+					"type": "MoveVFX"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVFXColor"
+					},
+					"type": "SetVFXColor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVFXScale"
+					},
+					"type": "SetVFXScale"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVFXSpeed"
+					},
+					"type": "SetVFXSpeed"
+				}
+			],
+			"name": "EFFECTS",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-effects"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceEmplacementSpawnerSpawn"
+					},
+					"type": "ForceEmplacementSpawnerSpawn"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetEmplacementSpawnerAbandonVehicleOutOfCombatArea"
+					},
+					"type": "SetEmplacementSpawnerAbandonVehicleOutOfCombatArea"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetEmplacementSpawnerApplyDamageToAbandonVehicle"
+					},
+					"type": "SetEmplacementSpawnerApplyDamageToAbandonVehicle"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetEmplacementSpawnerAutoSpawn"
+					},
+					"type": "SetEmplacementSpawnerAutoSpawn"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetEmplacementSpawnerKeepAliveAbandonRadius"
+					},
+					"type": "SetEmplacementSpawnerKeepAliveAbandonRadius"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetEmplacementSpawnerRespawnTime"
+					},
+					"type": "SetEmplacementSpawnerRespawnTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetEmplacementSpawnerSpawnerRadius"
+					},
+					"type": "SetEmplacementSpawnerSpawnerRadius"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetEmplacementSpawnerTimeUntilAbandon"
+					},
+					"type": "SetEmplacementSpawnerTimeUntilAbandon"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetEmplacementSpawnerType"
+					},
+					"type": "SetEmplacementSpawnerType"
+				}
+			],
+			"name": "EMPLACEMENTS",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-emplacements"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "DEBUG"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SendPortalLogToAdmin"
+					},
+					"type": "SendPortalLogToAdmin"
+				},
+				{
+					"kind": "LABEL",
+					"text": "DEPLOY"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DeployAllPlayers"
+					},
+					"type": "DeployAllPlayers"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableAllPlayerDeploy"
+					},
+					"type": "EnableAllPlayerDeploy"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnablePlayerDeploy"
+					},
+					"type": "EnablePlayerDeploy"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetRedeployTime"
+					},
+					"type": "SetRedeployTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UndeployAllPlayers"
+					},
+					"type": "UndeployAllPlayers"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UndeployPlayer"
+					},
+					"type": "UndeployPlayer"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GAME MODE"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EndGameMode"
+					},
+					"type": "EndGameMode"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "PauseGameModeTime"
+					},
+					"type": "PauseGameModeTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ResetGameModeTime"
+					},
+					"type": "ResetGameModeTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RingOfFireStart"
+					},
+					"type": "RingOfFireStart"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetFriendlyFire"
+					},
+					"type": "SetFriendlyFire"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetGameModeCriteria"
+					},
+					"type": "SetGameModeCriteria"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetGameModeInitialScore"
+					},
+					"type": "SetGameModeInitialScore"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetGameModeScore"
+					},
+					"type": "SetGameModeScore"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetGameModeTargetScore"
+					},
+					"type": "SetGameModeTargetScore"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetGameModeTimeLimit"
+					},
+					"type": "SetGameModeTimeLimit"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetHQTeam"
+					},
+					"type": "SetHQTeam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetRingOfFireDamageAmount"
+					},
+					"type": "SetRingOfFireDamageAmount"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetRingOfFireStableTime"
+					},
+					"type": "SetRingOfFireStableTime"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ApplyAreaImpulseAndDamage"
+					},
+					"type": "ApplyAreaImpulseAndDamage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ApplyImpulse"
+					},
+					"type": "ApplyImpulse"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AutoBalanceTeams"
+					},
+					"type": "AutoBalanceTeams"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DisablePlayerJoin"
+					},
+					"type": "DisablePlayerJoin"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableAreaTrigger"
+					},
+					"type": "EnableAreaTrigger"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableInteractPoint"
+					},
+					"type": "EnableInteractPoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GolmudTrainSendMoveCommand"
+					},
+					"type": "GolmudTrainSendMoveCommand"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RayCast"
+					},
+					"type": "RayCast"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetTeam"
+					},
+					"type": "SetTeam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVL7CloudEffects"
+					},
+					"type": "SetVL7CloudEffects"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SpawnLoot"
+					},
+					"type": "SpawnLoot"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SwitchTeams"
+					},
+					"type": "SwitchTeams"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UnspawnAllLoot"
+					},
+					"type": "UnspawnAllLoot"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UnspawnObject"
+					},
+					"type": "UnspawnObject"
+				},
+				{
+					"kind": "LABEL",
+					"text": "HEALTH"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DealDamage"
+					},
+					"type": "DealDamage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceRevive"
+					},
+					"type": "ForceRevive"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Heal"
+					},
+					"type": "Heal"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Kill"
+					},
+					"type": "Kill"
+				},
+				{
+					"kind": "LABEL",
+					"text": "SOLDIER"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetSoldierEffect"
+					},
+					"type": "SetSoldierEffect"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SpotTarget"
+					},
+					"type": "SpotTarget"
+				}
+			],
+			"name": "GAMEPLAY",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-gameplay"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Abort"
+					},
+					"type": "Abort"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AbortIf"
+					},
+					"type": "AbortIf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ChaseVariableAtRate"
+					},
+					"type": "ChaseVariableAtRate"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ChaseVariableOverTime"
+					},
+					"type": "ChaseVariableOverTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "JsAction"
+					},
+					"type": "JsAction"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Skip"
+					},
+					"type": "Skip"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SkipIf"
+					},
+					"type": "SkipIf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "StopChasingVariable"
+					},
+					"type": "StopChasingVariable"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Wait"
+					},
+					"type": "Wait"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "WaitUntil"
+					},
+					"type": "WaitUntil"
+				}
+			],
+			"name": "LOGIC",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-logic"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "CAPTURE POINT"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableCapturePointDeploying"
+					},
+					"type": "EnableCapturePointDeploying"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetCapturePointCapturingTime"
+					},
+					"type": "SetCapturePointCapturingTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetCapturePointNeutralizationTime"
+					},
+					"type": "SetCapturePointNeutralizationTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetCapturePointOwner"
+					},
+					"type": "SetCapturePointOwner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetMaxCaptureMultiplier"
+					},
+					"type": "SetMaxCaptureMultiplier"
+				},
+				{
+					"kind": "LABEL",
+					"text": "DEPLOY"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableHQ"
+					},
+					"type": "EnableHQ"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableGameModeObjective"
+					},
+					"type": "EnableGameModeObjective"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceBombDrop"
+					},
+					"type": "ForceBombDrop"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceBombReset"
+					},
+					"type": "ForceBombReset"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceBombSpawn"
+					},
+					"type": "ForceBombSpawn"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceBombUnspawn"
+					},
+					"type": "ForceBombUnspawn"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GiveBombToPlayer"
+					},
+					"type": "GiveBombToPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetBombDropFuseTime"
+					},
+					"type": "SetBombDropFuseTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetBombTeam"
+					},
+					"type": "SetBombTeam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetBombWorldIconGlobalVisibility"
+					},
+					"type": "SetBombWorldIconGlobalVisibility"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetMCOMArmType"
+					},
+					"type": "SetMCOMArmType"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetMCOMFuseTime"
+					},
+					"type": "SetMCOMFuseTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetMCOMOwner"
+					},
+					"type": "SetMCOMOwner"
+				}
+			],
+			"name": "OBJECTIVE",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-objectives"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "DEPLOY"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DeployPlayer"
+					},
+					"type": "DeployPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetSpawnMode"
+					},
+					"type": "SetSpawnMode"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SpawnPlayerFromSpawnPoint"
+					},
+					"type": "SpawnPlayerFromSpawnPoint"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetPlayerIncomingDamageFactor"
+					},
+					"type": "SetPlayerIncomingDamageFactor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Teleport"
+					},
+					"type": "Teleport"
+				},
+				{
+					"kind": "LABEL",
+					"text": "INPUTS"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableAllInputRestrictions"
+					},
+					"type": "EnableAllInputRestrictions"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableInputRestriction"
+					},
+					"type": "EnableInputRestriction"
+				},
+				{
+					"kind": "LABEL",
+					"text": "INVENTORY"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddAttachmentToWeaponPackage"
+					},
+					"type": "AddAttachmentToWeaponPackage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddEquipment"
+					},
+					"type": "AddEquipment"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceSwitchInventory"
+					},
+					"type": "ForceSwitchInventory"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RemoveEquipment"
+					},
+					"type": "RemoveEquipment"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetInventoryAmmo"
+					},
+					"type": "SetInventoryAmmo"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetInventoryMagazineAmmo"
+					},
+					"type": "SetInventoryMagazineAmmo"
+				},
+				{
+					"kind": "LABEL",
+					"text": "SOLDIER"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceManDown"
+					},
+					"type": "ForceManDown"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Resupply"
+					},
+					"type": "Resupply"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetPlayerMaxHealth"
+					},
+					"type": "SetPlayerMaxHealth"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetPlayerMovementSpeedMultiplier"
+					},
+					"type": "SetPlayerMovementSpeedMultiplier"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SkipManDown"
+					},
+					"type": "SkipManDown"
+				}
+			],
+			"name": "PLAYER",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-player"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MoveObject"
+					},
+					"type": "MoveObject"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MoveObjectOverTime"
+					},
+					"type": "MoveObjectOverTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "OrbitObjectOverTime"
+					},
+					"type": "OrbitObjectOverTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RotateObject"
+					},
+					"type": "RotateObject"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetObjectTransform"
+					},
+					"type": "SetObjectTransform"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetObjectTransformOverTime"
+					},
+					"type": "SetObjectTransformOverTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "StopActiveMovementForObject"
+					},
+					"type": "StopActiveMovementForObject"
+				}
+			],
+			"name": "TRANSFORM",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-transform"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GAME MODE"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetAllObjectivesUIEnabled"
+					},
+					"type": "SetAllObjectivesUIEnabled"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetHUDTicker"
+					},
+					"type": "SetHUDTicker"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetObjectiveUIEnabled"
+					},
+					"type": "SetObjectiveUIEnabled"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddUIIcon"
+					},
+					"type": "AddUIIcon"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableWorldIconImage"
+					},
+					"type": "EnableWorldIconImage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableWorldIconText"
+					},
+					"type": "EnableWorldIconText"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RemoveUIIcon"
+					},
+					"type": "RemoveUIIcon"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetWorldIconColor"
+					},
+					"type": "SetWorldIconColor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetWorldIconImage"
+					},
+					"type": "SetWorldIconImage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetWorldIconOwner"
+					},
+					"type": "SetWorldIconOwner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetWorldIconText"
+					},
+					"type": "SetWorldIconText"
+				},
+				{
+					"kind": "LABEL",
+					"text": "MESSAGES"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ClearAllCustomNotificationMessages"
+					},
+					"type": "ClearAllCustomNotificationMessages"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ClearCustomNotificationMessage"
+					},
+					"type": "ClearCustomNotificationMessage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DisplayCustomNotificationMessage"
+					},
+					"type": "DisplayCustomNotificationMessage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DisplayHighlightedWorldLogMessage"
+					},
+					"type": "DisplayHighlightedWorldLogMessage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DisplayNotificationMessage"
+					},
+					"type": "DisplayNotificationMessage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SendErrorReport"
+					},
+					"type": "SendErrorReport"
+				},
+				{
+					"kind": "LABEL",
+					"text": "SCOREBOARD"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetScoreboardColumnNames"
+					},
+					"type": "SetScoreboardColumnNames"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetScoreboardColumnWidths"
+					},
+					"type": "SetScoreboardColumnWidths"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetScoreboardHeader"
+					},
+					"type": "SetScoreboardHeader"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetScoreboardPlayerValues"
+					},
+					"type": "SetScoreboardPlayerValues"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetScoreboardSorting"
+					},
+					"type": "SetScoreboardSorting"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetScoreboardType"
+					},
+					"type": "SetScoreboardType"
+				},
+				{
+					"kind": "LABEL",
+					"text": "UI WIDGETS"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddUIButton"
+					},
+					"type": "AddUIButton"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddUIContainer"
+					},
+					"type": "AddUIContainer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddUIGadgetImage"
+					},
+					"type": "AddUIGadgetImage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddUIImage"
+					},
+					"type": "AddUIImage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddUIText"
+					},
+					"type": "AddUIText"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AddUIWeaponImage"
+					},
+					"type": "AddUIWeaponImage"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DeleteAllUIWidgets"
+					},
+					"type": "DeleteAllUIWidgets"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DeleteUIWidget"
+					},
+					"type": "DeleteUIWidget"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableUIButtonEvent"
+					},
+					"type": "EnableUIButtonEvent"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EnableUIInputMode"
+					},
+					"type": "EnableUIInputMode"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonAlphaBase"
+					},
+					"type": "SetUIButtonAlphaBase"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonAlphaDisabled"
+					},
+					"type": "SetUIButtonAlphaDisabled"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonAlphaFocused"
+					},
+					"type": "SetUIButtonAlphaFocused"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonAlphaHover"
+					},
+					"type": "SetUIButtonAlphaHover"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonAlphaPressed"
+					},
+					"type": "SetUIButtonAlphaPressed"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonColorBase"
+					},
+					"type": "SetUIButtonColorBase"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonColorDisabled"
+					},
+					"type": "SetUIButtonColorDisabled"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonColorFocused"
+					},
+					"type": "SetUIButtonColorFocused"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonColorHover"
+					},
+					"type": "SetUIButtonColorHover"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonColorPressed"
+					},
+					"type": "SetUIButtonColorPressed"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIButtonEnabled"
+					},
+					"type": "SetUIButtonEnabled"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIImageAlpha"
+					},
+					"type": "SetUIImageAlpha"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIImageColor"
+					},
+					"type": "SetUIImageColor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIImageType"
+					},
+					"type": "SetUIImageType"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUITextAlpha"
+					},
+					"type": "SetUITextAlpha"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUITextAnchor"
+					},
+					"type": "SetUITextAnchor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUITextColor"
+					},
+					"type": "SetUITextColor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUITextLabel"
+					},
+					"type": "SetUITextLabel"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUITextSize"
+					},
+					"type": "SetUITextSize"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetAnchor"
+					},
+					"type": "SetUIWidgetAnchor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetBgAlpha"
+					},
+					"type": "SetUIWidgetBgAlpha"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetBgColor"
+					},
+					"type": "SetUIWidgetBgColor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetBgFill"
+					},
+					"type": "SetUIWidgetBgFill"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetDepth"
+					},
+					"type": "SetUIWidgetDepth"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetName"
+					},
+					"type": "SetUIWidgetName"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetPadding"
+					},
+					"type": "SetUIWidgetPadding"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetParent"
+					},
+					"type": "SetUIWidgetParent"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetPosition"
+					},
+					"type": "SetUIWidgetPosition"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetSize"
+					},
+					"type": "SetUIWidgetSize"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetUIWidgetVisible"
+					},
+					"type": "SetUIWidgetVisible"
+				}
+			],
+			"name": "USER INTERFACE",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-ui"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForceVehicleSpawnerSpawn"
+					},
+					"type": "ForceVehicleSpawnerSpawn"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetAllVehiclesAllowedInSurroundingArea"
+					},
+					"type": "SetAllVehiclesAllowedInSurroundingArea"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetMaxVehicleHeightLimitScale"
+					},
+					"type": "SetMaxVehicleHeightLimitScale"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleAllowedInSurroundingArea"
+					},
+					"type": "SetVehicleAllowedInSurroundingArea"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleCategoryAllowedInSurroundingArea"
+					},
+					"type": "SetVehicleCategoryAllowedInSurroundingArea"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleSpawnerAbandonVehiclesOutOfCombatArea"
+					},
+					"type": "SetVehicleSpawnerAbandonVehiclesOutOfCombatArea"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleSpawnerApplyDamageToAbandonVehicle"
+					},
+					"type": "SetVehicleSpawnerApplyDamageToAbandonVehicle"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleSpawnerAutoSpawn"
+					},
+					"type": "SetVehicleSpawnerAutoSpawn"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleSpawnerKeepAliveAbandonRadius"
+					},
+					"type": "SetVehicleSpawnerKeepAliveAbandonRadius"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleSpawnerKeepAliveSpawnerRadius"
+					},
+					"type": "SetVehicleSpawnerKeepAliveSpawnerRadius"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleSpawnerRespawnTime"
+					},
+					"type": "SetVehicleSpawnerRespawnTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleSpawnerTimeUntilAbandon"
+					},
+					"type": "SetVehicleSpawnerTimeUntilAbandon"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleSpawnerVehicleType"
+					},
+					"type": "SetVehicleSpawnerVehicleType"
+				},
+				{
+					"kind": "LABEL",
+					"text": "HEALTH"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SetVehicleMaxHealthMultiplier"
+					},
+					"type": "SetVehicleMaxHealthMultiplier"
+				},
+				{
+					"kind": "LABEL",
+					"text": "SOLDIER"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForcePlayerExitVehicle"
+					},
+					"type": "ForcePlayerExitVehicle"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForcePlayerToSeat"
+					},
+					"type": "ForcePlayerToSeat"
+				}
+			],
+			"name": "VEHICLES",
+			"categorystyle": "actions-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-actions-vehicles"
+			}
+		},
+		{
+			"kind": "SEP"
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "BEHAVIOR"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetWaypointPath"
+					},
+					"type": "GetWaypointPath"
+				}
+			],
+			"name": "AI",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-ai"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AppendToArray"
+					},
+					"type": "AppendToArray"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArraySlice"
+					},
+					"type": "ArraySlice"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CountOf"
+					},
+					"type": "CountOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CurrentArrayElement"
+					},
+					"type": "CurrentArrayElement"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EmptyArray"
+					},
+					"type": "EmptyArray"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "FilteredArray"
+					},
+					"type": "FilteredArray"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "FirstOf"
+					},
+					"type": "FirstOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsTrueForAll"
+					},
+					"type": "IsTrueForAll"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsTrueForAny"
+					},
+					"type": "IsTrueForAny"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "LastOf"
+					},
+					"type": "LastOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MappedArray"
+					},
+					"type": "MappedArray"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RandomizedArray"
+					},
+					"type": "RandomizedArray"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RandomValueInArray"
+					},
+					"type": "RandomValueInArray"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SortedArray"
+					},
+					"type": "SortedArray"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ValueInArray"
+					},
+					"type": "ValueInArray"
+				},
+				{
+					"kind": "LABEL",
+					"text": "CONVENIENCE"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArrayContains"
+					},
+					"type": "ArrayContains",
+					"displayName": "ArrayContains"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IndexOfArrayValue"
+					},
+					"type": "IndexOfArrayValue",
+					"displayName": "IndexOfArrayValue"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RemoveFromArray"
+					},
+					"type": "RemoveFromArray",
+					"displayName": "RemoveFromArray"
+				}
+			],
+			"name": "ARRAYS",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-arrays"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetSFX"
+					},
+					"type": "GetSFX"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVO"
+					},
+					"type": "GetVO"
+				}
+			],
+			"name": "AUDIO",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-audio"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetFixedCamera"
+					},
+					"type": "GetFixedCamera"
+				}
+			],
+			"name": "CAMERA",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-camera"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "VFX"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVFX"
+					},
+					"type": "GetVFX"
+				}
+			],
+			"name": "EFFECTS",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-effects"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GAME MODE"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventBomb"
+					},
+					"type": "EventBomb"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventBombState"
+					},
+					"type": "EventBombState"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventAreaTrigger"
+					},
+					"type": "EventAreaTrigger"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventBoolean"
+					},
+					"type": "EventBoolean"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventCapturePoint"
+					},
+					"type": "EventCapturePoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventDamageType"
+					},
+					"type": "EventDamageType"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventDeathType"
+					},
+					"type": "EventDeathType"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventEmplacementSpawner"
+					},
+					"type": "EventEmplacementSpawner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventFixedCamera"
+					},
+					"type": "EventFixedCamera"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventGolmudTrainStopReason"
+					},
+					"type": "EventGolmudTrainStopReason"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventHQ"
+					},
+					"type": "EventHQ"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventInteractPoint"
+					},
+					"type": "EventInteractPoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventMCOM"
+					},
+					"type": "EventMCOM"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventNormal"
+					},
+					"type": "EventNormal"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventNumber"
+					},
+					"type": "EventNumber"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventOtherPlayer"
+					},
+					"type": "EventOtherPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventPlayer"
+					},
+					"type": "EventPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventPoint"
+					},
+					"type": "EventPoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventRingOfFire"
+					},
+					"type": "EventRingOfFire"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventSeat"
+					},
+					"type": "EventSeat"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventSector"
+					},
+					"type": "EventSector"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventSpawner"
+					},
+					"type": "EventSpawner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventSpawnPoint"
+					},
+					"type": "EventSpawnPoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventTeam"
+					},
+					"type": "EventTeam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventUIButtonEvent"
+					},
+					"type": "EventUIButtonEvent"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventUIWidget"
+					},
+					"type": "EventUIWidget"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventVehicle"
+					},
+					"type": "EventVehicle"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventVehicleSpawner"
+					},
+					"type": "EventVehicleSpawner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventVL7Cloud"
+					},
+					"type": "EventVL7Cloud"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventWaypointPath"
+					},
+					"type": "EventWaypointPath"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventWeapon"
+					},
+					"type": "EventWeapon"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventWorldIcon"
+					},
+					"type": "EventWorldIcon"
+				}
+			],
+			"name": "EVENT PAYLOADS",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-eventpayloads"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "DEPLOY"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetSpawnPoint"
+					},
+					"type": "GetSpawnPoint"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GAME MODE"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetGameModeScore"
+					},
+					"type": "GetGameModeScore"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetMatchTimeElapsed"
+					},
+					"type": "GetMatchTimeElapsed"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetMatchTimeRemaining"
+					},
+					"type": "GetMatchTimeRemaining"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetRingOfFire"
+					},
+					"type": "GetRingOfFire"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetRoundTime"
+					},
+					"type": "GetRoundTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetTargetScore"
+					},
+					"type": "GetTargetScore"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsFaction"
+					},
+					"type": "IsFaction"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetAreaTrigger"
+					},
+					"type": "GetAreaTrigger"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetEmplacementSpawner"
+					},
+					"type": "GetEmplacementSpawner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetGolmudTrainLocation"
+					},
+					"type": "GetGolmudTrainLocation"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetInteractPoint"
+					},
+					"type": "GetInteractPoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetLootSpawner"
+					},
+					"type": "GetLootSpawner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetObjId"
+					},
+					"type": "GetObjId"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetSpatialObject"
+					},
+					"type": "GetSpatialObject"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetSpawner"
+					},
+					"type": "GetSpawner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVehicleSpawner"
+					},
+					"type": "GetVehicleSpawner"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVL7Cloud"
+					},
+					"type": "GetVL7Cloud"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsCurrentMap"
+					},
+					"type": "IsCurrentMap"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SpawnObject"
+					},
+					"type": "SpawnObject"
+				}
+			],
+			"name": "GAMEPLAY",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-gameplay"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "And"
+					},
+					"type": "And"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Equals"
+					},
+					"type": "Equals"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GreaterThan"
+					},
+					"type": "GreaterThan"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GreaterThanEqualTo"
+					},
+					"type": "GreaterThanEqualTo"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IfThenElse"
+					},
+					"type": "IfThenElse",
+					"displayName": "IfThenElse"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsType"
+					},
+					"type": "IsType"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsUndefined"
+					},
+					"type": "IsUndefined"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsValid"
+					},
+					"type": "IsValid"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "JsValue"
+					},
+					"type": "JsValue"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "LessThan"
+					},
+					"type": "LessThan"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "LessThanEqualTo"
+					},
+					"type": "LessThanEqualTo"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Not"
+					},
+					"type": "Not"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "NotEqualTo"
+					},
+					"type": "NotEqualTo"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Or"
+					},
+					"type": "Or"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Xor"
+					},
+					"type": "Xor"
+				},
+				{
+					"kind": "LABEL",
+					"text": "MESSAGES"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Concat"
+					},
+					"type": "Concat"
+				}
+			],
+			"name": "LOGIC",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-logic"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AbsoluteValue"
+					},
+					"type": "AbsoluteValue"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Add"
+					},
+					"type": "Add"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AngleBetweenVectors"
+					},
+					"type": "AngleBetweenVectors"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AngleDifference"
+					},
+					"type": "AngleDifference"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArccosineInDegrees"
+					},
+					"type": "ArccosineInDegrees"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArccosineInRadians"
+					},
+					"type": "ArccosineInRadians"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArcsineInDegrees"
+					},
+					"type": "ArcsineInDegrees"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArcsineInRadians"
+					},
+					"type": "ArcsineInRadians"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArctangentInDegrees"
+					},
+					"type": "ArctangentInDegrees"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArctangentInRadians"
+					},
+					"type": "ArctangentInRadians"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Ceiling"
+					},
+					"type": "Ceiling"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CosineFromDegrees"
+					},
+					"type": "CosineFromDegrees"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CosineFromRadians"
+					},
+					"type": "CosineFromRadians"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CreateTransform"
+					},
+					"type": "CreateTransform"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CreateVector"
+					},
+					"type": "CreateVector"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CrossProduct"
+					},
+					"type": "CrossProduct"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DegreesToRadians"
+					},
+					"type": "DegreesToRadians"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DirectionFromAngles"
+					},
+					"type": "DirectionFromAngles"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DirectionTowards"
+					},
+					"type": "DirectionTowards"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DistanceBetween"
+					},
+					"type": "DistanceBetween"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Divide"
+					},
+					"type": "Divide"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DotProduct"
+					},
+					"type": "DotProduct"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Floor"
+					},
+					"type": "Floor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Max"
+					},
+					"type": "Max"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Modulo"
+					},
+					"type": "Modulo"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Multiply"
+					},
+					"type": "Multiply"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Normalize"
+					},
+					"type": "Normalize"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Pi"
+					},
+					"type": "Pi"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RadiansToDegrees"
+					},
+					"type": "RadiansToDegrees"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RaiseToPower"
+					},
+					"type": "RaiseToPower"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RandomReal"
+					},
+					"type": "RandomReal"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RoundToInteger"
+					},
+					"type": "RoundToInteger"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SineFromDegrees"
+					},
+					"type": "SineFromDegrees"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SineFromRadians"
+					},
+					"type": "SineFromRadians"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SquareRoot"
+					},
+					"type": "SquareRoot"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Subtract"
+					},
+					"type": "Subtract"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "TangentFromDegrees"
+					},
+					"type": "TangentFromDegrees"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "TangentFromRadians"
+					},
+					"type": "TangentFromRadians"
+				}
+			],
+			"name": "MATH",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-math"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "CAPTURE POINT"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AllCapturePoints"
+					},
+					"type": "AllCapturePoints"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetCapturePoint"
+					},
+					"type": "GetCapturePoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetCaptureProgress"
+					},
+					"type": "GetCaptureProgress"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetCurrentOwnerTeam"
+					},
+					"type": "GetCurrentOwnerTeam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetOwnerProgressTeam"
+					},
+					"type": "GetOwnerProgressTeam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetPlayersOnPoint"
+					},
+					"type": "GetPlayersOnPoint"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetPreviousOwnerTeam"
+					},
+					"type": "GetPreviousOwnerTeam"
+				},
+				{
+					"kind": "LABEL",
+					"text": "DEPLOY"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetHQ"
+					},
+					"type": "GetHQ"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GAME MODE"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetBomb"
+					},
+					"type": "GetBomb"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetMCOM"
+					},
+					"type": "GetMCOM"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetSector"
+					},
+					"type": "GetSector"
+				}
+			],
+			"name": "OBJECTIVE",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-objectives"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				}
+			],
+			"name": "OTHER",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-other"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetPortalAverageFrameTime"
+					},
+					"type": "GetPortalAverageFrameTime"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetServerAverageFrameTime"
+					},
+					"type": "GetServerAverageFrameTime"
+				}
+			],
+			"name": "PERFORMANCE",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-performance"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AllPlayers"
+					},
+					"type": "AllPlayers"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ClosestPlayerTo"
+					},
+					"type": "ClosestPlayerTo"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "FarthestPlayerFrom"
+					},
+					"type": "FarthestPlayerFrom"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetPlayer"
+					},
+					"type": "GetPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetPlayerDeaths"
+					},
+					"type": "GetPlayerDeaths"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetPlayerKills"
+					},
+					"type": "GetPlayerKills"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetSquad"
+					},
+					"type": "GetSquad"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetSquadName"
+					},
+					"type": "GetSquadName"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetTeam"
+					},
+					"type": "GetTeam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsPlayerValid"
+					},
+					"type": "IsPlayerValid"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsSquadLeader"
+					},
+					"type": "IsSquadLeader"
+				},
+				{
+					"kind": "LABEL",
+					"text": "INVENTORY"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CreateNewWeaponPackage"
+					},
+					"type": "CreateNewWeaponPackage"
+				},
+				{
+					"kind": "LABEL",
+					"text": "SOLDIER"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventDamageTypeCompare"
+					},
+					"type": "EventDamageTypeCompare"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventDeathTypeCompare"
+					},
+					"type": "EventDeathTypeCompare"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "EventWeaponCompare"
+					},
+					"type": "EventWeaponCompare"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetInventoryAmmo"
+					},
+					"type": "GetInventoryAmmo"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetInventoryMagazineAmmo"
+					},
+					"type": "GetInventoryMagazineAmmo"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetSoldierState"
+					},
+					"type": "GetSoldierState"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "HasEquipment"
+					},
+					"type": "HasEquipment"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsInventorySlotActive"
+					},
+					"type": "IsInventorySlotActive"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsSoldierClass"
+					},
+					"type": "IsSoldierClass"
+				}
+			],
+			"name": "PLAYER",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-player"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "BackwardVector"
+					},
+					"type": "BackwardVector"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "DownVector"
+					},
+					"type": "DownVector"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForwardVector"
+					},
+					"type": "ForwardVector"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetObjectPosition"
+					},
+					"type": "GetObjectPosition"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetObjectRotation"
+					},
+					"type": "GetObjectRotation"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetObjectTransform"
+					},
+					"type": "GetObjectTransform"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetTransformPosition"
+					},
+					"type": "GetTransformPosition"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetTransformRotation"
+					},
+					"type": "GetTransformRotation"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "LeftVector"
+					},
+					"type": "LeftVector"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "LocalPositionOf"
+					},
+					"type": "LocalPositionOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "LocalVectorOf"
+					},
+					"type": "LocalVectorOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RightVector"
+					},
+					"type": "RightVector"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UpVector"
+					},
+					"type": "UpVector"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "VectorTowards"
+					},
+					"type": "VectorTowards"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "WorldPositionOf"
+					},
+					"type": "WorldPositionOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "WorldVectorOf"
+					},
+					"type": "WorldVectorOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "XComponentOf"
+					},
+					"type": "XComponentOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "YComponentOf"
+					},
+					"type": "YComponentOf"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ZComponentOf"
+					},
+					"type": "ZComponentOf"
+				}
+			],
+			"name": "TRANSFORM",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-transform"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GAME MODE"
+				},
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetWorldIcon"
+					},
+					"type": "GetWorldIcon"
+				},
+				{
+					"kind": "LABEL",
+					"text": "MESSAGES"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Message"
+					},
+					"type": "Message"
+				},
+				{
+					"kind": "LABEL",
+					"text": "UI WIDGETS"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "FindUIWidgetWithName"
+					},
+					"type": "FindUIWidgetWithName"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonAlphaBase"
+					},
+					"type": "GetUIButtonAlphaBase"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonAlphaDisabled"
+					},
+					"type": "GetUIButtonAlphaDisabled"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonAlphaFocused"
+					},
+					"type": "GetUIButtonAlphaFocused"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonAlphaHover"
+					},
+					"type": "GetUIButtonAlphaHover"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonAlphaPressed"
+					},
+					"type": "GetUIButtonAlphaPressed"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonColorBase"
+					},
+					"type": "GetUIButtonColorBase"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonColorDisabled"
+					},
+					"type": "GetUIButtonColorDisabled"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonColorFocused"
+					},
+					"type": "GetUIButtonColorFocused"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonColorHover"
+					},
+					"type": "GetUIButtonColorHover"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonColorPressed"
+					},
+					"type": "GetUIButtonColorPressed"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIButtonEnabled"
+					},
+					"type": "GetUIButtonEnabled"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIImageAlpha"
+					},
+					"type": "GetUIImageAlpha"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIImageColor"
+					},
+					"type": "GetUIImageColor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIRoot"
+					},
+					"type": "GetUIRoot"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUITextAlpha"
+					},
+					"type": "GetUITextAlpha"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUITextColor"
+					},
+					"type": "GetUITextColor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUITextSize"
+					},
+					"type": "GetUITextSize"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetBgAlpha"
+					},
+					"type": "GetUIWidgetBgAlpha"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetBgColor"
+					},
+					"type": "GetUIWidgetBgColor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetName"
+					},
+					"type": "GetUIWidgetName"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetPadding"
+					},
+					"type": "GetUIWidgetPadding"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetParent"
+					},
+					"type": "GetUIWidgetParent"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetPosition"
+					},
+					"type": "GetUIWidgetPosition"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetSize"
+					},
+					"type": "GetUIWidgetSize"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetVisible"
+					},
+					"type": "GetUIWidgetVisible"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "HasUIWidgetWithName"
+					},
+					"type": "HasUIWidgetWithName"
+				}
+			],
+			"name": "USER INTERFACE",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-ui"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "GENERAL"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AllVehicles"
+					},
+					"type": "AllVehicles"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CompareVehicleName"
+					},
+					"type": "CompareVehicleName"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVehicle"
+					},
+					"type": "GetVehicle"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVehicleFromPlayer"
+					},
+					"type": "GetVehicleFromPlayer"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVehicleSeatCount"
+					},
+					"type": "GetVehicleSeatCount"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVehicleState"
+					},
+					"type": "GetVehicleState"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetVehicleTeam"
+					},
+					"type": "GetVehicleTeam"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsVehicleOccupied"
+					},
+					"type": "IsVehicleOccupied"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "IsVehicleSeatOccupied"
+					},
+					"type": "IsVehicleSeatOccupied"
+				},
+				{
+					"kind": "LABEL",
+					"text": "SOLDIER"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetAllPlayersInVehicle"
+					},
+					"type": "GetAllPlayersInVehicle"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetPlayerFromVehicleSeat"
+					},
+					"type": "GetPlayerFromVehicleSeat"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetPlayerVehicleSeat"
+					},
+					"type": "GetPlayerVehicleSeat"
+				}
+			],
+			"name": "VEHICLES",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-vehicles"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AiInputItem"
+					},
+					"type": "AiInputItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ScoreCriteriaItem"
+					},
+					"type": "ScoreCriteriaItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "BombStateItem"
+					},
+					"type": "BombStateItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GolmudTrainStopReasonItem"
+					},
+					"type": "GolmudTrainStopReasonItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MCOMArmTypeItem"
+					},
+					"type": "MCOMArmTypeItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "AmmoTypesItem"
+					},
+					"type": "AmmoTypesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ArmorTypesItem"
+					},
+					"type": "ArmorTypesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CamerasItem"
+					},
+					"type": "CamerasItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "CustomNotificationSlotsItem"
+					},
+					"type": "CustomNotificationSlotsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "FactionsItem"
+					},
+					"type": "FactionsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GadgetsItem"
+					},
+					"type": "GadgetsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GolmudTrainMoveCommandsItem"
+					},
+					"type": "GolmudTrainMoveCommandsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GolmudTrainVariantsItem"
+					},
+					"type": "GolmudTrainVariantsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "InventorySlotsItem"
+					},
+					"type": "InventorySlotsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MapsItem"
+					},
+					"type": "MapsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MoveSpeedItem"
+					},
+					"type": "MoveSpeedItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MusicEventsItem"
+					},
+					"type": "MusicEventsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MusicPackagesItem"
+					},
+					"type": "MusicPackagesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "MusicParamsItem"
+					},
+					"type": "MusicParamsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "PlayerDamageTypesItem"
+					},
+					"type": "PlayerDamageTypesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "PlayerDeathTypesItem"
+					},
+					"type": "PlayerDeathTypesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RestrictedInputsItem"
+					},
+					"type": "RestrictedInputsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ResupplyTypesItem"
+					},
+					"type": "ResupplyTypesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_AbbasidItem"
+					},
+					"type": "RuntimeSpawn_AbbasidItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_AftermathItem"
+					},
+					"type": "RuntimeSpawn_AftermathItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_BadlandsItem"
+					},
+					"type": "RuntimeSpawn_BadlandsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_BatteryItem"
+					},
+					"type": "RuntimeSpawn_BatteryItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_CapstoneItem"
+					},
+					"type": "RuntimeSpawn_CapstoneItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_CommonItem"
+					},
+					"type": "RuntimeSpawn_CommonItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_ContaminatedItem"
+					},
+					"type": "RuntimeSpawn_ContaminatedItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_DumboItem"
+					},
+					"type": "RuntimeSpawn_DumboItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_EastwoodItem"
+					},
+					"type": "RuntimeSpawn_EastwoodItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_FireStormItem"
+					},
+					"type": "RuntimeSpawn_FireStormItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_GolmudRailwayItem"
+					},
+					"type": "RuntimeSpawn_GolmudRailwayItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_Granite_DowntownItem"
+					},
+					"type": "RuntimeSpawn_Granite_DowntownItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_Granite_MarinaItem"
+					},
+					"type": "RuntimeSpawn_Granite_MarinaItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_Granite_ResidentialNorthItem"
+					},
+					"type": "RuntimeSpawn_Granite_ResidentialNorthItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_Granite_TechCenterItem"
+					},
+					"type": "RuntimeSpawn_Granite_TechCenterItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_Granite_UndergroundItem"
+					},
+					"type": "RuntimeSpawn_Granite_UndergroundItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_IsolatedItem"
+					},
+					"type": "RuntimeSpawn_IsolatedItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_LimestoneItem"
+					},
+					"type": "RuntimeSpawn_LimestoneItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_OutskirtsItem"
+					},
+					"type": "RuntimeSpawn_OutskirtsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_PlazaItem"
+					},
+					"type": "RuntimeSpawn_PlazaItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_SandItem"
+					},
+					"type": "RuntimeSpawn_SandItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_SubsurfaceItem"
+					},
+					"type": "RuntimeSpawn_SubsurfaceItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "RuntimeSpawn_TungstenItem"
+					},
+					"type": "RuntimeSpawn_TungstenItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ScoreboardTypeItem"
+					},
+					"type": "ScoreboardTypeItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ScreenEffectsItem"
+					},
+					"type": "ScreenEffectsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SoldierClassItem"
+					},
+					"type": "SoldierClassItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SoldierEffectsItem"
+					},
+					"type": "SoldierEffectsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SoldierStateBoolItem"
+					},
+					"type": "SoldierStateBoolItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SoldierStateNumberItem"
+					},
+					"type": "SoldierStateNumberItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SoldierStateVectorItem"
+					},
+					"type": "SoldierStateVectorItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SpawnModesItem"
+					},
+					"type": "SpawnModesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SpectatingGroupItem"
+					},
+					"type": "SpectatingGroupItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "SpotStatusItem"
+					},
+					"type": "SpotStatusItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "StanceItem"
+					},
+					"type": "StanceItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "StationaryEmplacementsItem"
+					},
+					"type": "StationaryEmplacementsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "TypesItem"
+					},
+					"type": "TypesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UIAnchorItem"
+					},
+					"type": "UIAnchorItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UIBgFillItem"
+					},
+					"type": "UIBgFillItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UIButtonEventItem"
+					},
+					"type": "UIButtonEventItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UIDepthItem"
+					},
+					"type": "UIDepthItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "UIImageTypeItem"
+					},
+					"type": "UIImageTypeItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "VehicleCategoriesItem"
+					},
+					"type": "VehicleCategoriesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "VehicleListItem"
+					},
+					"type": "VehicleListItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "VehicleStateVectorItem"
+					},
+					"type": "VehicleStateVectorItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "VoiceOverEvents2DItem"
+					},
+					"type": "VoiceOverEvents2DItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "VoiceOverFlagsItem"
+					},
+					"type": "VoiceOverFlagsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "WeaponAttachmentsItem"
+					},
+					"type": "WeaponAttachmentsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "WeaponsItem"
+					},
+					"type": "WeaponsItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "WorldIconImagesItem"
+					},
+					"type": "WorldIconImagesItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GameModeTickerItem"
+					},
+					"type": "GameModeTickerItem"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIImageType"
+					},
+					"type": "GetUIImageType"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUITextAnchor"
+					},
+					"type": "GetUITextAnchor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetAnchor"
+					},
+					"type": "GetUIWidgetAnchor"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetBgFill"
+					},
+					"type": "GetUIWidgetBgFill"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "GetUIWidgetDepth"
+					},
+					"type": "GetUIWidgetDepth"
+				}
+			],
+			"name": "SELECTION LISTS",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-selectionlists"
+			}
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "LABEL",
+					"text": "TEXT"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Text"
+					},
+					"type": "Text",
+					"displayName": "Text"
+				},
+				{
+					"kind": "LABEL",
+					"text": "NUMBER"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Number",
+						"fields":
+						{
+							"NUM": "123"
+						}
+					},
+					"type": "Number",
+					"displayName": "Number"
+				},
+				{
+					"kind": "LABEL",
+					"text": "BOOLEAN"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Boolean"
+					},
+					"type": "Boolean",
+					"displayName": "Bool"
+				}
+			],
+			"name": "LITERALS",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-values-literals"
+			}
+		},
+		{
+			"kind": "SEP"
+		},
+		{
+			"kind": "CATEGORY",
+			"name": "VARIABLES",
+			"categorystyle": "values-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-variables"
+			},
+			"custom": "CUSTOM_VARIABLE_FLYOUT"
+		},
+		{
+			"kind": "CATEGORY",
+			"name": "SUBROUTINES",
+			"categorystyle": "subroutines-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-subroutines"
+			},
+			"custom": "CUSTOM_SUBROUTINE_FLYOUT"
+		},
+		{
+			"kind": "CATEGORY",
+			"contents": [
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Break"
+					},
+					"type": "Break"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "Continue"
+					},
+					"type": "Continue"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "ForVariable"
+					},
+					"type": "ForVariable"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "If"
+					},
+					"type": "If"
+				},
+				{
+					"kind": "BLOCK",
+					"blockstate":
+					{
+						"type": "While"
+					},
+					"type": "While"
+				}
+			],
+			"name": "CONTROL ACTIONS",
+			"categorystyle": "controls-category",
+			"cssconfig":
+			{
+				"icon": "toolbox-controlactions"
+			}
+		}
+	]
+}

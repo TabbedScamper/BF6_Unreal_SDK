@@ -1,0 +1,25 @@
+{
+  "format": "bf6-ui-design",
+  "version": 1,
+  "name": "$LOOT_KEY",
+  "strings": {
+    "$LOOT_KEY_title": "$LOOT_TITLE",
+    "$LOOT_KEY_action_label": "SELECT"
+  },
+  "widgets": [{
+    "type": "Container", "id": "$LOOT_KEY", "name": "$LOOT_KEY",
+    "anchor": "BottomRight", "size": [360, 144],
+    "children": [{
+      "type": "Text", "id": "$LOOT_KEY_title", "name": "$LOOT_KEY_title",
+      "anchor": "TopCenter", "size": [336, 64],
+      "textAnchor": "CenterLeft", "textSize": 24
+    }, {
+      "type": "Button", "id": "$LOOT_KEY_action", "name": "$LOOT_KEY_action",
+      "anchor": "BottomCenter", "size": [336, 48],
+      "children": [{
+        "type": "Text", "id": "$LOOT_KEY_action_label", "name": "$LOOT_KEY_action_label",
+        "anchor": "Center", "size": [320, 40], "textSize": 20
+      }]
+    }]
+  }]
+}

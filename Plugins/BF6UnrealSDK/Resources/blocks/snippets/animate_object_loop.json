@@ -1,0 +1,121 @@
+{
+ "name": "Animation loop: move an object every tick",
+ "note": "Ongoing rule that nudges one placed object along a vector, then waits a tenth of a second. Change the CreateVector to change speed and direction. UNVERIFIED: MoveObject and GetSpatialObject do not appear in the reference project, so their input names (VALUE-0, VALUE-1) come from the mined block catalogue rather than from a real saved workspace; MoveObject's signature there is MoveObject(SpatialObject and friends, Vector).",
+ "blocks": {
+  "languageVersion": 0,
+  "blocks": [
+   {
+    "type": "ruleBlock",
+    "x": 40,
+    "y": 40,
+    "extraState": {
+     "isOngoingEvent": true
+    },
+    "fields": {
+     "NAME": "Animate Object",
+     "EVENTTYPE": "Ongoing",
+     "OBJECTTYPE": "Global"
+    },
+    "inputs": {
+     "ACTIONS": {
+      "block": {
+       "type": "MoveObject",
+       "inputs": {
+        "VALUE-0": {
+         "block": {
+          "type": "GetSpatialObject",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "Number",
+             "fields": {
+              "NUM": "{{OBJID:SpatialObject}}"
+             }
+            }
+           }
+          }
+         }
+        },
+        "VALUE-1": {
+         "block": {
+          "type": "Add",
+          "inputs": {
+           "VALUE-0": {
+            "block": {
+             "type": "GetObjectPosition",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "GetSpatialObject",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": "{{OBJID:SpatialObject}}"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           },
+           "VALUE-1": {
+            "block": {
+             "type": "CreateVector",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 0
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 0
+                }
+               }
+              },
+              "VALUE-2": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 0.25
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       },
+       "next": {
+        "block": {
+         "type": "Wait",
+         "inputs": {
+          "VALUE-0": {
+           "block": {
+            "type": "Number",
+            "fields": {
+             "NUM": 0.1
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  ]
+ }
+}

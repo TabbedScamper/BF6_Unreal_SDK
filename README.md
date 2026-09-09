@@ -6,6 +6,8 @@
 
 Build Battlefield 6 Portal maps inside Unreal Engine.
 
+**0.8.0 is available.** Install the matching [High Poly add-on](https://github.com/TabbedScamper/BF6_Unreal_SDK_High_Poly) from the map selector. Select a loot or soldier spawner and press **Space** to edit its loadout, choose supported weapon attachments, and generate a weapon card or script helper. See the [loadout guide](Plugins/BF6UnrealSDK/docs/LOADOUTS.md) and [what's new](Plugins/BF6UnrealSDK/Resources/CHANGELOG.md).
+
 This is a community-made tool. It is not affiliated with EA or DICE. It recreates the Portal SDK editing workflow inside Unreal Engine 5, using the same low-poly assets, gameplay objects, and map data the official Godot-based SDK ships with, and exports maps in the same `.spatial.json` format the SDK's experience exporter packages for Portal.
 
 ## What it does
@@ -51,7 +53,7 @@ This tool covers the official Godot SDK's workflow, and then adds what it never 
 - **One-click self-updates** from inside the editor, and a managed SDK that downloads and updates itself the same way.
 - **Import of existing experiences**, including minified ones and Godot `.tscn` projects, straight back to an editable state.
 
-Beyond the feature list, Unreal is the industry-standard world editor: a faster viewport, better gizmos, dependable undo everywhere, and a tooling ecosystem the stock Godot SDK does not match. That foundation is what lets this project spend its time on creator features instead of basics, and it is where the planned high-poly add-on will render the real game assets instead of placeholder models. Same export, same Portal upload, a better place to build.
+The optional High Poly add-on previews game geometry and materials from your own installed copy of Battlefield 6. Your spatial export continues to use the SDK's object identities and transforms.
 
 ## Requirements
 

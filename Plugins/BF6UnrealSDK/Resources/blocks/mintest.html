@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Blockly minimal test</title>
+<!--
+  STOCK BLOCKLY, NOTHING OF OURS.
+
+  Five hypotheses about the editor freezing on a toolbox category have failed,
+  and the last two runs hung on different lines inside code that does almost
+  nothing, which says the cost is in the browser painting rather than in any
+  function. This page settles the one question none of those tests could:
+  is it our editor, or is it Blockly inside this browser?
+
+  So: the same vendored Blockly, stock renderer, stock theme, a plain toolbox
+  of built-in blocks. No captured Portal CSS, no custom renderer, no text
+  pictures, no socket glyphs, no site style, no bridge.
+
+    freezes on a category  -> Blockly plus CEF offscreen rendering, and every
+                              hour spent in our own code was misdirected
+    does not freeze        -> it is ours, and this page is the baseline to add
+                              our pieces back onto one at a time
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1b1b; color: #ddd;
+               font: 13px system-ui, sans-serif; }
+  #bar { padding: 8px 12px; background: #222; border-bottom: 1px solid #333; }
+  #canvas { position: absolute; top: 34px; left: 0; right: 0; bottom: 0; }
+  b { color: #7ec699; }
+</style>
+</head>
+<body>
+<div id="bar">Stock Blockly, none of our styling. <b id="note">click a category in the toolbox</b></div>
+<div id="canvas"></div>
+
+<script src="vendor/blockly_compressed.js"></script>
+<script src="vendor/blocks_compressed.js"></script>
+<script src="vendor/msg/en.js"></script>
+<script>
+(function () {
+  var note = document.getElementById('note');
+  function say(t) { note.textContent = t; }
+
+  /* Built-in blocks only, and enough of them that a category is not trivially
+     small: the categories that hung in the editor held 23 to 68 blocks. */
+  var toolbox = {
+    kind: 'categoryToolbox',
+    contents: [
+      { kind: 'category', name: 'Logic', colour: '210', contents: [
+        { kind: 'block', type: 'controls_if' },
+        { kind: 'block', type: 'logic_compare' },
+        { kind: 'block', type: 'logic_operation' },
+        { kind: 'block', type: 'logic_negate' },
+        { kind: 'block', type: 'logic_boolean' },
+        { kind: 'block', type: 'logic_null' },
+        { kind: 'block', type: 'logic_ternary' }
+      ]},
+      { kind: 'category', name: 'Loops', colour: '120', contents: [
+        { kind: 'block', type: 'controls_repeat_ext' },
+        { kind: 'block', type: 'controls_whileUntil' },
+        { kind: 'block', type: 'controls_for' },
+        { kind: 'block', type: 'controls_forEach' },
+        { kind: 'block', type: 'controls_flow_statements' }
+      ]},
+      { kind: 'category', name: 'Math', colour: '230', contents: [
+        { kind: 'block', type: 'math_number' },
+        { kind: 'block', type: 'math_arithmetic' },
+        { kind: 'block', type: 'math_single' },
+        { kind: 'block', type: 'math_trig' },
+        { kind: 'block', type: 'math_constant' },
+        { kind: 'block', type: 'math_number_property' },
+        { kind: 'block', type: 'math_round' },
+        { kind: 'block', type: 'math_on_list' },
+        { kind: 'block', type: 'math_modulo' },
+        { kind: 'block', type: 'math_constrain' },
+        { kind: 'block', type: 'math_random_int' },
+        { kind: 'block', type: 'math_random_float' }
+      ]},
+      { kind: 'category', name: 'Text', colour: '160', contents: [
+        { kind: 'block', type: 'text' },
+        { kind: 'block', type: 'text_join' },
+        { kind: 'block', type: 'text_append' },
+        { kind: 'block', type: 'text_length' },
+        { kind: 'block', type: 'text_isEmpty' },
+        { kind: 'block', type: 'text_indexOf' },
+        { kind: 'block', type: 'text_charAt' },
+        { kind: 'block', type: 'text_getSubstring' },
+        { kind: 'block', type: 'text_changeCase' },
+        { kind: 'block', type: 'text_trim' },
+        { kind: 'block', type: 'text_print' }
+      ]},
+      { kind: 'category', name: 'Lists', colour: '260', contents: [
+        { kind: 'block', type: 'lists_create_with' },
+        { kind: 'block', type: 'lists_repeat' },
+        { kind: 'block', type: 'lists_length' },
+        { kind: 'block', type: 'lists_isEmpty' },
+        { kind: 'block', type: 'lists_indexOf' },
+        { kind: 'block', type: 'lists_getIndex' },
+        { kind: 'block', type: 'lists_setIndex' },
+        { kind: 'block', type: 'lists_getSublist' },
+        { kind: 'block', type: 'lists_split' },
+        { kind: 'block', type: 'lists_sort' }
+      ]}
+    ]
+  };
+
+  var ws = Blockly.inject('canvas', { toolbox: toolbox, trashcan: true });
+
+  /* THE ONE THING THIS PAGE WAS MISSING, ADDED DELIBERATELY.
+   *
+   * Stock Blockly in this browser opened categories perfectly while the real
+   * editor, on the same engine, froze. The difference that matters is the
+   * bridge: our editor calls into Unreal on every workspace event, and
+   * creating a flyout full of blocks fires one event per block.
+   *
+   * So this page now does the same thing and nothing else. If it freezes, the
+   * cause is the volume of bridge calls, not Blockly, not the renderer, not
+   * the stylesheet. If it stays smooth, the bridge is cleared too and the
+   * cause is something our editor does on top of both.
+   */
+  var bridge = null;
+  try { bridge = window.ue && window.ue.bf6blocks; } catch (e) { bridge = null; }
+  var sent = 0, evts = 0;
+  ws.addChangeListener(function (ev) {
+    if (!ev) { return; }
+    evts++;
+    if (!bridge || !bridge.msg) { return; }
+    /* DEFERRED, which is the whole question this round.
+     *
+     * Calling the bridge straight from the event handler froze this page after
+     * two calls. The editor has since been changed to queue its messages and
+     * send them from a zero-delay timer, and it STILL freezes. So either
+     * deferring does not help and the bridge is unusable during a click at
+     * all, or the editor has a second cause the queue does not cover.
+     *
+     * Same page, same events, same message. The only change is when the call
+     * happens. */
+    /* NOT the word "trail:", deliberately.
+     *
+     * The C++ side was changed earlier to call GLog->Flush() on any page
+     * message whose text begins with "trail:", so that breadcrumbs reached
+     * disk before a hang could swallow them. Every message this page has sent
+     * so far began with exactly that word, which means both freezes here also
+     * took a synchronous disk flush on whatever thread the bridge callback
+     * runs on. That may be the deadlock rather than the bridge itself, and if
+     * so I broke my own experiment.
+     *
+     * Same page, same timing, same everything, minus the flush. */
+    var text = JSON.stringify({ from: 'tool', op: 'log', level: 'display',
+      text: 'MINTEST(noflush) event ' + ev.type + ' (' + (++sent) + ' sent, deferred)' });
+    setTimeout(function () {
+      try { bridge.msg(text); } catch (e) {}
+    }, 0);
+  });
+  say(bridge && bridge.msg ? 'bridge FOUND, chattering on every event'
+                           : 'no bridge on this page');
+
+  /* The same heartbeat the real editor uses. A tick asked for every second
+     that arrives late says the thread was blocked, and by how much. Silence
+     means it never came back. */
+  var at = Date.now(), n = 0;
+  setInterval(function () {
+    var now = Date.now(), late = now - at - 1000;
+    at = now; n++;
+    say('alive ' + n + (late > 150 ? ' - THREAD BLOCKED ' + late + 'ms' : ' - smooth'));
+  }, 1000);
+}());
+</script>
+</body>
+</html>

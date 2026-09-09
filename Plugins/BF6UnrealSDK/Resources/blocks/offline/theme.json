@@ -1,0 +1,157 @@
+{
+	"name": "portal-dark",
+	"blockStyles":
+	{
+		"mod-block-style":
+		{
+			"colourPrimary": "#222b2d",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#161d1e",
+			"hat": "false"
+		},
+		"rule-block-style":
+		{
+			"colourPrimary": "#682177",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#390f42",
+			"hat": "false"
+		},
+		"condition-block-style":
+		{
+			"colourPrimary": "#0a4f78",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#003a5d",
+			"hat": "false"
+		},
+		"value-block-style":
+		{
+			"colourPrimary": "#0f5736",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#033d23",
+			"hat": "false"
+		},
+		"action-block-style":
+		{
+			"colourPrimary": "#847000",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#493e00",
+			"hat": "false"
+		},
+		"comment-block-style":
+		{
+			"colourPrimary": "#141414",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#141414",
+			"hat": "false"
+		},
+		"variable-block-style":
+		{
+			"colourPrimary": "#0f5736",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#033d23",
+			"hat": "false"
+		},
+		"subroutine-block-style":
+		{
+			"colourPrimary": "#622c07",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#461e02",
+			"hat": "false"
+		},
+		"control-block-style":
+		{
+			"colourPrimary": "#351f95",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#351f95",
+			"hat": "false"
+		},
+		"control-block-alt-style":
+		{
+			"colourPrimary": "#2b1b71",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#2b1b71",
+			"hat": "false"
+		},
+		"unsupported-value-block-style":
+		{
+			"colourPrimary": "#262626",
+			"colourSecondary": "#0a0a0a",
+			"colourTertiary": "#ff0000",
+			"hat": "false"
+		}
+	},
+	"categoryStyles":
+	{
+		"rules-category":
+		{
+			"colour": "#b45ac7"
+		},
+		"values-category":
+		{
+			"colour": "#1d8c58"
+		},
+		"subroutines-category":
+		{
+			"colour": "#bd6222"
+		},
+		"actions-category":
+		{
+			"colour": "#b7a11c"
+		},
+		"controls-category":
+		{
+			"colour": "#5939e6"
+		}
+	},
+	"componentStyles":
+	{
+		"workspaceBackgroundColour": "rgba(0, 0, 0, 0)",
+		"toolboxBackgroundColour": "rgba(30, 39, 40, 0.8)",
+		"toolboxForegroundColour": "#ffffff",
+		"flyoutBackgroundColour": "#0a0a0a",
+		"flyoutForegroundColour": "#ffffff",
+		"flyoutOpacity": 1,
+		"scrollbarColour": "#ffffff",
+		"scrollbarOpacity": 0.050000000000000003,
+		"insertionMarkerColour": "#aec0cc",
+		"insertionMarkerOpacity": 0.29999999999999999,
+		"markerColour": "#d0d0d0",
+		"cursorColour": "#d0d0d0",
+		"selectedGlowColour": "#aec0cc",
+		"selectedGlowOpacity": 1,
+		"replacementGlowColour": "#aec0cc",
+		"replacementGlowOpacity": 0.5,
+		"fieldBorderRectColor": "#a8a8a8",
+		"fieldTextColor": "#000000",
+		"fieldDropdownTextColor": "#ffffff",
+		"fieldDropDownHighlightColor": "#aec0cc",
+		"fieldDropDownTextHighlightColor": "#000000",
+		"fieldEditableTextHoverColor": "#aec0cc",
+		"wsSearchHighlightCurrentColor": "#aec0cc",
+		"wsSearchHighlightGroupColor": "#ffffff",
+		"blockDisablePatternFillColor": "rgba(20,20,20,0.66)",
+		"blockDisablePatternStrokeColor": "#4f4f4f",
+		"blockErrorPatternFillColor": "#141414",
+		"blockErrorPatternStrokeColor": "#aa2b3f",
+		"blockErrorHighlightStrokeColor": "#ff2b3f",
+		"blockDeprecatedPatternFillColor": "#383629",
+		"blockDeprecatedPatternStrokeColor": "#a6aa2b",
+		"blockDeprecatedHighlightStrokeColor": "#ffe32b",
+		"ruleBlockRuleTextColor": "#ffffff",
+		"ruleBlockRuleConnectionColor": "#e882ff",
+		"ruleBlockConditionTextColor": "#ffffff",
+		"ruleBlockConditionConnectionColor": "#0a4f78",
+		"ruleBlockActionTextColor": "#ffffff",
+		"ruleBlockActionConnectionColor": "#b7a11c",
+		"subroutineBlockSubroutineTextColor": "#ed7f33",
+		"rulesCategoryColor": "#b45ac7",
+		"subroutinesCategoryColor": "#8a4211",
+		"valuesCategoryColor": "#1d8c58",
+		"actionsCategoryColor": "#b7a11c",
+		"controlsCategoryColor": "#2a90d0"
+	},
+	"fontStyle":
+	{
+	},
+	"startHats": false
+}

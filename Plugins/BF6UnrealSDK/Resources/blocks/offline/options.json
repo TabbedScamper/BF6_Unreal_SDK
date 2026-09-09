@@ -1,0 +1,34 @@
+{
+	"renderer": "portal",
+	"rtl": false,
+	"grid":
+	{
+		"spacing": 0,
+		"colour": "#888",
+		"length": 1,
+		"snap": false
+	},
+	"zoom":
+	{
+		"controls": true,
+		"wheel": true,
+		"startScale": 1,
+		"maxScale": 4,
+		"minScale": 0.25,
+		"scaleSpeed": 1.05,
+		"pinch": true
+	},
+	"move":
+	{
+		"scrollbars": true,
+		"wheel": false,
+		"drag": true
+	},
+	"trashcan": false,
+	"comments": true,
+	"disable": true,
+	"collapse": true,
+	"maxBlocks": null,
+	"sounds": false,
+	"css": true
+}

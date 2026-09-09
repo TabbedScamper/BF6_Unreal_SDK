@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "BF6SDKExtension.h"
 
+struct FSlateBrush;
+
 // The tool's side of the add-on seam. Private on purpose: add-ons see
 // BF6SDKExtension.h and nothing here.
 namespace BF6ExtInternal
@@ -16,6 +18,15 @@ namespace BF6ExtInternal
 	// The sub-ring an add-on most recently opened; the wheel reads these while
 	// in its add-on mode. Owned by BF6Extension.cpp.
 	const TArray<BF6Ext::FPieSubEntry>& AddonSubEntries();
+
+	// An add-on's picture for a placeable type, or null. The library's cards
+	// ask this before falling back to the tool's own thumbnail.
+	const FSlateBrush* AddonThumb(const FString& Type);
+
+	// What that add-on calls the picture it just handed over ("high poly",
+	// "clay", "low poly"). Empty when no add-on has anything to say, which is
+	// when the library draws no label at all.
+	FString AddonThumbDetail(const FString& Type);
 
 	void BroadcastMapOpened(const FString& Level, const FString& Save);
 	void BroadcastMapClosing(const FString& Level);

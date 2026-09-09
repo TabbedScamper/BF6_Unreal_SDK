@@ -4,9 +4,17 @@
 #include "ToolMenu.h"
 #include "ToolMenuSection.h"
 #include "BF6Theme.h"
+// ---- BF6ObjIds ----
+#include "BF6ObjIds.h"
+// ---- end BF6ObjIds ----
 #include "BF6ExtensionInternal.h"
 #include "BF6MapManifest.h"
 #include "SBF6PreviewViewport.h"
+#include "BF6PortalWeb.h"
+#include "BF6PortalProfile.h"   // ---- BF6PortalProfile ----
+#include "BF6EditorOverlay.h"   // ---- BF6EditorOverlay ---- BLOCKS / SCRIPT / UI
+#include "BF6Experience.h"      // ---- BF6Experience ---- the EXPERIENCE screen
+#include "BF6Project.h"         // ---- BF6Project ---- compare a save to an experience
 
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/IInputProcessor.h"
@@ -29,6 +37,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -61,6 +70,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "UnrealWidgetFwd.h"
 #include "Settings/LevelEditorViewportSettings.h"
+#include "BF6UiSound.h"   // ---- BF6UiSound ----
 
 // ============================================================================
 // Build Mode implementation. All UI here consumes BF6Api (engine/session logic
@@ -77,6 +87,25 @@ namespace
 	const FSlateBrush* PanelBrush()      { static FSlateColorBrush B(BF6Theme::Panel);      return &B; }
 	const FSlateBrush* InkBrush()        { static FSlateColorBrush B(BF6Theme::Ink);        return &B; }
 	const FSlateBrush* PanelLightBrush() { static FSlateColorBrush B(BF6Theme::PanelLight); return &B; }
+
+	// A card's picture: an add-on's render of the real object when one is
+	// ready, else the tool's own low-poly thumbnail. Blocks are the user's
+	// prefabs and have no add-on picture, so they skip the ask.
+	const FSlateBrush* CardThumb(const FString& Type, const FString& Mesh)
+	{
+		if (!Type.IsEmpty() && !Mesh.StartsWith(TEXT("block::")))
+			if (const FSlateBrush* B = BF6ExtInternal::AddonThumb(Type)) return B;
+		return BF6Api::GetModelThumb(Mesh);
+	}
+	// WHICH DETAIL THE CARD IS DRAWING, in the add-on's own words, or empty
+	// when nothing has anything to say and the card carries no label. The
+	// picture and the label come from one ask each on the same paint, so a
+	// card can never show one detail and claim the other.
+	FString CardDetail(const FString& Type, const FString& Mesh)
+	{
+		if (Type.IsEmpty() || Mesh.StartsWith(TEXT("block::"))) return FString();
+		return BF6ExtInternal::AddonThumbDetail(Type);
+	}
 	const FSlateBrush* AccentBrush()     { static FSlateColorBrush B(BF6Theme::Accent);     return &B; }
 	const FSlateBrush* DimBrush()        { static FSlateColorBrush B(FLinearColor(0.f,0.f,0.f,0.35f)); return &B; }
 
@@ -100,6 +129,15 @@ namespace
 			.SetHovered(FSlateRoundedBoxBrush(FLinearColor::White, 0.f))
 			.SetPressed(FSlateRoundedBoxBrush(FLinearColor(FColor(0xC0,0xC8,0xCE)), 0.f))
 			.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0, 1, 0, -1));
+		return S;
+	}
+	// A ghost button that opens a menu - same face as every other tool button,
+	// so a button that offers a choice does not look like a different species.
+	const FComboButtonStyle& ExportComboStyle()
+	{
+		static FComboButtonStyle S = FComboButtonStyle(FCoreStyle::Get().GetWidgetStyle<FComboButtonStyle>("ComboButton"))
+			.SetButtonStyle(GhostButtonStyle())
+			.SetMenuBorderPadding(FMargin(0));
 		return S;
 	}
 	// Map tile: hairline frame normally, bright white frame on hover (the site's
@@ -139,15 +177,39 @@ namespace
 			[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Ink)).Text(FText::FromString(Label.ToUpper())) ];
 	}
 
-	// Leaving an active session wipes the world (open/import) - never silently.
+	// Leaving an active session wipes the world (back to maps, opening another
+	// map or save, importing) - never silently, and never without the temp
+	// backup being current first.
+	//
+	// The backup is written BEFORE the question is asked, so whichever answer
+	// comes back, the work is already on disk. That is what makes "leave
+	// without saving" a safe thing to offer rather than a trapdoor.
 	bool ConfirmLeaveSession()
 	{
 		if (!BF6Api::IsEditing()) return true;
+		if (!BF6Api::HasUnsavedChanges()) return true;
+		BF6Api::AutosaveNow(true);
+
+		const bool bNamed = !BF6Api::CurrentSave().IsEmpty();
+		const FString Where = bNamed
+			? BF6Api::CurrentSave()
+			: FString::Printf(TEXT("Untitled on %s"), *BF6Api::DisplayName(BF6Api::CurrentLevel()));
 		const EAppReturnType::Type R = FMessageDialog::Open(EAppMsgType::YesNoCancel, FText::FromString(FString::Printf(
-			TEXT("Save changes to '%s' before leaving?\n\nYes = save and continue. No = discard changes. Cancel = stay."),
-			*BF6Api::CurrentSave())));
+			TEXT("Unsaved progress on %s will be lost. A temp backup is kept.\n\nYes = save and continue. No = leave without saving. Cancel = stay."),
+			*Where)));
 		if (R == EAppReturnType::Cancel) return false;
-		if (R == EAppReturnType::Yes) BF6Api::SaveCurrent();
+		if (R == EAppReturnType::Yes)
+		{
+			// An unnamed session has no file to save into, and inventing one
+			// here would be the tool naming the creator's map for them.
+			if (!bNamed)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(
+					TEXT("This map has no name yet.\n\nType one in the box at the bottom right and press SAVE AS, then try again.")));
+				return false;
+			}
+			BF6Api::SaveCurrent();
+		}
 		return true;
 	}
 
@@ -236,6 +298,17 @@ namespace
 		return SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight()
 			[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextBlue)).Text(FText::FromString(Label.ToUpper())) ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 5, 0, 0)
+			[ SNew(SBox).HeightOverride(1.f)[ SNew(SBorder).BorderImage(LineBrush()).Padding(0) ] ];
+	}
+
+	// The same header, for a title that changes while the screen is up.
+	TSharedRef<SWidget> MakeSectionHeader_Dynamic(TAttribute<FText> Label)
+	{
+		return SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::TextBlue))
+				.Text_Lambda([Label]{ return FText::FromString(Label.Get(FText::GetEmpty()).ToString().ToUpper()); }) ]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 5, 0, 0)
 			[ SNew(SBox).HeightOverride(1.f)[ SNew(SBorder).BorderImage(LineBrush()).Padding(0) ] ];
 	}
@@ -341,6 +414,13 @@ static FString BF6_AttributeHint(const BF6Api::FPropDef& Def)
 	return FString::Printf(TEXT("A %s value the SDK reads from this object at runtime."), *Def.Type);
 }
 
+// DRAGGING AN OBJECT OUT OF A MENU. Defined with the library's drag payload
+// further down, because the payload and the drop catcher are one mechanism and
+// a second placement route is exactly what must not exist. Declared here so the
+// radial's own lists, which are built before it, can start one.
+// "block::<name>" payloads place a saved prefab, bare names place a type.
+static FReply BF6_BeginObjectDrag(const FString& PayloadType);
+
 class SBF6CategoryPopup : public SCompoundWidget
 {
 public:
@@ -377,7 +457,7 @@ public:
 						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
 							.Text(FText::FromString(Category.IsEmpty() ? TEXT("SEARCH") : *Category.ToUpper())) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("hover=preview  dbl-click=place"))) ]
+						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("hover=preview  drag into the world  dbl-click=place"))) ]
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0,0,0,6)
 					[
@@ -401,12 +481,49 @@ public:
 							.OnSelectionChanged(this, &SBF6CategoryPopup::OnSelChanged)
 							.OnMouseButtonDoubleClick(this, &SBF6CategoryPopup::OnActivate)
 						]
-						// hover preview: the SDK's low-poly model, live 3D
+						// HOVER PREVIEW: THE ADD-ON'S PICTURE WHEN IT HAS ONE.
+						//
+						// The library's cards ask CardThumb, which asks the add-on
+						// first and falls back to the tool's own render. This popup
+						// did neither: it drove a live viewport straight off the
+						// SDK's low-poly mesh. So the same object was high poly on
+						// a card and low poly on the radial, from the same click.
+						//
+						// Asked on every paint rather than once on hover, because
+						// an add-on icon is rendered on demand and returns null
+						// while it is still queued. Re-asking means the picture
+						// appears by itself the moment it is ready, instead of
+						// staying low poly until the next hover.
 						+ SHorizontalBox::Slot().FillWidth(0.45f)
 						[
 							SNew(SVerticalBox)
 							+ SVerticalBox::Slot().FillHeight(1)
-							[ SNew(SBorder).BorderImage(InkBrush()).Padding(2.f)[ SAssignNew(Preview, SBF6PreviewViewport) ] ]
+							[ SNew(SBorder).BorderImage(InkBrush()).Padding(2.f)
+								[
+									SNew(SOverlay)
+									+ SOverlay::Slot()
+									[
+										SAssignNew(Preview, SBF6PreviewViewport)
+										.Visibility_Lambda([this]
+										{
+											return AddonPicture() ? EVisibility::Collapsed : EVisibility::Visible;
+										})
+									]
+									+ SOverlay::Slot()
+									[
+										SNew(SImage)
+										.Image_Lambda([this]() -> const FSlateBrush*
+										{
+											const FSlateBrush* B = AddonPicture();
+											return B ? B : FStyleDefaults::GetNoBrush();
+										})
+										.Visibility_Lambda([this]
+										{
+											return AddonPicture() ? EVisibility::Visible : EVisibility::Collapsed;
+										})
+									]
+								]
+							]
 							+ SVerticalBox::Slot().AutoHeight().Padding(0,4,0,0)
 							[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text_Lambda([this]{ return FText::FromString(PreviewName); }) ]
 						]
@@ -417,17 +534,29 @@ public:
 	}
 
 private:
-	FString Category, Query, PreviewName;
+	FString Category, Query, PreviewName, PreviewMesh;
 	TSharedPtr<SSearchBox> SearchField;
 	TArray<TSharedPtr<BF6Api::FPlaceableInfo>> Items;
 	TSharedPtr<SListView<TSharedPtr<BF6Api::FPlaceableInfo>>> List;
 	TSharedPtr<SBF6PreviewViewport> Preview;
+
+	// The add-on's picture for whatever is hovered, or null. Blocks are the
+	// user's own prefabs and have no add-on picture, which is the same
+	// exclusion CardThumb makes.
+	const FSlateBrush* AddonPicture() const
+	{
+		if (PreviewName.IsEmpty() || PreviewMesh.StartsWith(TEXT("block::"))) { return nullptr; }
+		return BF6ExtInternal::AddonThumb(PreviewName);
+	}
 
 	void ShowPreviewFor(TSharedPtr<BF6Api::FPlaceableInfo> Item)
 	{
 		if (!Item.IsValid() || !Preview.IsValid()) return;
 		if (PreviewName == Item->Type) return;   // already showing it
 		PreviewName = Item->Type;
+		PreviewMesh = Item->Mesh;
+		// The live model is still loaded, because it is what shows when the
+		// add-on has no picture for this object and it is what the user orbits.
 		Preview->ShowModel(Item->Mesh.IsEmpty() ? Item->Type : Item->Mesh);
 	}
 
@@ -458,16 +587,57 @@ private:
 	{
 		TSharedRef<STableRow<TSharedPtr<BF6Api::FPlaceableInfo>>> Row =
 			SNew(STableRow<TSharedPtr<BF6Api::FPlaceableInfo>>, Owner).Padding(2.f)
+			// DRAG A ROW STRAIGHT INTO THE WORLD. The same payload and the same
+			// drop catcher the library's tiles use, so there is one placement
+			// route and a drag out of the radial lands exactly where a drag out
+			// of the library would. Clicking is untouched: Slate only calls this
+			// once the pointer has actually moved with the button held.
+			.OnDragDetected_Lambda([Item](const FGeometry&, const FPointerEvent&)
+			{
+				return Item.IsValid() ? BF6_BeginObjectDrag(Item->Type) : FReply::Unhandled();
+			})
 			[
 				SNew(SHorizontalBox)
+				// the object's picture: an add-on's render when it has one, else the tool's low-poly thumbnail
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+				[
+					SNew(SBorder).BorderImage(InkBrush()).Padding(1.f)
+					[ SNew(SBox).WidthOverride(40.f).HeightOverride(40.f)
+						[ SNew(SImage).Image_Lambda([Type = Item->Type, Mesh = Item->Mesh.IsEmpty() ? Item->Type : Item->Mesh]{ return CardThumb(Type, Mesh); }) ] ]
+				]
 				+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
 				[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Item->Type)) ]
+				// which detail the picture beside the name is (empty with no add-on)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
+				[ SNew(STextBlock).Font(FontReg(8)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+					.Text_Lambda([Type = Item->Type, Mesh = Item->Mesh.IsEmpty() ? Item->Type : Item->Mesh]
+						{ return FText::FromString(CardDetail(Type, Mesh)); }) ]
+				// ---- BF6UiSound ---- an SFX_* placeable IS a sound; let the row play it.
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6,0,0,0)
+				[
+					SNew(SBox).WidthOverride(18.f)
+					.Visibility_Lambda([Item]{ return Item.IsValid() && BF6UiSound::CanPreviewPlaceable(Item->Type) ? EVisibility::Visible : EVisibility::Collapsed; })
+					[
+						SNew(SButton)
+						.ToolTipText(FText::FromString(TEXT("Play this sound")))
+						.OnClicked_Lambda([Item]{ if (Item.IsValid()) BF6UiSound::TogglePreviewPlaceable(Item->Type); return FReply::Handled(); })
+						[
+							SNew(STextBlock).Font(FontReg(10))
+							.ColorAndOpacity(FSlateColor(BF6Theme::AccentDim))
+							.Text_Lambda([Item]{ return FText::FromString(Item.IsValid() && BF6UiSound::PreviewPlaying() == Item->Type ? TEXT("[]") : TEXT(">")); })
+						]
+					]
+				]
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6,0,0,0)
 				[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(Item->PhysicsCost > 0 ? BF6Theme::AccentDim : BF6Theme::TextDim)).Text(FText::FromString(FString::Printf(TEXT("%d"), Item->PhysicsCost))) ]
 			];
 		// hovering a row shows its SDK low-poly model in the preview pane
+		// ---- BF6UiSound ---- Hover() throttles itself; a raw Play here would rattle.
+		// Moving to another row also stops a running sound preview, which is
+		// what "stops when the row loses hover" means on a recycled list row:
+		// the row itself has no leave event, but the next row's enter is one.
 		Row->SetOnMouseEnter(FNoReplyPointerEventHandler::CreateLambda(
-			[this, Item](const FGeometry&, const FPointerEvent&){ ShowPreviewFor(Item); }));
+			[this, Item](const FGeometry&, const FPointerEvent&){ BF6UiSound::Hover(); if (Item.IsValid() && BF6UiSound::PreviewPlaying() != Item->Type) BF6UiSound::StopPreview(); ShowPreviewFor(Item); }));
 		return Row;
 	}
 
@@ -495,9 +665,11 @@ private:
 static void BF6_PushTransient(TSharedRef<SWidget> Content, const FVector2D& Center);
 
 // ---------------------------------------------------------------------------
-// Drag payload for library tiles: drop anywhere on the map to place the object
-// there. bActive gates the full-viewport drop catcher's hit-testing so it only
-// exists while one of OUR drags is in flight.
+// Drag payload for library tiles AND for the radial's own object and block
+// lists: drop anywhere on the map to place the object there. bActive gates the
+// full-viewport drop catcher's hit-testing so it only exists while one of OUR
+// drags is in flight. One payload, one catcher, one placement: wherever a drag
+// starts, the drop snaps and aligns the same way, because it is the same code.
 // ---------------------------------------------------------------------------
 class FBF6LibDragOp : public FDragDropOperation
 {
@@ -527,6 +699,25 @@ public:
 };
 bool FBF6LibDragOp::bActive = false;
 bool FBF6LibDragOp::bWarnedReadOnly = false;
+
+// The radial and its lists are menus, and a menu sitting over the middle of the
+// screen is the one place a creator must not have to drop on. So a drag that
+// starts in one takes the menu stack down with it - a tick later, never inside
+// the event that started the drag, because dismissing a menu destroys the row
+// the pointer is still captured on. Slate's drag operation outlives the widget
+// it came from, so by the time the menus go the drag is already the tool's.
+static void BF6_CloseMenusForDrag();   // defined with the pie, which owns both
+
+static FReply BF6_BeginObjectDrag(const FString& PayloadType)
+{
+	if (PayloadType.IsEmpty()) return FReply::Unhandled();
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float)
+	{
+		BF6_CloseMenusForDrag();
+		return false;
+	}), 0.f);
+	return FReply::Handled().BeginDragDrop(FBF6LibDragOp::New(PayloadType));
+}
 
 static bool BF6_GodotCameraOn();   // defined with the input handler below
 static void BF6_TickFlyBoost(float DeltaSeconds);   // Shift-to-go-faster, defined with it
@@ -1553,9 +1744,11 @@ public:
 					[
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
-						[ MakePrimaryButton(TEXT("Apply"), []{ BF6Api::ApplyScatterLive(); }) ]
+						// ---- BF6UiSound ----
+						[ MakePrimaryButton(TEXT("Apply"), []{ BF6UiSound::Play(EBF6UiSound::Confirm); BF6Api::ApplyScatterLive(); }) ]
 						+ SHorizontalBox::Slot().AutoWidth()
-						[ MakeToolButton(TEXT("Cancel"), []{ BF6Api::CancelScatterLive(); }) ]
+						// ---- BF6UiSound ----
+						[ MakeToolButton(TEXT("Cancel"), []{ BF6UiSound::Play(EBF6UiSound::Cancel); BF6Api::CancelScatterLive(); }) ]
 						+ SHorizontalBox::Slot().FillWidth(1)[ SNullWidget::NullWidget ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("Enter / Esc"))) ]
@@ -1794,14 +1987,14 @@ public:
 				Title = TEXT("MODE SETUP");
 				Hint = TEXT("Click to place each step  -  Esc stops the setup");
 			}
-			// no custom level open: the whole build screen is a read-only view
-			// of the stock map - say so permanently, or users place and move
-			// things that silently never save
+			// No map open at all. There is no read-only base map any more - a map
+			// is editable the moment it opens - so the only state left to warn
+			// about is the one where the build screen is showing nothing.
 			else if (!BF6Api::IsEditing())
 			{
 				Col = FLinearColor(1.f, 0.72f, 0.f);
-				Title = TEXT("BASE MAP  -  READ ONLY");
-				Hint = TEXT("Nothing you place or move here is kept. Name your map and hit Create in the bottom right, or go back to < Maps and resume a custom level.");
+				Title = TEXT("NO MAP OPEN");
+				Hint = TEXT("Go to < Maps and pick a map to build on.");
 			}
 			else bMode = false;
 			if (bMode)
@@ -2076,8 +2269,10 @@ public:
 
 static void BF6_MiniToast(const FString& Msg);   // defined with the toast helpers below
 
-// Invisible full-viewport widget that only hit-tests while a library drag is in
-// flight, so the drop lands on the map instead of dying on the level viewport.
+// Invisible full-viewport widget that only hit-tests while one of our drags is
+// in flight, so the drop lands on the map instead of dying on the level
+// viewport. A drop anywhere else - off the viewport, on another panel - reaches
+// no catcher, the operation is dropped, and nothing is placed.
 class SBF6DropCatcher : public SCompoundWidget
 {
 public:
@@ -2100,7 +2295,7 @@ public:
 			if (!FBF6LibDragOp::bWarnedReadOnly)
 			{
 				FBF6LibDragOp::bWarnedReadOnly = true;
-				BF6Api::RefuseReadOnly(TEXT("This base map is read-only. Type a name and press Create, bottom right, to start your custom map - then objects can be placed."));
+				BF6Api::RefuseReadOnly(TEXT("No map is open - go to < Maps and pick one, then objects can be placed."));
 			}
 			return FReply::Handled();
 		}
@@ -2646,11 +2841,22 @@ private:
 					[
 						SNew(SOverlay)
 						+ SOverlay::Slot()
-						[ SNew(SImage).Image_Lambda([Mesh]{ return BF6Api::GetModelThumb(Mesh); }) ]
+						[ SNew(SImage).Image_Lambda([Type = Item->Type, Mesh]{ return CardThumb(Type, Mesh); }) ]
 						+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center)
 						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
-							.Visibility_Lambda([Mesh]{ return BF6Api::GetModelThumb(Mesh) ? EVisibility::Collapsed : EVisibility::HitTestInvisible; })
+							.Visibility_Lambda([Type = Item->Type, Mesh]{ return CardThumb(Type, Mesh) ? EVisibility::Collapsed : EVisibility::HitTestInvisible; })
 							.Text(FText::FromString(TEXT("rendering..."))) ]
+						// The detail this card is drawing, bottom left, in the
+						// corner a thumbnail never uses. Absent entirely when no
+						// add-on is installed, so the stock tool is unchanged.
+						+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Bottom).Padding(3.f)
+						[
+							SNew(SBorder).BorderImage(DimBrush()).Padding(FMargin(4, 1))
+							.Visibility_Lambda([Type = Item->Type, Mesh]
+								{ return CardDetail(Type, Mesh).IsEmpty() ? EVisibility::Collapsed : EVisibility::HitTestInvisible; })
+							[ SNew(STextBlock).Font(FontReg(7)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+								.Text_Lambda([Type = Item->Type, Mesh]{ return FText::FromString(CardDetail(Type, Mesh)); }) ]
+						]
 					]
 					+ SVerticalBox::Slot().AutoHeight()
 					[
@@ -2660,6 +2866,22 @@ private:
 							+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
 							[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::Text))
 								.OverflowPolicy(ETextOverflowPolicy::Ellipsis).Text(FText::FromString(Item->Type)) ]
+							// ---- BF6UiSound ----
+							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4, 0, 0, 0)
+							[
+								SNew(SBox).WidthOverride(16.f)
+								.Visibility_Lambda([Item]{ return Item.IsValid() && BF6UiSound::CanPreviewPlaceable(Item->Type) ? EVisibility::Visible : EVisibility::Collapsed; })
+								[
+									SNew(SButton)
+									.ToolTipText(FText::FromString(TEXT("Play this sound")))
+									.OnClicked_Lambda([Item]{ if (Item.IsValid()) BF6UiSound::TogglePreviewPlaceable(Item->Type); return FReply::Handled(); })
+									[
+										SNew(STextBlock).Font(FontReg(9))
+										.ColorAndOpacity(FSlateColor(BF6Theme::AccentDim))
+										.Text_Lambda([Item]{ return FText::FromString(Item.IsValid() && BF6UiSound::PreviewPlaying() == Item->Type ? TEXT("[]") : TEXT(">")); })
+									]
+								]
+							]
 							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4, 0, 0, 0)
 							[ SNew(STextBlock).Font(FontReg(8)).ColorAndOpacity(FSlateColor(Item->PhysicsCost > 0 ? BF6Theme::AccentDim : BF6Theme::TextDim))
 								.Text(FText::FromString(FString::Printf(TEXT("%d"), Item->PhysicsCost))) ]
@@ -2746,7 +2968,7 @@ public:
 						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
 						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("BLOCKS"))) ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("double-click = place at the aimed spot"))) ]
+						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("drag into the world, or double-click = place at the aimed spot"))) ]
 					]
 					+ SVerticalBox::Slot().FillHeight(1)
 					[
@@ -2793,6 +3015,11 @@ private:
 	{
 		const bool bOtherMap = !Item->Level.IsEmpty() && Item->Level != BF6Api::CurrentLevel();
 		return SNew(STableRow<TSharedPtr<BF6Api::FBlockInfo>>, Owner).Padding(FMargin(2, 3))
+			// a saved prefab drags out of the radial exactly like an object does
+			.OnDragDetected_Lambda([Item](const FGeometry&, const FPointerEvent&)
+			{
+				return Item.IsValid() ? BF6_BeginObjectDrag(TEXT("block::") + Item->Name) : FReply::Unhandled();
+			})
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
@@ -3168,6 +3395,31 @@ public:
 								BF6_MiniToast(TEXT("Back to the map's own lighting."));
 							}) ]
 					]
+					// ---- BF6UiSound ---- Sounds. Off leaves the tool exactly as it was;
+					// with no add-on installed there is nothing to hear either way.
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[
+							SNew(SCheckBox)
+							.IsChecked_Lambda([]{ return BF6UiSound::IsEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+							.OnCheckStateChanged_Lambda([](ECheckBoxState S){ BF6UiSound::SetEnabled(S == ECheckBoxState::Checked); })
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 10, 0)
+						[
+							SNew(STextBlock).Font(FontReg(10))
+							.ColorAndOpacity(FSlateColor(BF6Theme::Text))
+							.Text(FText::FromString(TEXT("Sounds")))
+						]
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+						[
+							SNew(SSlider)
+							.Value_Lambda([]{ return BF6UiSound::Volume(); })
+							.OnValueChanged_Lambda([](float V){ BF6UiSound::SetVolume(V); })
+							.IsEnabled_Lambda([]{ return BF6UiSound::IsEnabled(); })
+						]
+					]
 					// The official top-down map image, draped over the low-poly
 					// context - the Godot SDK's terrain decal, matched. It is a
 					// real actor: select it and shift it with the gizmo to
@@ -3197,7 +3449,7 @@ public:
 // A pure VIEW aid - it paints meshes in the editor so a blockout reads at a
 // glance and duplicates stand out, and nothing it does reaches the export.
 // ---------------------------------------------------------------------------
-// "CREATE A LEVEL", from the radial on a base map. The same job as the box in
+// "SAVE AS", from the radial. The same job as the box in
 // the bottom right corner, put where the creator is already looking - being told
 // to go and find another control is a poor answer to a button that offered.
 class SBF6CreateLevelPanel : public SCompoundWidget
@@ -3215,10 +3467,10 @@ public:
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
 				[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
-					.Text(FText::FromString(TEXT("CREATE A LEVEL"))) ]
+					.Text(FText::FromString(TEXT("SAVE AS"))) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 14)
 				[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
-					.Text(FText::FromString(TEXT("This map is read only until you make a level of your own on top of it. Everything you place then belongs to that level, and the map underneath is never changed."))) ]
+					.Text(FText::FromString(TEXT("Give this map a name and it gets a file of its own. Everything you have placed belongs to it, and the map underneath is never changed."))) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
 				[
 					SNew(SBox).WidthOverride(280.f)
@@ -3230,7 +3482,8 @@ public:
 					]
 				]
 				+ SVerticalBox::Slot().AutoHeight()
-				[ MakePrimaryButton(TEXT("Create"), [this]{ Go(); }) ]
+				// ---- BF6UiSound ----
+				[ MakePrimaryButton(TEXT("Save as"), [this]{ BF6UiSound::Play(EBF6UiSound::Confirm); Go(); }) ]
 			]
 		];
 	}
@@ -3245,7 +3498,7 @@ private:
 	void Go()
 	{
 		const FString Name = NameBox.IsValid() ? NameBox->GetText().ToString().TrimStartAndEnd() : FString();
-		if (Name.IsEmpty()) { BF6_MiniToast(TEXT("Give the level a name first.")); return; }
+		if (Name.IsEmpty()) { BF6_MiniToast(TEXT("Give the map a name first.")); return; }
 		BF6Api::HideTransientMenus();
 		BF6Api::CreateCustom(Name);
 	}
@@ -3370,13 +3623,15 @@ public:
 	}
 };
 
-// "OBJECT IDS": the ObjId registry. Scripts address gameplay objects by these
-// ids; duplicates or unset ids quietly break modes, so the registry lists
-// every id, flags the problems, and auto-numbers a selection in a
-// left-to-right spatial sweep.
+// "OBJECT IDS": the ObjId registry, which is a manager of its own now.
+//
+// The panel itself, with its categories, bands, conflicts, reserved ranges and
+// the code export, lives in BF6ObjIds.cpp. What stays here is the one line that
+// shows it, so the ring and the tools menu keep the entry point they had.
 // ---------------------------------------------------------------------------
 static void BF6_MiniToast(const FString& Msg);
 
+// ---- BF6ObjIds ----
 class SBF6ObjIdPanel : public SCompoundWidget
 {
 public:
@@ -3385,153 +3640,10 @@ public:
 
 	void Construct(const FArguments&)
 	{
-		ChildSlot
-		[
-			SNew(SBox).WidthOverride(480.f)
-			[
-				SNew(SBorder).BorderImage(PanelBrush()).Padding(10.f)
-				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
-						[
-							SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 2))
-							.OnClicked_Lambda([]{ BF6Pie_Reopen(); return FReply::Handled(); })
-							[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("< BACK"))) ]
-						]
-						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
-						[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(TEXT("OBJECT IDS"))) ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("click a row to select it"))) ]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
-					[ SAssignNew(Summary, STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
-						[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("start at"))) ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
-						[ SNew(SBox).WidthOverride(64.f)
-							[ SAssignNew(StartBox, SEditableTextBox)
-								.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type How)
-									{ if (How == ETextCommit::OnEnter) AssignIds(); }) ] ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
-						[ MakePrimaryButton(TEXT("Assign to selection"), [this]{ AssignIds(); }) ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ MakeToolButton(TEXT("Select duplicates"), [this]
-							{
-								const int32 n = BF6Api::SelectDuplicateObjIds();
-								BF6_MiniToast(n > 0
-									? FString::Printf(TEXT("Selected %d actors with duplicate ids."), n)
-									: FString(TEXT("No duplicate ids - clean.")));
-							}) ]
-						+ SHorizontalBox::Slot().FillWidth(1) [ SNullWidget::NullWidget ]
-						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ MakeToolButton(TEXT("Refresh"), [this]{ Refresh(); }) ]
-					]
-					+ SVerticalBox::Slot().AutoHeight()
-					[ SNew(SBox).MaxDesiredHeight(340.f)[ SNew(SScrollBox) + SScrollBox::Slot()[ SAssignNew(Rows, SVerticalBox) ] ] ]
-				]
-			]
-		];
-		Refresh();
-	}
-
-private:
-	TSharedPtr<SVerticalBox> Rows;
-	TSharedPtr<STextBlock> Summary;
-	// The button and Enter in the start box both come here. Typing a start
-	// number and pressing Enter is what anyone expects that box to do, and it
-	// is safe: renumbering already-set ids still asks first.
-	void AssignIds()
-	{
-			const int32 Start = FMath::Max(0, FCString::Atoi(*StartBox->GetText().ToString()));
-			// fills blanks only - ids already set are what scripts address
-			BF6Api::FObjIdAssign R = BF6Api::AutoAssignObjIds(Start, false);
-			if (R.Considered == 0) { BF6_MiniToast(TEXT("Select gameplay objects first.")); Refresh(); return; }
-			if (R.Assigned == 0 && R.Kept > 0)
-			{
-				// nothing blank left: renumbering is destructive, so ask plainly
-				const EAppReturnType::Type Pick = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(FString::Printf(TEXT(
-					"All %d selected objects already have an ObjId.\n\n"
-					"Scripts address objects by these ids, so renumbering can break a mod that is already written.\n\n"
-					"Renumber them anyway, starting at %d?"), R.Kept, Start)));
-				if (Pick != EAppReturnType::Yes) { BF6_MiniToast(TEXT("Left every id as it was.")); return; }
-				R = BF6Api::AutoAssignObjIds(Start, true);
-				BF6_MiniToast(FString::Printf(TEXT("Renumbered %d ids starting at %d."), R.Assigned, Start));
-			}
-			else
-			{
-				BF6_MiniToast(R.Kept > 0
-					? FString::Printf(TEXT("Assigned %d id%s. Left %d that already had one."), R.Assigned, R.Assigned == 1 ? TEXT("") : TEXT("s"), R.Kept)
-					: FString::Printf(TEXT("Assigned %d id%s."), R.Assigned, R.Assigned == 1 ? TEXT("") : TEXT("s")));
-			}
-			Refresh();
-	}
-
-	TSharedPtr<SEditableTextBox> StartBox;
-
-	void Refresh()
-	{
-		if (!Rows.IsValid()) return;
-		TArray<BF6Api::FObjIdRow> All = BF6Api::GatherObjIds();
-		TMap<int32, int32> Count;
-		for (const BF6Api::FObjIdRow& R : All) if (R.Id >= 0) Count.FindOrAdd(R.Id)++;
-		int32 nDup = 0, nUnset = 0, MaxId = -1;
-		for (const BF6Api::FObjIdRow& R : All)
-		{
-			if (R.Id < 0) { nUnset++; continue; }
-			if (Count[R.Id] > 1) nDup++;
-			MaxId = FMath::Max(MaxId, R.Id);
-		}
-		if (Summary.IsValid())
-			Summary->SetText(FText::FromString(FString::Printf(
-				TEXT("%d objects with ids     %d duplicate%s     %d unset"),
-				All.Num(), nDup, nDup == 1 ? TEXT("") : TEXT("s"), nUnset)));
-		// suggest the next free id, but never stomp what the user typed
-		if (StartBox.IsValid() && StartBox->GetText().IsEmpty())
-			StartBox->SetText(FText::FromString(FString::FromInt(MaxId + 1)));
-
-		All.Sort([](const BF6Api::FObjIdRow& A, const BF6Api::FObjIdRow& B)
-		{
-			if ((A.Id < 0) != (B.Id < 0)) return B.Id < 0;   // unset sink to the bottom
-			if (A.Id != B.Id) return A.Id < B.Id;
-			return A.Name < B.Name;
-		});
-
-		Rows->ClearChildren();
-		for (const BF6Api::FObjIdRow& R : All)
-		{
-			const bool bDup = R.Id >= 0 && Count[R.Id] > 1;
-			const bool bUnset = R.Id < 0;
-			TWeakObjectPtr<AActor> Wk = R.Actor;
-			Rows->AddSlot().AutoHeight().Padding(0, 1)
-			[
-				SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 3)).HAlign(HAlign_Fill)
-				.OnClicked_Lambda([Wk]{ BF6Api::SelectOnly(Wk.Get()); return FReply::Handled(); })
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-					[ SNew(SBox).WidthOverride(64.f)
-						[ SNew(STextBlock).Font(FontBold(10))
-							.ColorAndOpacity(FSlateColor(bDup ? BF6Theme::Accent : (bUnset ? BF6Theme::TextDim : BF6Theme::Text)))
-							.Text(FText::FromString(bUnset ? FString(TEXT("unset")) : FString::FromInt(R.Id))) ] ]
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8, 0)
-					[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(R.Type)) ]
-					+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center).Padding(8, 0, 0, 0)
-					[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(R.Name)) ]
-					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-					[ SNew(STextBlock).Font(FontBold(8)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
-						.Visibility(bDup ? EVisibility::Visible : EVisibility::Collapsed)
-						.Text(FText::FromString(TEXT("DUPLICATE"))) ]
-				]
-			];
-		}
+		ChildSlot [ BF6ObjIds::MakePanel([]{ BF6Pie_Reopen(); }) ];
 	}
 };
+// ---- end BF6ObjIds ----
 
 // ---------------------------------------------------------------------------
 // "CHECKS": the lint panel. Runs every offline validation rule and lists what
@@ -3751,13 +3863,33 @@ public:
 				{
 					Cats.Add(BF6Api::IsWalking() ? TEXT("FLY") : TEXT("WALK"));
 					Subs.Add(BF6Api::IsWalking() ? TEXT("back to the camera") : TEXT("walk the map for scale"));
-					Cats.Add(TEXT("CREATE A LEVEL"));
-					Subs.Add(TEXT("name it bottom right, or resume one"));
+					Cats.Add(TEXT("SAVE AS"));
+					Subs.Add(TEXT("give this map a name"));
+					// ---- BF6PortalWeb ----
+					Cats.Add(TEXT("PORTAL"));
+					Subs.Add(BF6PortalWeb::IsShown() ? TEXT("showing - pick again to hide") : TEXT("the Portal site, in the editor"));
+					// ---- end BF6PortalWeb ----
+					// ---- BF6PortalProfile ----
+					// The map screen is where a profile is worth linking: it is the screen
+					// that then fills with your own experiences.
+					Cats.Add(TEXT("LINK PORTAL PROFILE"));
+					Subs.Add(BF6PortalProfile::State() == BF6PortalProfile::EState::Linked
+						? TEXT("linked - your experiences are on the map screen")
+						: TEXT("sign in on the page, the tool never sees it"));
+					// ---- end BF6PortalProfile ----
 				}
 				else
 				{
 				Cats.Add(TEXT("OBJECTS"));
 				Subs.Add(TEXT("place, library, blocks"));
+				// An untitled map has no file yet, and the wheel is where a hand
+				// already is. It disappears once the map has a name - from then on
+				// SAVE in the corner is the whole job.
+				if (BF6Api::CurrentSave().IsEmpty())
+				{
+					Cats.Add(TEXT("SAVE AS"));
+					Subs.Add(TEXT("give this map a name"));
+				}
 				Cats.Add(TEXT("MODE SETUP"));
 				Subs.Add(TEXT("conquest, breakthrough"));
 				Cats.Add(TEXT("VALIDATE"));
@@ -3779,6 +3911,11 @@ public:
 				Subs.Add(BF6Api::AnyCollisionOverlay() ? TEXT("showing - hide inside") : TEXT("what you really hit"));
 				Cats.Add(BF6Api::IsWalking() ? TEXT("FLY") : TEXT("WALK"));
 				Subs.Add(BF6Api::IsWalking() ? TEXT("back to the camera") : TEXT("eye level, for scale"));
+
+				// ---- BF6PortalWeb: the Portal site, in the editor ----
+				Cats.Add(TEXT("PORTAL"));
+				Subs.Add(BF6PortalWeb::IsShown() ? TEXT("showing - pick again to hide") : TEXT("the Portal site, in the editor"));
+				// ---- end BF6PortalWeb ----
 
 				// Whatever the installed add-ons asked for, last on the ring. They
 				// are appended rather than woven in so the tool's own five stay
@@ -4064,9 +4201,11 @@ public:
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
-				[ MakePrimaryButton(TEXT("Apply"), [this]{ if (ValueBox.IsValid()) Apply(ValueBox->GetText().ToString()); }) ]
+				// ---- BF6UiSound ---- a value applied to an object is an assignment.
+				[ MakePrimaryButton(TEXT("Apply"), [this]{ BF6UiSound::Play(EBF6UiSound::Assign); if (ValueBox.IsValid()) Apply(ValueBox->GetText().ToString()); }) ]
 				+ SHorizontalBox::Slot().AutoWidth()
-				[ MakeToolButton(TEXT("Cancel"), []{ BF6Api::HideTransientMenus(); }) ]
+				// ---- BF6UiSound ----
+				[ MakeToolButton(TEXT("Cancel"), []{ BF6UiSound::Play(EBF6UiSound::Cancel); BF6Api::HideTransientMenus(); }) ]
 			];
 		}
 
@@ -4090,9 +4229,108 @@ private:
 	}
 };
 
+// ---- BF6EditorOverlay ----
+// A TOP TOOLBAR ROW BUTTON THAT STAYS PRESSED.
+//
+// The three editors are not menu items and not pills on the ring: they are
+// buttons in the row across the top, and the button itself carries the state.
+// Accent-filled means that editor is covering the viewport right now, and
+// pressing it again is what gives the world back, so nothing else has to
+// explain how to get out.
+//
+// Full row height: no vertical padding on the slot, the fill goes edge to
+// edge, and the row reads as one bar rather than a line of loose chips.
+static TSharedRef<SWidget> BF6_MakeTopBarToggle(const FString& Label, TFunction<bool()> IsOn,
+	TFunction<void()> OnClick, const FString& HintTitle, const FString& HintBody)
+{
+	return SNew(SButton)
+		.ButtonStyle(&FCoreStyle::Get(), "NoBorder")
+		.ContentPadding(0)
+		.ToolTip(BF6_MakeHint(HintTitle, HintBody))
+		.OnClicked_Lambda([OnClick]{ if (OnClick) OnClick(); return FReply::Handled(); })
+		[
+			SNew(SBorder)
+			.BorderImage_Lambda([IsOn]{ return (IsOn && IsOn()) ? AccentBrush() : PanelBrush(); })
+			.VAlign(VAlign_Center).HAlign(HAlign_Center)
+			.Padding(FMargin(18.f, 0.f))
+			[
+				SNew(STextBlock).Font(FontBold(10))
+				.ColorAndOpacity_Lambda([IsOn]{ return FSlateColor((IsOn && IsOn()) ? BF6Theme::Ink : BF6Theme::Text); })
+				.Text(FText::FromString(Label.ToUpper()))
+			]
+		];
+}
+// ---- end BF6EditorOverlay ----
+
+// ---- BF6Experience ----
+// THE SAME ROW BUTTON, WITH A REASON WHEN IT IS OFF.
+//
+// EXPERIENCE only means something when the open project actually is an
+// experience on the site. Hiding the button would leave nowhere to explain
+// that, so it stays in the row, greyed, and its hint says which of the two
+// things is missing: the sign-in, or an experience map to stand on.
+//
+// THE HINT SITS ON THE BOX, NOT THE BUTTON. Slate looks for a tooltip along the
+// hovered path and passes over widgets that are disabled, so a hint written on
+// the button itself would vanish exactly when it is the only thing worth
+// reading.
+static TSharedRef<IToolTip> BF6_MakeHintLive(const FString& Title, TAttribute<FText> Body)
+{
+	static FSlateColorBrush LineB(FLinearColor(FColor(0xAE, 0xC0, 0xCC)) * FLinearColor(1.f, 1.f, 1.f, 0.5f));
+	return SNew(SBF6HintTip)
+	.TextMargin(FMargin(0))
+	.Content()
+	[
+		SNew(SBorder).BorderImage(&LineB).Padding(1.f)
+		[
+			SNew(SBorder).BorderImage(PanelBrush()).Padding(FMargin(12, 9))
+			[
+				SNew(SBox).MaxDesiredWidth(300.f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+					[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(Title.ToUpper())) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ SNew(STextBlock).Font(FontReg(10)).AutoWrapText(true).ColorAndOpacity(FSlateColor(BF6Theme::TextBlue)).Text(Body) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+					[ SNew(STextBlock).Font(FontBold(7)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("S D K   H I N T"))) ]
+				]
+			]
+		]
+	];
+}
+
+static TSharedRef<SWidget> BF6_MakeTopBarGate(const FString& Label, TFunction<bool()> IsOn,
+	TFunction<void()> OnClick, TFunction<bool()> IsEnabled, const FString& HintTitle,
+	TAttribute<FText> HintBody)
+{
+	return SNew(SBox)
+		.ToolTip(BF6_MakeHintLive(HintTitle, HintBody))
+		[
+			SNew(SButton)
+			.ButtonStyle(&FCoreStyle::Get(), "NoBorder")
+			.ContentPadding(0)
+			.IsEnabled_Lambda([IsEnabled]{ return IsEnabled ? IsEnabled() : true; })
+			.OnClicked_Lambda([OnClick]{ if (OnClick) OnClick(); return FReply::Handled(); })
+			[
+				SNew(SBorder)
+				.BorderImage_Lambda([IsOn]{ return (IsOn && IsOn()) ? AccentBrush() : PanelBrush(); })
+				.VAlign(VAlign_Center).HAlign(HAlign_Center)
+				.Padding(FMargin(18.f, 0.f))
+				[
+					SNew(STextBlock).Font(FontBold(10))
+					.ColorAndOpacity_Lambda([IsOn]{ return FSlateColor((IsOn && IsOn()) ? BF6Theme::Ink : BF6Theme::Text); })
+					.Text(FText::FromString(Label.ToUpper()))
+				]
+			]
+		];
+}
+// ---- end BF6Experience ----
+
 // ---------------------------------------------------------------------------
-// Build overlay: the always-on viewport chrome. Budget bar (top, hideable) and
-// import/export (bottom-right). Ticks to keep the budget live as you build.
+// Build overlay: the always-on viewport chrome. The top toolbar row (editors
+// and the budget meter) and import/export (bottom-right). Ticks to keep the
+// budget live as you build.
 // ---------------------------------------------------------------------------
 class SBF6BuildOverlay : public SCompoundWidget
 {
@@ -4136,18 +4374,108 @@ public:
 				.Anchors(FAnchors(0.f, 0.f, 1.f, 1.f)).Offset(FMargin(0.f))
 				[ SNew(SBF6ReadOnlyPulse) ]
 
-			// --- budget bar (top, full width) ---
+			// --- the top toolbar row: the three editors, then the budget meter ---
+			//
+			// ---- BF6EditorOverlay ----
+			// THE ROW IS THE WAY INTO THE EDITORS. BLOCKS, SCRIPT and UI each
+			// cover the whole viewport when their button is pressed, and the
+			// button stays accent-filled while its page is up, so the way back
+			// to the world is the button you came in by. Only one is ever up;
+			// pressing another swaps the page under the same sheet.
+			//
+			// This row is the one piece of the HUD the sheet does not cover,
+			// which is what makes that possible: its height and the sheet's top
+			// inset are one number, BF6EditorOverlay::TopBarHeight.
+			//
+			// The budget meter shares the row rather than owning it, and hides
+			// into a SHOW BUDGET button at the row's right end instead of into
+			// a loose pill over the corner of the map.
 			+ SConstraintCanvas::Slot()
-				.Anchors(FAnchors(0.f, 0.f, 1.f, 0.f)).Offset(FMargin(0.f, 0.f, 0.f, 40.f)).Alignment(FVector2D(0.f, 0.f))
+				.Anchors(FAnchors(0.f, 0.f, 1.f, 0.f))
+				.Offset(FMargin(0.f, 0.f, 0.f, BF6EditorOverlay::TopBarHeight))
+				.Alignment(FVector2D(0.f, 0.f))
 				[
-					SNew(SBox).Visibility_Lambda([this]{ return bBarHidden ? EVisibility::Collapsed : EVisibility::Visible; })
+					SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(0.f))
 					[
-						SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(10.f, 5.f))
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(0,0,1,0)
+						[ BF6_MakeTopBarToggle(TEXT("Blocks"),
+							[]{ return BF6EditorOverlay::IsShowing(BF6EditorOverlay::EEditor::Blocks); },
+							[]{ BF6EditorOverlay::Toggle(BF6EditorOverlay::EEditor::Blocks); },
+							TEXT("Block editor"),
+							TEXT("Opens the Portal rules editor over the whole viewport. Press it again to show the map. Your workspace stays exactly as you left it.")) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(0,0,1,0)
+						[ BF6_MakeTopBarToggle(TEXT("Script"),
+							[]{ return BF6EditorOverlay::IsShowing(BF6EditorOverlay::EEditor::Script); },
+							[]{ BF6EditorOverlay::Toggle(BF6EditorOverlay::EEditor::Script); },
+							TEXT("Script editor"),
+							TEXT("Opens the TypeScript editor over the whole viewport. Press it again to show the map. The open project and anything unsaved stay as they are.")) ]
+						// After SCRIPT and before UI: what the mod printed sits
+						// next to the two places that produced it, and ahead of
+						// the one that only draws.
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(0,0,1,0)
+						[ BF6_MakeTopBarToggle(TEXT("Log"),
+							[]{ return BF6EditorOverlay::IsShowing(BF6EditorOverlay::EEditor::Log); },
+							[]{ BF6EditorOverlay::Toggle(BF6EditorOverlay::EEditor::Log); },
+							TEXT("The game's log"),
+							TEXT("What your mod printed while it ran. Pull it after a Host Locally session, or watch it live before you launch one. PC only: the game writes this file on PC and not on console.")) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(0,0,1,0)
+						// After the log because it answers the question the log
+						// raises: the mod did something unexpected, and the reason
+						// is often that this build is not the one the script was
+						// written against.
+						[ BF6_MakeTopBarToggle(TEXT("Changes"),
+							[]{ return BF6EditorOverlay::IsShowing(BF6EditorOverlay::EEditor::Caps); },
+							[]{ BF6EditorOverlay::Toggle(BF6EditorOverlay::EEditor::Caps); },
+							TEXT("What this build can do"),
+							TEXT("What the installed SDK, the Portal site and the installed game each say is available, and what moved since the last scan. The three disagree with each other, and this says which one you are looking at.")) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(0,0,1,0)
+						[ BF6_MakeTopBarToggle(TEXT("UI"),
+							[]{ return BF6EditorOverlay::IsShowing(BF6EditorOverlay::EEditor::Ui); },
+							[]{ BF6EditorOverlay::Toggle(BF6EditorOverlay::EEditor::Ui); },
+							TEXT("UI builder"),
+							TEXT("Opens the HUD designer over the whole viewport. Press it again to show the map. Your design stays on the canvas.")) ]
+						// ---- BF6Experience ----
+						// The tool's own screen for the experience this project
+						// belongs to. Off, with the reason in its hint, until the
+						// open map is one.
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(0,0,1,0)
+						[ BF6_MakeTopBarGate(TEXT("Experience"),
+							[]{ return BF6EditorOverlay::IsShowing(BF6EditorOverlay::EEditor::Experience); },
+							[]{ BF6EditorOverlay::Toggle(BF6EditorOverlay::EEditor::Experience); },
+							// Showing counts as enabled, or a map switch that drops
+							// the link would grey out the only way back to the world.
+							[]{ return BF6Experience::IsExperienceOpen()
+								|| BF6EditorOverlay::IsShowing(BF6EditorOverlay::EEditor::Experience); },
+							TEXT("This experience"),
+							TAttribute<FText>::CreateLambda([]
+							{
+								const FString Why = BF6Experience::WhyUnavailable();
+								return FText::FromString(Why.IsEmpty()
+									? FString(TEXT("The Portal experience this map belongs to: its name and thumbnail, its map rotation, its settings, and the account it lives on. Press it again to show the map."))
+									: Why);
+							})) ]
+						// ---- end BF6Experience ----
+						// PORTAL had no button of its own up here, only a pill on
+						// the ring. It keeps its own two placements; this is just
+						// the switch, in the row with the rest.
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Fill).Padding(0,0,10,0)
+						[ BF6_MakeTopBarToggle(TEXT("Portal"),
+							[]{ return BF6PortalWeb::IsShown(); },
+							[]{ BF6PortalWeb::Toggle(); },
+							TEXT("The Portal site"),
+							TEXT("Shows portal.battlefield.com in the editor, in the placement you last used. Press it again to hide it; the page keeps running and stays signed in.")) ]
+						// ---- end BF6EditorOverlay ----
+
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0,0,10,0)
 						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0,0,10,0)
-							[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("PORTAL BUDGET"))) ]
-							+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+							SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+							.Visibility_Lambda([this]{ return bBarHidden ? EVisibility::Collapsed : EVisibility::Visible; })
+							.Text(FText::FromString(TEXT("PORTAL BUDGET")))
+						]
+						+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center).Padding(FMargin(0.f, 5.f))
+						[
+							SNew(SBox).Visibility_Lambda([this]{ return bBarHidden ? EVisibility::Collapsed : EVisibility::Visible; })
 							[
 								SNew(SOverlay)
 								+ SOverlay::Slot()
@@ -4155,27 +4483,27 @@ public:
 								+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center)
 								[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(FLinearColor::White)).Text_Lambda([this]{ return BF6Api::BudgetText(); }) ]
 							]
-							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10,0,0,0)
-							[
-								SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6,2))
-								.OnClicked_Lambda([this]{ bBarHidden = true; return FReply::Handled(); })
-								.ToolTip(BF6_MakeHint(TEXT("Hide the budget bar"), TEXT("Tucks it into a small pill in the top-left corner. Click that pill to bring the full bar back.")))
-								[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("hide"))) ]
-							]
 						]
-					]
-				]
-
-			// --- collapsed budget pill (top-left) when hidden ---
-			+ SConstraintCanvas::Slot()
-				.Anchors(FAnchors(0.f, 0.f)).Offset(FMargin(10.f, 8.f, 0.f, 0.f)).Alignment(FVector2D(0.f, 0.f)).AutoSize(true)
-				[
-					SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(0)
-					.Visibility_Lambda([this]{ return bBarHidden ? EVisibility::Visible : EVisibility::Collapsed; })
-					.OnClicked_Lambda([this]{ bBarHidden = false; return FReply::Handled(); })
-					[
-						SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(8,4))
-						[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity_Lambda([this]{ return FSlateColor(BF6Api::BudgetColor()); }).Text_Lambda([this]{ return FText::FromString(TEXT("show budget")); }) ]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10,0,10,0)
+						[
+							SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6,2))
+							.Visibility_Lambda([this]{ return bBarHidden ? EVisibility::Collapsed : EVisibility::Visible; })
+							.OnClicked_Lambda([this]{ bBarHidden = true; return FReply::Handled(); })
+							.ToolTip(BF6_MakeHint(TEXT("Hide the budget bar"), TEXT("Leaves SHOW BUDGET at the end of the row. Click that to bring the full bar back.")))
+							[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("hide"))) ]
+						]
+						+ SHorizontalBox::Slot().FillWidth(1)
+						[
+							SNew(SSpacer).Visibility_Lambda([this]{ return bBarHidden ? EVisibility::Visible : EVisibility::Collapsed; })
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0,0,10,0)
+						[
+							SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6,2))
+							.Visibility_Lambda([this]{ return bBarHidden ? EVisibility::Visible : EVisibility::Collapsed; })
+							.OnClicked_Lambda([this]{ bBarHidden = false; return FReply::Handled(); })
+							.ToolTip(BF6_MakeHint(TEXT("Show the budget bar"), TEXT("Brings the Portal budget meter back into this row.")))
+							[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity_Lambda([this]{ return FSlateColor(BF6Api::BudgetColor()); }).Text(FText::FromString(TEXT("SHOW BUDGET"))) ]
+						]
 					]
 				]
 
@@ -4213,13 +4541,20 @@ public:
 					SNew(SBorder).BorderImage(PanelBrush()).Padding(8.f)
 					[
 						SNew(SHorizontalBox)
+						// THE NAME BOX IS FOR SAVING, NOT FOR STARTING.
+						//
+						// It used to be the gate: no name, no editing. Now a map
+						// opens editable and unnamed, and the box is simply where
+						// the first SAVE AS gets its name. It stays visible on a
+						// named map too, because SAVE AS is also how you fork one.
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0,0,6,0)
 						[
-							SNew(SBox).WidthOverride(190.f)
-							.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Collapsed : EVisibility::Visible; })
+							SNew(SBox).WidthOverride(180.f)
+							.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
+							.ToolTip(BF6_MakeHint(TEXT("Name this map"), TEXT("The name your map is saved under. Until you press SAVE AS the session is untitled - your work is still kept, in the temp backups, it just has no file of its own yet.")))
 							[
 								SAssignNew(NameBox, SEditableTextBox)
-									.HintText(FText::FromString(TEXT("custom map name...")))
+									.HintText(FText::FromString(TEXT("map name...")))
 									// Enter is what anyone types a name INTO a box expects to
 									// do. Without this the only way through was the button,
 									// and the box gave no sign it had heard you.
@@ -4229,41 +4564,18 @@ public:
 						]
 						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,6,0)
 						[
-							SNew(SBox).Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Collapsed : EVisibility::Visible; })
-							[ MakePrimaryButton(TEXT("Create"), [this]{ CreateFromNameBox(); }) ]
+							SNew(SBox)
+							.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
+							.ToolTip(BF6_MakeHint(TEXT("Save as"), TEXT("Saves what is on screen under the name in the box, and the session takes that name from then on.")))
+							// ---- BF6UiSound ----
+							[ MakeToolButton(TEXT("Save as"), [this]{ BF6UiSound::Play(EBF6UiSound::Confirm); CreateFromNameBox(); }) ]
 						]
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,6,0)
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,8,0)
 						[
-							SNew(SBox).Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
+							SNew(SBox)
+							.Visibility_Lambda([]{ return BF6Api::IsEditing() && !BF6Api::CurrentSave().IsEmpty() ? EVisibility::Visible : EVisibility::Collapsed; })
+							.ToolTip(BF6_MakeHint(TEXT("Save"), TEXT("Writes the open map to its own file. This is the only thing that changes a saved map - the temp backups never touch it.")))
 							[ MakePrimaryButton(TEXT("Save"), []{ BF6Api::SaveCurrent(); }) ]
-						]
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,6,0)
-						[
-							SNew(SBox)
-							.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
-							.ToolTip(BF6_MakeHint(TEXT("Save as a Godot scene"), TEXT("Writes this map as a .tscn the official Portal SDK opens - objects, zones, paths, links and your tree, all editable there. Nothing here changes.")))
-							[ MakeToolButton(TEXT(".tscn"), []{ BF6Api::SaveAsTscn(); }) ]
-						]
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,6,0)
-						[
-							SNew(SBox)
-							.Visibility_Lambda([]{ return BF6Api::IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; })
-							.ToolTip(BF6_MakeHint(TEXT("Autosave"),
-								TEXT("Writes your session to disk every minute. OFF by default on purpose: heavy throwaway changes to an existing map are the normal way this tool gets used, and an autosave turns \"revert\" into \"the file already has it\". Your choice is remembered.")))
-							[
-								SNew(SCheckBox)
-								.IsChecked_Lambda([]{ return BF6Api::GetAutosave() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-								.OnCheckStateChanged_Lambda([](ECheckBoxState St)
-								{
-									const bool bOn = St == ECheckBoxState::Checked;
-									BF6Api::SetAutosave(bOn);
-									BF6_MiniToast(bOn
-										? TEXT("Autosave on - your session is written every minute.")
-										: TEXT("Autosave off - nothing is written until you press Save."));
-								})
-								[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
-									.Text(FText::FromString(TEXT("autosave"))) ]
-							]
 						]
 						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
 						[
@@ -4301,20 +4613,68 @@ public:
 									}
 								}) ]
 						]
-						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
-						[ MakeToolButton(TEXT("Export"), []{ BF6Api::ExportSpatial(); }) ]
+						// ONE EXPORT BUTTON, TWO DESTINATIONS.
+						//
+						// The .tscn write used to sit in the row as its own
+						// button, which read as a third kind of save next to
+						// SAVE and EXPORT. It is neither - it is an export, to
+						// the other tool, so it belongs behind the same button
+						// as the Portal one with the folder they both land in.
 						+ SHorizontalBox::Slot().AutoWidth()
 						[
-							SNew(SBox)
-							.ToolTip(BF6_MakeHint(TEXT("Open exports"), TEXT("Opens the folder every exported .spatial.json lands in - the files you upload on the Portal site's Map Rotation page. Session saves live elsewhere and are not uploadable.")))
-							[ MakeToolButton(TEXT("Open exports"), []{ BF6Api::OpenExportsFolder(); }) ]
+							SNew(SComboButton)
+							.ComboButtonStyle(&ExportComboStyle())
+							.HasDownArrow(true)
+							.ContentPadding(FMargin(16, 8))
+							.ButtonContent()
+							[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("EXPORT"))) ]
+							.OnGetMenuContent_Lambda([]
+							{
+								auto Row = [](const FString& Label, const FString& Sub, TFunction<void()> Do)
+								{
+									return SNew(SButton).ButtonStyle(&GhostButtonStyle()).ContentPadding(FMargin(14, 8))
+										.OnClicked_Lambda([Do]
+										{
+											FSlateApplication::Get().DismissAllMenus();
+											if (Do) Do();
+											return FReply::Handled();
+										})
+										[
+											SNew(SVerticalBox)
+											+ SVerticalBox::Slot().AutoHeight()
+											[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Label)) ]
+											+ SVerticalBox::Slot().AutoHeight().Padding(0, 2, 0, 0)
+											[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(Sub)) ]
+										];
+								};
+								return StaticCastSharedRef<SWidget>(
+									SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(6))
+									[
+										SNew(SBox).WidthOverride(300.f)
+										[
+											SNew(SVerticalBox)
+											+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 3)
+											[ Row(TEXT(".SPATIAL.JSON (PORTAL)"), TEXT("the file you upload on the Portal site"), []{ BF6Api::ExportSpatial(); }) ]
+											+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 3)
+											[ Row(TEXT("GODOT .TSCN"), TEXT("open this map in the official Portal SDK"), []{ BF6Api::SaveAsTscn(); }) ]
+											+ SVerticalBox::Slot().AutoHeight()
+											[ Row(TEXT("OPEN EXPORTS FOLDER"), TEXT("where the exported files land"), []{ BF6Api::OpenExportsFolder(); }) ]
+										]
+									]);
+							})
 						]
 					]
 				]
 
 			// --- bottom-left: back to the map selector + current map label ---
+			//
+			// CLEAR OF THE AXIS GIZMO. Unreal draws its orientation widget in the
+			// bottom-left corner of the viewport, roughly 140 x 140 px, and this
+			// row sat straight on top of it - the one piece of the editor that
+			// tells you which way you are facing, covered by our own button.
+			// The whole row starts past it instead, so it still reads as one row.
 			+ SConstraintCanvas::Slot()
-				.Anchors(FAnchors(0.f, 1.f)).Offset(FMargin(14.f, 0.f, 0.f, 14.f)).Alignment(FVector2D(0.f, 1.f)).AutoSize(true)
+				.Anchors(FAnchors(0.f, 1.f)).Offset(FMargin(152.f, 0.f, 0.f, 14.f)).Alignment(FVector2D(0.f, 1.f)).AutoSize(true)
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,8,0)
@@ -4341,8 +4701,16 @@ public:
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 					[
 						SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(8,5))
-						[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text_Lambda([]{ return FText::FromString(BF6Api::CurrentSave().IsEmpty() ? BF6Api::DisplayName(BF6Api::CurrentLevel()) + TEXT("  (base)") : BF6Api::DisplayName(BF6Api::CurrentLevel()) + TEXT("  /  ") + BF6Api::CurrentSave()); }) ]
+						[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text_Lambda([]{ return FText::FromString(BF6Api::CurrentSave().IsEmpty() ? BF6Api::DisplayName(BF6Api::CurrentLevel()) + TEXT("  /  Untitled") : BF6Api::DisplayName(BF6Api::CurrentLevel()) + TEXT("  /  ") + BF6Api::CurrentSave()); }) ]
 					]
+					// ---- BF6PortalProfile: the experience's other maps ----
+					// One experience is one set of blocks, script and settings over a whole
+					// map rotation. This is the way from one of its maps to another without
+					// leaving the experience, and it shows nothing at all unless the open
+					// save belongs to one.
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(8,0,0,0)
+					[ BF6PortalProfile::MakeMapSwitcher() ]
+					// ---- end BF6PortalProfile ----
 				]
 
 			]   // (end of the HUD canvas slot)
@@ -4388,13 +4756,13 @@ public:
 			else if (GUndo == nullptr) BF6Api::RestoreStrippedGeometry(true);
 		}
 		if (T - LastCalc > 0.25) { LastCalc = T; BF6Api::RecomputeBudget(); }
-		// The tool's own autosave, when it is switched on. Off by default: the
-		// common use of this tool on an existing map is heavy throwaway change,
-		// and writing that to the file turns "revert" into "too late".
-		if (BF6Api::GetAutosave() && BF6Api::IsEditing() && T - LastAutoSave > 60.0)
+		// The temp backups. Not a save and not optional: it watches for a change,
+		// waits for the hand to stop moving, and writes to its own folder. A
+		// creator's named map is only ever written by SAVE.
+		if (T - LastAutoSave > 0.5)
 		{
 			LastAutoSave = T;
-			BF6Api::SaveCurrent(true);
+			BF6Api::TickAutosave();
 		}
 	}
 
@@ -4404,7 +4772,7 @@ private:
 	void CreateFromNameBox()
 	{
 		const FString Name = NameBox.IsValid() ? NameBox->GetText().ToString().TrimStartAndEnd() : FString();
-		if (Name.IsEmpty()) { BF6_MiniToast(TEXT("Give the custom map a name first.")); return; }
+		if (Name.IsEmpty()) { BF6_MiniToast(TEXT("Type a name in the box first.")); return; }
 		BF6Api::CreateCustom(Name);
 	}
 
@@ -4568,6 +4936,47 @@ public:
 					// Import lives on this screen: ONE button, both formats
 					// (.spatial.json or a Godot .tscn). It detects the map from
 					// the file and opens straight into build mode.
+					// ---- BF6PortalProfile ----
+					// First on the row: linking the Portal account is what turns this
+					// screen from a map list into the creator's own experiences.
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
+					[
+						SNew(SBox)
+						.ToolTip(BF6_MakeHint(TEXT("Link Portal profile"),
+							TEXT("Opens the Portal site in the tool so you can sign in there. The tool never sees your password. Once you are signed in, your experiences appear on this screen and can be edited here.")))
+						.Visibility_Lambda([]{ return BF6PortalProfile::State() == BF6PortalProfile::EState::Linked ? EVisibility::Collapsed : EVisibility::Visible; })
+						// StartLink opens the panel itself, on the sign-in
+						// surface. Calling Open() first put it in a dock tab
+						// half a line earlier, which the sign-in then had to
+						// hand back to when it was done: the "tiny window" that
+						// appeared out of nowhere when someone signed in.
+						[ MakeToolButton(TEXT("LINK PORTAL PROFILE"), []{ BF6PortalProfile::StartLink(); }) ]
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
+					[
+						SNew(SBox)
+						.Visibility_Lambda([]{ return BF6PortalProfile::State() == BF6PortalProfile::EState::Linked ? EVisibility::Visible : EVisibility::Collapsed; })
+						[ MakeToolButton_Dynamic(TAttribute<FText>::CreateLambda([]
+						{
+							const FString Who = BF6PortalProfile::AccountName();
+							return FText::FromString(Who.IsEmpty() ? TEXT("PORTAL LINKED - UNLINK") : FString::Printf(TEXT("%s - UNLINK"), *Who));
+						}), []{ BF6PortalProfile::Unlink(); }) ]
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,12,0)
+					[
+						SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+						.Visibility_Lambda([]{ return BF6PortalProfile::State() == BF6PortalProfile::EState::Linked ? EVisibility::Collapsed : EVisibility::Visible; })
+						.Text_Lambda([]
+						{
+							switch (BF6PortalProfile::State())
+							{
+							case BF6PortalProfile::EState::SigningIn: return FText::FromString(TEXT("Sign in on the page. The tool never sees your password."));
+							case BF6PortalProfile::EState::Expired:   return FText::FromString(TEXT("Portal signed you out. Sign in again to refresh."));
+							default:                                  return FText::FromString(TEXT("Edit your Portal experiences here."));
+							}
+						})
+					]
+					// ---- end BF6PortalProfile ----
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
 					[ MakeToolButton(TEXT("SDK Setup"), [this]{ OnSdkSetup.ExecuteIfBound(); }) ]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom).Padding(0,0,8,0)
@@ -4594,11 +5003,36 @@ public:
 							[ SNew(SImage).Image(PieHub()).ColorAndOpacity(FSlateColor(BF6Theme::Accent)) ]
 						]
 					]
+					// INSTALL HIGH POLY, ON THE SCREEN EVERYBODY STARTS FROM.
+					//
+					// The add-on is optional and precompiled, and wanting the
+					// real scenery should not require knowing what a plugin
+					// folder is. The button only appears when it is genuinely
+					// absent: once installed it has nothing to offer, and a
+					// button that installs something already installed is how
+					// people end up with two copies.
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
+					[
+						SNew(SBox)
+						.Visibility_Lambda([]
+						{
+							return BF6Api::HighPolyIsInstalled() ? EVisibility::Collapsed : EVisibility::Visible;
+						})
+						[ MakeToolButton(TEXT("Install High Poly"), []{ BF6Api::InstallHighPoly(); }) ]
+					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
 					[ MakeToolButton(FString::Printf(TEXT("v%s - Check for updates"), *BF6Api::PluginVersion()), []{ BF6Api::CheckForUpdates(true); }) ]
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(32, 0, 32, 18))
 				[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(FString::Printf(TEXT("%d maps  -  click a map to open its base, or resume a saved project below it."), MapCount))) ]
+				// ---- BF6PortalProfile: what the site is doing ----
+				// The site works off screen now, so the only feedback a person
+				// gets while an import runs is this line. It sits above the
+				// map list because that is where they already are, and it
+				// collapses to nothing when there is no work.
+				+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(28, 0, 28, 10))
+				[ BF6PortalProfile::MakeWorkStrip() ]
+				// ---- end BF6PortalProfile ----
 				+ SVerticalBox::Slot().FillHeight(1).Padding(FMargin(28, 0, 28, 24))
 				[
 					SNew(SScrollBox)
@@ -4606,6 +5040,64 @@ public:
 					+ SScrollBox::Slot()[ GridPaid ]
 					+ SScrollBox::Slot().Padding(FMargin(2, 22, 2, 10))[ MakeSectionHeader(TEXT("RedSec maps - free for everyone")) ]
 					+ SScrollBox::Slot()[ GridFree ]
+					// ---- BF6PortalProfile: MY EXPERIENCES ----
+					// The last group on this screen, in the same card size and spacing as
+					// the maps above it: the experiences on the linked Portal account.
+					// Clicking one edits it, importing it first if it has never been here.
+					// Header and grid both vanish when nothing is linked, so an unlinked
+					// tool looks exactly as it always did.
+					// The link control itself lives at the top of this screen, on the
+					// button row; here the header just names the group, and it only
+					// appears once there are experiences to show.
+					+ SScrollBox::Slot().Padding(FMargin(2, 22, 2, 10))
+					[
+						SNew(SBox)
+						.Visibility_Lambda([]{ return BF6PortalProfile::ShowExperienceList() ? EVisibility::Visible : EVisibility::Collapsed; })
+						[ MakeSectionHeader_Dynamic(TAttribute<FText>::CreateLambda([]
+							{ return FText::FromString(BF6PortalProfile::ExperienceListHeading()); })) ]
+					]
+					+ SScrollBox::Slot()[ BF6PortalProfile::MakeExperienceGrid() ]
+					// ---- end BF6PortalProfile ----
+					// ---- BF6Project ----
+					// The other end of the same idea, right under the experience
+					// group: hold every project on this machine up against every
+					// experience on the account, and read one whole experience
+					// file in as a new project.
+					+ SScrollBox::Slot().Padding(FMargin(2, 14, 2, 24))
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
+						[
+							SNew(SButton).ContentPadding(FMargin(12, 6))
+							.ToolTip(BF6_MakeHint(TEXT("Match every saved map to an experience"),
+								TEXT("Prints one line per saved map with its best match on your account, and how sure the tool is. Nothing is changed by running it.")))
+							.OnClicked_Lambda([]{ BF6Project::CompareAll(); return FReply::Handled(); })
+							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("MATCH MY SAVES TO MY EXPERIENCES"))) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[
+							SNew(SButton).ContentPadding(FMargin(12, 6))
+							.ToolTip(BF6_MakeHint(TEXT("Import an experience file"),
+								TEXT("Reads a whole experience JSON exported from Portal and makes a complete project out of it: the maps, the block workspace, the settings and the scripts.")))
+							.OnClicked_Lambda([]{ FString Made; BF6Project::ImportExperienceJson(FString(), Made); return FReply::Handled(); })
+							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("IMPORT AN EXPERIENCE FILE"))) ]
+						]
+						// ---- BF6Project ----
+						// An experience is one game mode with many maps, and it
+						// should be one folder with its maps inside it, not one
+						// folder per map each carrying its own copy of the same
+						// script project.
+						+ SHorizontalBox::Slot().AutoWidth().Padding(8, 0, 0, 0)
+						[
+							SNew(SButton).ContentPadding(FMargin(12, 6))
+							.ToolTip(BF6_MakeHint(TEXT("Put each experience in one folder"),
+								TEXT("An experience is one game mode: one script, one settings set, one thumbnail, and many maps. This gathers the separate per-map saves of each experience into one folder with its maps inside it. Everything is copied and checked before anything is removed, and it shows you the plan first.")))
+							.OnClicked_Lambda([]{ BF6Project::ShowOrganiseDialog(); return FReply::Handled(); })
+							[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(TEXT("ORGANISE SAVES INTO EXPERIENCES"))) ]
+						// ---- end BF6Project ----
+						]
+					]
+					// ---- end BF6Project ----
 				]
 			]
 		];
@@ -4657,6 +5149,7 @@ private:
 	TSharedRef<SWidget> MakeCard(const FString& Level)
 	{
 		const TArray<FString> Saves = BF6Api::SavesFor(Level);
+		const int32 NBackups = BF6Api::BackupCount(Level);
 		const FSlateBrush* Thumb = BF6Api::MapThumbnail(Level);
 		const FBF6MapCard* Info = FindMapCard(Level);
 
@@ -4717,6 +5210,24 @@ private:
 									return SNew(SHorizontalBox)
 									+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center).Padding(0, 0, 10, 0)
 									[ SNew(STextBlock).Text(FText::FromString(In.IsValid() ? *In : FString())) ]
+									// ---- BF6Project ----
+									// Match this save against the experiences on
+									// your Portal account and attach it to the one
+									// it came from. Nothing is uploaded and nothing
+									// is overwritten by pressing it.
+									+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
+									[
+										SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(4, 0))
+										.ToolTip(BF6_MakeHint(TEXT("Find this save on Portal"),
+											TEXT("Compares this project against the experiences already on your account: the same maps, the same object ids, the same block rule names. It shows a confidence and its reasons, and offers to link the best match.")))
+										.OnClicked_Lambda([In]
+										{
+											if (In.IsValid()) BF6Project::ShowCompareDialog(*In);
+											return FReply::Handled();
+										})
+										[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("LINK"))) ]
+									]
+									// ---- end BF6Project ----
 									+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 									[
 										SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(4, 0))
@@ -4729,7 +5240,7 @@ private:
 											// save you are not currently looking at.
 											const bool bOpen = BF6Api::CurrentLevel() == Level && BF6Api::CurrentSave() == *In;
 											const FString Ask = bOpen
-												? FString::Printf(TEXT("Delete the save you have OPEN, '%s'?\n\nIts file goes for good and the view drops back to the read-only base, so anything placed since the last save goes with it. Exports already made from it stay."), **In)
+												? FString::Printf(TEXT("Delete the save you have OPEN, '%s'?\n\nIts file goes for good and the map reopens untitled on its base setup, so anything placed since the last save goes with it. Its temp backups and any exports already made stay."), **In)
 												: FString::Printf(TEXT("Delete the save '%s' for %s?\n\nThis removes its file for good. Exports already made from it stay."), **In, *BF6Api::DisplayName(Level));
 											if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(Ask)) == EAppReturnType::Yes)
 											{
@@ -4748,6 +5259,26 @@ private:
 								.OnSelectionChanged_Lambda([this, Level](TSharedPtr<FString> In, ESelectInfo::Type){ if (In.IsValid()) Open(Level, *In); })
 								[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::Accent)).Text(FText::FromString(FString::Printf(TEXT("RESUME (%d)"), Saves.Num()))) ]
 							)
+						]
+						// The other way back in: the rolling temp backups of this
+						// map, which is where the work that was never saved lives.
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
+						[
+							// Counted ONCE, when the card is built. A per-frame count
+							// would stat the backup folder of every map on screen,
+							// sixty times a second, to draw a number that changes
+							// once every five seconds at most.
+							NBackups == 0
+							? StaticCastSharedRef<SWidget>(SNullWidget::NullWidget)
+							: StaticCastSharedRef<SWidget>(
+								SNew(SBox)
+								.ToolTip(BF6_MakeHint(TEXT("Temp backups"), TEXT("Every rolling backup this map has, newest first. Opening one loads it as an untitled map; your saves are untouched.")))
+								[
+									SNew(SButton).ButtonStyle(&FCoreStyle::Get(), "NoBorder").ContentPadding(FMargin(6, 2))
+									.OnClicked_Lambda([Level]{ BF6Api::ShowBackupPicker(Level); return FReply::Handled(); })
+									[ SNew(STextBlock).Font(FontBold(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim))
+										.Text(FText::FromString(FString::Printf(TEXT("BACKUPS (%d)"), NBackups))) ]
+								])
 						]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 						[ SNew(STextBlock).Font(FontBold(18)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(TEXT("+"))) ]
@@ -4785,6 +5316,7 @@ public:
 					{
 						BF6Api::EnterBuild(Level, Save);
 						if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(1);
+						BF6Api::OpenOutlinerTab();
 					})
 				]
 				+ SWidgetSwitcher::Slot()
@@ -4814,7 +5346,7 @@ private:
 			[
 				SNew(SOverlay)
 				+ SOverlay::Slot().Padding(FMargin(4, 2))
-				[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text_Lambda([]{ return FText::FromString(BF6Api::CurrentSave().IsEmpty() ? TEXT("Read-only base. Create a custom map to place objects.") : FString::Printf(TEXT("Editing '%s'  -  aim in the viewport and press SPACE to place objects."), *BF6Api::CurrentSave())); }) ]
+				[ SNew(STextBlock).Font(FontReg(11)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text_Lambda([]{ return FText::FromString(BF6Api::CurrentSave().IsEmpty() ? TEXT("Untitled map  -  aim in the viewport and press SPACE to place objects.") : FString::Printf(TEXT("Editing '%s'  -  aim in the viewport and press SPACE to place objects."), *BF6Api::CurrentSave())); }) ]
 				+ SOverlay::Slot()[ SNew(SBF6ReadOutShine) ]
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(20, 0, 20, 0))
@@ -4830,7 +5362,7 @@ private:
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().AutoWidth()
-				[ MakeToolButton(TEXT("< Choose another map"), [this]{ BF6Api::HideBuildOverlay(); if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0); }) ]
+				[ MakeToolButton(TEXT("< Choose another map"), [this]{ BF6Api::HideBuildOverlay(); if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0); BF6Api::CloseOutlinerTab(); }) ]
 			];
 	}
 };
@@ -4994,10 +5526,22 @@ public:
 		RebuildSelector();
 	}
 
-	void ShowBuild()    { if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(1); }
+	// The Scene tab belongs to the build screen only: the map screen has no scene,
+	// so the tab closes with it and comes back with the build screen.
+	// ---- BF6EditorOverlay ---- and the editor left up last session comes back
+	// with it, because the button that was pressed then is where the work was.
+	// OPENING A MAP SHOWS THE MAP. The sheet used to come back here, so a user
+	// whose last editor was BLOCKS opened a map and got the block editor over
+	// it, which reads as the map failing to open. The remembered editor still
+	// lights its button; one press brings it back. Nothing is forgotten, it is
+	// just not put in front of the thing the user just asked to see.
+	void ShowBuild()    { if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(1); BF6Api::OpenOutlinerTab(); }
 	// Rebuild the selector every time it's shown so the per-map saves dropdowns
 	// pick up sessions created/saved since (they were snapshotted at construct).
-	void ShowSelector() { RebuildSelector(); if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0); }
+	// ---- BF6EditorOverlay ---- the editor sheet is the build screen's: the map
+	// screen is not a viewport to cover, so it goes down with it. The page is
+	// not closed, and the remembered button brings it straight back.
+	void ShowSelector() { RebuildSelector(); if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0); BF6Api::CloseOutlinerTab(); BF6EditorOverlay::Suspend(); }
 	bool IsBuildScreen() const { return Switcher.IsValid() && Switcher->GetActiveWidgetIndex() == 1; }
 
 	void ShowSetup()
@@ -5005,6 +5549,8 @@ public:
 		if (!SelectorHost.IsValid()) return;
 		SelectorHost->SetContent(SNew(SBF6SetupScreen).OnDone_Lambda([this]{ RebuildSelector(); }));
 		if (Switcher.IsValid()) Switcher->SetActiveWidgetIndex(0);
+		BF6Api::CloseOutlinerTab();
+		BF6EditorOverlay::Suspend();   // ---- BF6EditorOverlay ---- off the build screen
 	}
 
 private:
@@ -5078,6 +5624,9 @@ static void BF6_PushTransient(TSharedRef<SWidget> Content, const FVector2D& Cent
 
 static void BF6Pie_Close()
 {
+	// ---- BF6UiSound ---- only when a wheel was actually up: Close is also called
+	// defensively from paths where nothing is open.
+	if (GPie.IsValid()) BF6UiSound::Play(EBF6UiSound::RingClose);
 	if (GPie.IsValid() && GPieViewport.IsValid()) GPieViewport->RemoveOverlayWidget(GPie.ToSharedRef());
 	GPie.Reset(); GPieViewport.Reset();
 	GPieSearchBox.Reset(); GPieClickables.Reset();
@@ -5484,12 +6033,15 @@ static void BF6_StartHQSpawnRun(AActor* Owner, const BF6Api::FLinkField& Kind)
 
 static void BF6Pie_Open()
 {
+	// ---- BF6UiSound ---- the user opened the wheel. Deliberately NOT in
+	// BF6Pie_Attach, which also runs for every page flip and BACK.
+	BF6UiSound::Play(EBF6UiSound::RingOpen);
 	// The wheel is the tool's edit surface: place, attributes, colorize, scatter,
 	// every one of them refused on a base map. Opening it anyway offers a menu
 	// of things that cannot happen, so it does not open - it says why instead.
 	if (!BF6Api::IsEditing())
 	{
-		BF6Api::RefuseReadOnly(TEXT("There is nothing to edit on a base map. Name it and press Create, bottom right, and the wheel opens."));
+		BF6Api::RefuseReadOnly(TEXT("No map is open - pick one from < Maps and the wheel opens."));
 		return;
 	}
 	FVector W; if (BF6Api::WorldFromViewportCursor(W)) GBF6PendingWorld = W;
@@ -6246,7 +6798,8 @@ public:
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ NumBox(GapBox, TEXT("0"), [this]{ MakeGrid(); }) ]
 						+ SHorizontalBox::Slot().FillWidth(1) [ SNullWidget::NullWidget ]
 						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-						[ MakePrimaryButton(TEXT("Create"), [this]{ MakeGrid(); }) ]
+						// ---- BF6UiSound ----
+						[ MakePrimaryButton(TEXT("Create"), [this]{ BF6UiSound::Play(EBF6UiSound::Confirm); MakeGrid(); }) ]
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
 					[ Dim(TEXT("Copies tile edge to edge along the object's facing. Gap adds space.")) ]
@@ -6573,7 +7126,7 @@ static void BF6Pie_Confirm()
 				BF6_MiniToast(TEXT("Riding the cursor - click to place, Esc puts it back."));
 			return;
 		}
-		if (Pick == TEXT("CREATE A LEVEL"))
+		if (Pick == TEXT("SAVE AS"))
 		{
 			TSharedRef<SBF6CreateLevelPanel> Panel = SNew(SBF6CreateLevelPanel);
 			BF6_PushTransient(Panel, Center);
@@ -6695,7 +7248,7 @@ static void BF6Pie_Confirm()
 		BF6_WalkCaptureMouse(BF6Api::IsWalking());
 		return;
 	}
-	if (Pick == TEXT("CREATE A LEVEL"))
+	if (Pick == TEXT("SAVE AS"))
 	{
 		TSharedRef<SBF6CreateLevelPanel> Panel = SNew(SBF6CreateLevelPanel);
 		BF6_PushTransient(Panel, Center);
@@ -6731,7 +7284,9 @@ static void BF6Pie_Confirm()
 	}
 	if (Pick == TEXT("OBJECT IDS"))
 	{
-		BF6_PushTransient(SNew(SBF6ObjIdPanel), Center);
+		// ---- BF6ObjIds ----
+		BF6_PushTransient(BF6ObjIds::MakePanel([]{ BF6Pie_Reopen(); }), Center);
+		// ---- end BF6ObjIds ----
 		return;
 	}
 	if (Pick == TEXT("MODE SETUP"))
@@ -6739,6 +7294,14 @@ static void BF6Pie_Confirm()
 		BF6_PushTransient(SNew(SBF6ModeWizardMenu), Center);
 		return;
 	}
+	// ---- BF6PortalWeb ----
+	if (Pick == TEXT("PORTAL")) { BF6PortalWeb::Toggle(); return; }
+	// ---- end BF6PortalWeb ----
+	// ---- BF6PortalProfile ----
+	// StartLink opens the panel itself, on the sign-in surface; see the map
+	// screen's copy of this button for why Open() is not called first.
+	if (Pick == TEXT("LINK PORTAL PROFILE")) { BF6PortalProfile::StartLink(); return; }
+	// ---- end BF6PortalProfile ----
 	// Nothing of ours matched. An add-on may own this pill; only if none does
 	// is the label treated as an object category.
 	if (BF6ExtInternal::DispatchPie(Pick, Center)) return;
@@ -6755,6 +7318,9 @@ static void BF6Pie_Cancel() { BF6Pie_Close(); }
 // never fire then (T, Space, F1 are all normal characters).
 static bool BF6_TextFieldFocused()
 {
+	if (BF6PortalWeb::WantsKeyboard()) return true;   // BF6PortalWeb: typing on the Portal page
+	// ---- BF6EditorOverlay ---- typing on the editor covering the viewport
+	if (BF6EditorOverlay::WantsKeyboard()) return true;
 	TSharedPtr<SWidget> W = FSlateApplication::Get().GetKeyboardFocusedWidget();
 	return W.IsValid() && W->GetTypeAsString().Contains(TEXT("EditableText"));
 }
@@ -7283,10 +7849,33 @@ namespace
 											: TEXT("GODOT CAMERA: OFF  (click for MMB orbit like Godot)")); }) ]
 								]
 							]
+						// TEMP BACKUPS: the one number worth exposing. There is no
+						// on/off any more - backups go to their own folder and can
+						// never overwrite a saved map, so the only real question is
+						// how far back you want to be able to walk.
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
+							[
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+								[ SNew(STextBlock).Font(FontBold(10)).ColorAndOpacity(BF6Theme::TextDim)
+									.Text(FText::FromString(TEXT("TEMP BACKUPS PER LEVEL"))) ]
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(10, 0, 0, 0)
+								[
+									SNew(SBox).WidthOverride(70.f)
+									[
+										SNew(SSpinBox<int32>)
+										.MinValue(1).MaxValue(200).MinSliderValue(1).MaxSliderValue(50)
+										.Value_Lambda([]{ return BF6Api::GetAutosaveMax(); })
+										.OnValueChanged_Lambda([](int32 V){ BF6Api::SetAutosaveMax(V); })
+									]
+								]
+								+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center).Padding(10, 0, 0, 0)
+								[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(BF6Theme::TextDim).AutoWrapText(true)
+									.Text(FText::FromString(TEXT("Your work is written to a backup a few seconds after every change. Backups never touch a saved map - only SAVE does."))) ]
+							]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
-							[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(BF6Theme::TextDim).Text_Lambda([]{ return FText::FromString(BF6Api::GetAutosave()
-								? TEXT("F1, Esc, or click anywhere to close. Autosave is on - sessions save every 60 seconds.")
-								: TEXT("F1, Esc, or click anywhere to close. Autosave is off - press Save to keep your work.")); }) ]
+							[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(BF6Theme::TextDim)
+								.Text(FText::FromString(TEXT("F1, Esc, or click anywhere to close."))) ]
 						]
 					]
 				]
@@ -7332,6 +7921,41 @@ public:
 			bRightFlew = true;
 		}
 
+		// ---- BF6PortalProfile ----
+		// ESCAPE LEAVES THE SIGN-IN SURFACE. Checked before everything else,
+		// and deliberately before the "the page has the keyboard" gate below:
+		// while someone is signing in the page ALWAYS has the keyboard, so a
+		// gate on that would mean there was no way out but signing in. The
+		// profile state is left alone; only the presentation comes down.
+		if (K == EKeys::Escape && BF6PortalWeb::IsSignIn())
+		{
+			BF6PortalProfile::CancelLink();
+			return true;
+		}
+		// While the sign-in surface fills the window there is no world to bind
+		// keys to, so every single-key bind below (Space, F1, T, Delete)
+		// belongs to the page. Not consumed: the page's own shortcuts still
+		// work, and this holds even when the keyboard has wandered off the
+		// browser onto the surface's own CANCEL button.
+		if (BF6PortalWeb::IsSignIn()) return false;
+		// ---- end BF6PortalProfile ----
+
+		// ---- BF6EditorOverlay ----
+		// ESCAPE CLOSES THE EDITOR THAT IS COVERING THE SCREEN, but only when
+		// the page is not taking the keyboard: inside Monaco or a Blockly
+		// field, Escape belongs to the page (it cancels completion, closes the
+		// find bar), and stealing it would be its own bug.
+		if (K == EKeys::Escape && BF6EditorOverlay::IsShown() && !BF6EditorOverlay::WantsKeyboard())
+		{
+			BF6EditorOverlay::Hide();
+			return true;
+		}
+		// While an editor covers the viewport there is no world to bind keys
+		// to, so every single-key bind below (Space, F1, T, Delete) belongs to
+		// the page. Not consumed: the page's own shortcuts still work.
+		if (BF6EditorOverlay::IsShown()) return false;
+		// ---- end BF6EditorOverlay ----
+
 		// typing in a text box: none of our binds may fire
 		if (BF6_TextFieldFocused()) return false;
 
@@ -7345,6 +7969,11 @@ public:
 		// Godot's redo chord alongside Unreal's Ctrl+Y
 		if (K == EKeys::Z && E.IsControlDown() && E.IsShiftDown() && BF6Api::IsBuildOverlayActive())
 		{
+			// ---- BF6UiSound ---- Redo is played here because the editor's PostUndoRedo
+			// delegate cannot tell the two apart; suppressing the Undo that
+			// follows is what keeps them distinct.
+			BF6UiSound::Play(EBF6UiSound::Redo);
+			BF6UiSound::SuppressNextUndo();
 			if (GEditor) GEditor->RedoTransaction();
 			return true;
 		}
@@ -7385,6 +8014,8 @@ public:
 			// then returns to the attributes menu the pick started from
 			if (BF6Api::IsLinkPicking()) { BF6Api::ConfirmLinkPick(); BF6_ReopenAttributesAfterLink(); return true; }
 			if (!BF6Api::IsBuildOverlayActive() || GTransientMenu.IsValid()) return false;
+			if (!E.IsControlDown() && !E.IsShiftDown() && !E.IsAltDown()
+				&& BF6Ext::OpenSelectedObjectEditor()) return true;
 			// SPACE belongs to the radial while the tool is up. Handing it back to
 			// the editor silently cycled move/rotate/scale instead, which is what
 			// Unreal binds it to - a confusing answer to a key press that was
@@ -7397,6 +8028,16 @@ public:
 		}
 		if (K == EKeys::Escape)
 		{
+			// A DRAG IS IN FLIGHT: Escape cancels the drag and means nothing
+			// else. This handler sees the key before Slate's own drag-drop
+			// cancel does, so without this the press would be spent on whatever
+			// Escape happens to mean right now while the ghost rode on.
+			if (FBF6LibDragOp::bActive)
+			{
+				FSlateApplication::Get().CancelDragDrop();
+				BF6Api::DestroyDragGhost();
+				return true;
+			}
 			if (BF6Api::IsWalking() && !BF6Pie_Active() && !GTransientMenu.IsValid())
 			{
 				BF6Api::ToggleWalk();
@@ -7715,6 +8356,9 @@ public:
 	{
 		FWidgetPath Path = App.LocateWindowUnderMouse(ScreenPos, App.GetInteractiveTopLevelWindows());
 		if (!Path.IsValid()) return false;
+		if (BF6PortalWeb::PathTouchesPanel(Path)) return true;   // BF6PortalWeb: the page is UI, not the 3D view
+		// ---- BF6EditorOverlay ---- the editor sheet is UI for the same reason
+		if (BF6EditorOverlay::PathTouchesHost(Path)) return true;
 		for (int32 i = Path.Widgets.Num() - 1; i >= 0; i--)
 		{
 			const FName Ty = Path.Widgets[i].Widget->GetType();
@@ -7736,6 +8380,12 @@ public:
 			BF6Pie_Confirm();
 			return true;
 		}
+		// ---- BF6PortalWeb: a click on the Portal panel is the page's, not the map's ----
+		if (BF6PortalWeb::CursorOverPanel(E.GetScreenSpacePosition())) return false;
+		// ---- end BF6PortalWeb ----
+		// ---- BF6EditorOverlay: a click on the editor sheet is the page's ----
+		if (BF6EditorOverlay::CursorOverHost(E.GetScreenSpacePosition())) return false;
+		// ---- end BF6EditorOverlay ----
 
 		// pick place: the click sets the carried selection down right here
 		if (E.GetEffectingButton() == EKeys::LeftMouseButton && BF6Api::IsPickPlacing()
@@ -7766,7 +8416,7 @@ public:
 		{
 			// The door throttles the words itself, so every click still gets
 			// the light - which is the half that answers "did it hear me".
-			BF6Api::RefuseReadOnly(TEXT("Read-only base - press Create in the bottom right, or resume a custom level from < Maps."));
+			BF6Api::RefuseReadOnly(TEXT("No map is open - pick one from < Maps."));
 		}
 
 		// attach pick: the click names the parent
@@ -7969,6 +8619,12 @@ public:
 	virtual bool HandleMouseButtonDoubleClickEvent(FSlateApplication& App, const FPointerEvent& E) override
 	{
 		if (E.GetEffectingButton() != EKeys::LeftMouseButton) return false;
+		// ---- BF6PortalWeb: a click on the Portal panel is the page's, not the map's ----
+		if (BF6PortalWeb::CursorOverPanel(E.GetScreenSpacePosition())) return false;
+		// ---- end BF6PortalWeb ----
+		// ---- BF6EditorOverlay: a click on the editor sheet is the page's ----
+		if (BF6EditorOverlay::CursorOverHost(E.GetScreenSpacePosition())) return false;
+		// ---- end BF6EditorOverlay ----
 		if (!BF6Api::IsBuildOverlayActive() || !BF6Api::IsEditing()) return false;
 		if (BF6Pie_Active() || GTransientMenu.IsValid() || GControls.IsValid()) return false;
 		if (BF6_CursorOverSlateUI(App, E.GetScreenSpacePosition())) return false;
@@ -8021,6 +8677,8 @@ public:
 			BF6Api::CancelBoxSelect();
 			AActor* Under = nullptr;
 			if (BF6Api::ClassifyCursorForGodotClick(Under) == 1 && Under) BF6Api::SelectClicked(Under);
+			// ---- BF6UiSound ----
+			if (Under) BF6UiSound::Play(EBF6UiSound::Select);
 			else if (!E.IsShiftDown()) BF6Api::ClearSelection();
 			return true;
 		}
@@ -8184,6 +8842,21 @@ bool BF6Ext::GetBuildViewportCamera(FVector& OutLocation, FRotator& OutRotation)
 	return true;
 }
 
+void BF6Ext::GetBuildViewportLocations(TArray<FVector>& OutLocations)
+{
+	OutLocations.Reset();
+	if (!GEditor) return;
+	UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+	for (FLevelEditorViewportClient* Client : GEditor->GetLevelViewportClients())
+	{
+		if (Client && Client->Viewport && Client->IsVisible() && Client->IsPerspective()
+			&& Client->GetWorld() == EditorWorld)
+		{
+			OutLocations.AddUnique(Client->GetViewLocation());
+		}
+	}
+}
+
 bool BF6Ext::SetBuildViewportCamera(const FVector& Location, const FRotator& Rotation)
 {
 	UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
@@ -8257,8 +8930,104 @@ void BF6Api::RefuseReadOnly(const FString& What)
 	if (Now - LastSaid < 4.0) return;
 	LastSaid = Now;
 	BF6_MiniToast(What.IsEmpty()
-		? FString(TEXT("This is the read-only base map. Name it and press Create, bottom right, to start building on it."))
+		? FString(TEXT("No map is open - pick one from < Maps to start building."))
 		: What);
+}
+
+// ---------------------------------------------------------------------------
+// TEMP BACKUPS: the list, and the offer after a crash
+// ---------------------------------------------------------------------------
+
+// Every backup this map has, newest first, with the two things that identify
+// one at a glance: when it was taken and how much was in it.
+void BF6Api::ShowBackupPicker(const FString& Level)
+{
+	const TArray<BF6Api::FBackupInfo> All = BF6Api::ListBackups(Level);
+	if (All.Num() == 0)
+	{
+		BF6_MiniToast(FString::Printf(TEXT("No temp backups for %s yet."), *BF6Api::DisplayName(Level)));
+		return;
+	}
+
+	// The choice is carried OUT of the modal loop rather than acted on inside
+	// it: restoring a map tears down and rebuilds the world, and doing that
+	// underneath a window that is still up is how a modal loop ends badly.
+	TSharedPtr<FString> Chosen = MakeShared<FString>();
+
+	TSharedRef<SWindow> Win = SNew(SWindow)
+		.Title(FText::FromString(FString::Printf(TEXT("Temp backups - %s"), *BF6Api::DisplayName(Level))))
+		.ClientSize(FVector2D(600.f, 440.f))
+		.SupportsMaximize(false).SupportsMinimize(false);
+	TWeakPtr<SWindow> WeakWin = Win;
+
+	TSharedRef<SVerticalBox> Rows = SNew(SVerticalBox);
+	for (const BF6Api::FBackupInfo& B : All)
+	{
+		const FString Path = B.Path;
+		const FString When = B.When;
+		const FString Sub = FString::Printf(TEXT("%d object(s)   -   %s"),
+			B.Objects, B.Save.IsEmpty() ? TEXT("untitled") : *B.Save);
+		Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 4)
+		[
+			SNew(SButton).ButtonStyle(&GhostButtonStyle()).ContentPadding(FMargin(14, 9))
+			.OnClicked_Lambda([Chosen, Path, WeakWin]
+			{
+				*Chosen = Path;
+				if (TSharedPtr<SWindow> W = WeakWin.Pin()) W->RequestDestroyWindow();
+				return FReply::Handled();
+			})
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+				[ SNew(STextBlock).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(When)) ]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(12, 0, 0, 0)
+				[ SNew(STextBlock).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).Text(FText::FromString(Sub)) ]
+			]
+		];
+	}
+
+	Win->SetContent(
+		SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(20, 16))
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
+			[ SNew(STextBlock).Font(FontBold(13)).ColorAndOpacity(FSlateColor(BF6Theme::Accent))
+				.Text(FText::FromString(TEXT("TEMP BACKUPS"))) ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 12)
+			[ SNew(STextBlock).Font(FontReg(9)).ColorAndOpacity(FSlateColor(BF6Theme::TextDim)).AutoWrapText(true)
+				.Text(FText::FromString(TEXT("Written a few seconds after every change while you build. Opening one loads it as an untitled map - nothing you have saved is touched."))) ]
+			+ SVerticalBox::Slot().FillHeight(1)
+			[ SNew(SScrollBox) + SScrollBox::Slot()[ Rows ] ]
+			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right).Padding(0, 12, 0, 0)
+			[ MakeToolButton(TEXT("Close"), [WeakWin]{ if (TSharedPtr<SWindow> W = WeakWin.Pin()) W->RequestDestroyWindow(); }) ]
+		]);
+
+	FSlateApplication::Get().AddModalWindow(Win, FGlobalTabmanager::Get()->GetRootWindow());
+
+	if (!Chosen->IsEmpty() && BF6Api::RestoreBackup(*Chosen)) BF6Api::ShowBuildOverlay();
+}
+
+// Shown once per crash, early in the launch. The marker is cleared whichever
+// way it is answered - the files stay, so nothing is lost by dismissing it,
+// and the same dialog on every launch would only teach people to click past it.
+void BF6Api::CheckCrashRecovery()
+{
+	BF6Api::FBackupInfo B;
+	if (!BF6Api::PendingCrashBackup(B)) return;
+	BF6Api::DismissCrashBackup();
+
+	const FString Msg = FString::Printf(TEXT(
+		"You were working on %s when the editor closed unexpectedly. A temp backup from %s is available (%d object(s)).\n\nYes = restore it. No = show all backups for this map. Cancel = dismiss."),
+		*BF6Api::DisplayName(B.Level), *B.When, B.Objects);
+	const EAppReturnType::Type R = FMessageDialog::Open(EAppMsgType::YesNoCancel, FText::FromString(Msg));
+	if (R == EAppReturnType::Yes)
+	{
+		if (BF6Api::RestoreBackup(B.Path)) BF6Api::ShowBuildOverlay();
+	}
+	else if (R == EAppReturnType::No)
+	{
+		BF6Api::ShowBackupPicker(B.Level);
+	}
 }
 
 void BF6Api::HideTransientMenus()
@@ -8266,11 +9035,28 @@ void BF6Api::HideTransientMenus()
 	if (GTransientMenu.IsValid()) { GTransientMenu->Dismiss(); GTransientMenu.Reset(); }
 }
 
+// A drag left one of the radial's lists: take the whole radial down, list and
+// wheel alike, so the viewport underneath is clear to drop on. Called one tick
+// after the drag begins, from BF6_BeginObjectDrag.
+static void BF6_CloseMenusForDrag()
+{
+	BF6Api::HideTransientMenus();
+	BF6Pie_Close();
+}
+
 void BF6Api::InstallInputHandler()
 {
 	if (GInput.IsValid()) return;
 	GInput = MakeShared<FBF6InputProcessor>();
 	FSlateApplication::Get().RegisterInputPreProcessor(GInput);
+	// ---- BF6EditorOverlay ----
+	// The full-screen editor host rides this handler's guards, so it comes up
+	// with it: BF6.Editors.* and the editor the user left up last session.
+	BF6EditorOverlay::Register();
+	// ---- end BF6EditorOverlay ----
+	// ---- BF6Experience ---- BF6.Experience.*, beside the host's own commands
+	BF6Experience::Register();
+	// ---- end BF6Experience ----
 }
 
 void BF6Api::RegisterContextMenu()
@@ -8284,6 +9070,12 @@ void BF6Api::RegisterContextMenu()
 
 void BF6Api::RemoveInputHandler()
 {
+	// ---- BF6Experience ---- paired with InstallInputHandler above
+	BF6Experience::Unregister();
+	// ---- end BF6Experience ----
+	// ---- BF6EditorOverlay ---- paired with InstallInputHandler above
+	BF6EditorOverlay::Unregister();
+	// ---- end BF6EditorOverlay ----
 	if (GInput.IsValid() && FSlateApplication::IsInitialized())
 		FSlateApplication::Get().UnregisterInputPreProcessor(GInput);
 	GInput.Reset();

@@ -1,0 +1,932 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BF6 Script</title>
+
+<!--
+  The tool's TypeScript editor, running inside the plugin's own browser window.
+
+  IT IS LOADED FROM file://. That is not an accident and it constrains the page
+  in two ways worth knowing before editing it:
+
+    1. fetch and XMLHttpRequest to another file:// path are refused, with no
+       error a script can catch usefully. NOTHING here fetches. Data that lives
+       on disk arrives one of two ways: a <script> tag with a src the tool hands
+       us (guide.js, the worker source, the type libraries), or a chunked push
+       across the C++ bridge.
+    2. A web worker cannot be constructed from a file:// URL either. The
+       language service worker is built from a Blob whose source the tool reads
+       off disk and hands to us. If that fails the page says so and drops to an
+       index-backed completion mode rather than pretending.
+
+  Monaco is vendored under vendor/monaco (MIT, LICENSE.md beside it) so the
+  editor works with no network at all.
+-->
+
+<link rel="stylesheet" href="vendor/monaco/min/vs/editor/editor.main.css">
+<style>
+:root {
+    --ink:        #0d0f10;
+    --panel:      #111314;
+    --panel2:     #1a1d1f;
+    --line:       #2a2f33;
+    --accent:     #ff581a;
+    --accent-dim: #b83e10;
+    --text:       #bfcad1;
+    --text-blue:  #aec0cc;
+    --dim:        #75828a;
+    --ok:         #4caf50;
+    --warn:       #f0a030;
+    --bad:        #f43c30;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font: 12px/1.5 "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+}
+
+/* SHARP CORNERS EVERYWHERE. The tool has no rounded boxes. */
+button, input, select, textarea { border-radius: 0; }
+
+/* An author rule beats the browser's own [hidden] rule whatever its
+   specificity, so anything here that is both an id and a flex box would stay
+   on screen after hidden was set. This is the one line that stops it. */
+[hidden] { display: none !important; }
+
+/* ---- shell --------------------------------------------------------------
+   ONE CANVAS. The code fills the window. Everything that helps you write it
+   lives behind the handle strip on the left and slides out over the code, the
+   same shape the scene tree's symbol legend uses on the viewport: closed by
+   default, one small labelled handle, Escape closes, and the tool comes back
+   the way you left it.
+   -------------------------------------------------------------------------- */
+#app  { display: flex; flex-direction: column; height: 100%; }
+#bar  { display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+        padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
+#body { display: flex; flex: 1; min-height: 0; position: relative; }
+#rail { width: 106px; min-width: 106px; background: var(--panel);
+        border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+#side { position: absolute; left: 106px; top: 0; bottom: 0; width: 344px;
+        background: var(--panel); border-right: 1px solid var(--line);
+        display: none; flex-direction: column; z-index: 40;
+        box-shadow: 8px 0 22px rgba(0, 0, 0, 0.5); }
+#side.open { display: flex; }
+#sideHead { display: flex; align-items: center; gap: 6px; padding: 7px 8px;
+            background: var(--panel2); border-bottom: 1px solid var(--line); }
+#sideHead .name { flex: 1; font: 700 11px/1.2 "Segoe UI", system-ui, sans-serif;
+                  letter-spacing: 0.8px; text-transform: uppercase; color: var(--accent); }
+#sideHead button { padding: 3px 6px; font-size: 9px; }
+#sideBody { flex: 1; overflow: auto; }
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+#out  { display: none; height: 168px; background: #08090a; border-top: 1px solid var(--line);
+        overflow: auto; font-family: Consolas, "Cascadia Mono", monospace;
+        font-size: 11px; padding: 4px 8px; }
+#out.on { display: block; }
+#out.big { height: 300px; }
+
+/* ---- the overflow menu -------------------------------------------------- */
+#more, #ctxMenu { position: absolute; z-index: 60; background: var(--panel);
+        border: 1px solid var(--accent); min-width: 250px; padding: 3px;
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6); }
+#more button, #ctxMenu button { display: block; width: 100%; text-align: left; border: none;
+               background: none; text-transform: none; letter-spacing: 0;
+               font: 11px "Segoe UI", system-ui, sans-serif; padding: 6px 8px; }
+#more button:hover:not(:disabled), #ctxMenu button:hover:not(:disabled) { background: var(--panel2); color: #fff; }
+#more button.on::after { content: "  on"; color: var(--accent); font-weight: 700; }
+#more .mh { padding: 8px 8px 3px; color: var(--dim); font: 700 9px/1.2 "Segoe UI", system-ui, sans-serif;
+            letter-spacing: 0.8px; text-transform: uppercase; }
+
+/* ---- first run ---------------------------------------------------------- */
+/* ---- the text a player sees ------------------------------------------- */
+#stringsPane { flex: 1; min-height: 0; display: flex; flex-direction: column;
+               background: var(--ink); overflow: hidden; }
+#stringsPane[hidden] { display: none; }
+.strHead { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
+.strLede { color: var(--text); font-size: 13px; max-width: 70ch; line-height: 1.5; }
+.strActions { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+.strShowAll { color: var(--dim); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+#strList { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px 24px; }
+
+.strRow { display: grid; grid-template-columns: 1fr 280px auto; gap: 10px;
+          align-items: center; padding: 7px 6px; border-bottom: 1px solid var(--line); }
+.strRow:hover { background: var(--panel); }
+.strRow.tmpl { opacity: 0.55; }
+
+/* The text itself is the biggest thing in the row, because it is the thing
+   being edited. The key is reference material and is sized like it. */
+.strRow input.strText { width: 100%; background: var(--panel2); color: #fff;
+                        border: 1px solid var(--line); border-radius: 3px;
+                        padding: 7px 9px; font-size: 14px; }
+.strRow input.strText:focus { outline: none; border-color: var(--accent); }
+.strKey { color: var(--dim); font-family: ui-monospace, Consolas, monospace;
+          font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.strKey b { color: var(--text-blue); font-weight: 600; }
+.strBtns { display: flex; gap: 6px; }
+.strRow button { padding: 5px 9px; font-size: 11px; }
+.strDel { color: var(--dim); }
+.strDel:hover { border-color: var(--bad) !important; color: var(--bad) !important; }
+
+/* A placeholder is the one thing in a line of text that behaves like code, so
+   it is the one thing called out. */
+.strHasArg { color: var(--warn); font-size: 11px; margin-left: 6px; }
+
+.strEmpty { padding: 40px 18px; color: var(--dim); }
+.strEmptyT { color: var(--text); font-size: 15px; margin-bottom: 6px; }
+.strEmptyD { font-size: 13px; }
+
+#quickPane { flex: 1; min-height: 0; display: flex; flex-direction: column;
+             background: var(--ink); overflow: hidden; }
+#quickPane[hidden] { display: none; }
+#quickList { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px 24px; }
+.qRow { grid-template-columns: 1fr 220px auto; }
+.qLabel { font-weight: 600; }
+.qCtrl { display: flex; align-items: center; gap: 8px; }
+.qCtrl input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+.qNum, .qStr { width: 100%; background: var(--panel2); color: #fff;
+               border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; font-size: 14px; }
+.qNum:focus, .qStr:focus { outline: none; border-color: var(--accent); }
+.qHint { color: var(--dim); font-size: 12px; }
+.qGone { color: var(--bad); font-size: 12px; }
+
+#suggestPane { border-bottom: 1px solid var(--line); max-height: 46%; overflow: auto;
+               padding: 10px 18px 14px; background: var(--panel); }
+.sgHead { color: var(--text); font-size: 12px; margin-bottom: 8px; }
+/* The filter stays put while the list scrolls under it: with every value shown
+   rather than the first sixty, the box is otherwise off the top of the pane by
+   the time you want to change what you typed. */
+.sgTools { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px;
+           align-items: center; padding: 6px 0 8px; background: var(--panel); }
+.sgFind { flex: 1; min-width: 120px; background: var(--ink); color: var(--text);
+          border: 1px solid var(--line); border-radius: 3px; padding: 4px 7px; font-size: 12px; }
+.sgFind:focus { outline: none; border-color: var(--accent); }
+.sgCount { color: var(--dim); font-size: 11px; white-space: nowrap; }
+.sgKinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.sgChip { background: var(--ink); color: var(--dim); border: 1px solid var(--line);
+          border-radius: 10px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+.sgChip:hover { color: var(--text); border-color: var(--accent-dim); }
+.sgChip.on { color: var(--ink); background: var(--accent); border-color: var(--accent); }
+.sgBody { min-height: 40px; }
+.sgRow { display: grid; grid-template-columns: 20px 1fr 90px 54px 200px; gap: 8px;
+         align-items: center; padding: 3px 0; font-size: 12px; }
+.sgRow input[type=checkbox] { accent-color: var(--accent); }
+.sgName { color: #fff; font-family: ui-monospace, Consolas, monospace; }
+.sgVal { color: var(--warn); font-family: ui-monospace, Consolas, monospace;
+         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgKind { color: var(--accent); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.sgWhere { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#suggestPane button.primary { margin-top: 10px; }
+
+.qOffer { display: flex; align-items: center; gap: 12px; margin: 0 18px 10px;
+          padding: 10px 12px; background: var(--panel); border: 1px solid var(--line);
+          border-left: 3px solid var(--accent); border-radius: 3px;
+          color: var(--text); font-size: 12px; }
+.qOffer[hidden] { display: none; }
+
+.bundleHide { display: flex; align-items: center; gap: 12px; padding: 5px 12px;
+              background: var(--panel); border-bottom: 1px solid var(--line);
+              color: var(--text); font-size: 11px; }
+.bundleHide[hidden] { display: none; }
+.bundleHide label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.bundleHide input[type=checkbox] { accent-color: var(--accent); }
+.bundleWhy { color: var(--dim); }
+
+#sfxPane { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,0.55);
+           display: flex; align-items: center; justify-content: center; }
+#sfxPane[hidden] { display: none; }
+.sfxBox { width: 680px; max-width: 92vw; height: 70vh; background: var(--panel);
+          border: 1px solid var(--accent); display: flex; flex-direction: column;
+          box-shadow: 0 18px 50px rgba(0,0,0,0.7); }
+.sfxHead { display: flex; align-items: center; justify-content: space-between;
+           padding: 12px 14px 8px; color: #fff; font-size: 14px; }
+#sfxSearch { margin: 0 14px; background: var(--panel2); color: #fff;
+             border: 1px solid var(--line); border-radius: 3px; padding: 9px 11px; font-size: 14px; }
+#sfxSearch:focus { outline: none; border-color: var(--accent); }
+.sfxMeta { display: flex; gap: 14px; padding: 8px 14px 4px; color: var(--dim); font-size: 11px; }
+#sfxList { flex: 1; min-height: 0; overflow: auto; padding: 4px 14px 14px; }
+.sfxRow { display: grid; grid-template-columns: 1fr 130px auto; gap: 10px;
+          align-items: center; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.sfxRow:hover { background: var(--panel2); }
+.sfxName { color: #fff; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sfxDur { color: var(--dim); font-size: 11px; }
+.sfxWarn { color: var(--warn); font-size: 11px; }
+.sfxBad { color: var(--bad); font-size: 11px; font-weight: 700; }
+.sfxBtns { display: flex; gap: 6px; }
+.sfxRow button { padding: 4px 9px; font-size: 11px; }
+.qSfxName { color: #fff; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+#findAll { width: 230px; flex: 0 0 auto; min-width: 180px;
+           background: var(--panel2); color: #fff;
+           border: 1px solid var(--line); border-radius: 3px; padding: 5px 9px; font-size: 12px; }
+#findAll:focus { outline: none; border-color: var(--accent); width: 320px; }
+#findPanel { position: fixed; top: 46px; right: 12px; width: 460px; max-height: 60vh;
+             z-index: 90; background: var(--panel); border: 1px solid var(--accent);
+             box-shadow: 0 14px 40px rgba(0,0,0,0.65); display: flex; flex-direction: column; }
+#findPanel[hidden] { display: none; }
+.findHead { display: flex; justify-content: space-between; align-items: center;
+            padding: 8px 10px; border-bottom: 1px solid var(--line);
+            color: var(--text); font-size: 11px; }
+#findList { overflow: auto; padding: 4px 0; }
+.findRow { display: block; width: 100%; text-align: left; background: none; border: none;
+           padding: 5px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.findRow:hover { background: var(--panel2); }
+.findWhere { color: var(--dim); font-size: 10px; font-family: ui-monospace, Consolas, monospace; }
+.findText { color: var(--text); font-size: 11px; font-family: ui-monospace, Consolas, monospace;
+            white-space: pre; overflow: hidden; text-overflow: ellipsis; display: block; }
+.findText b { color: var(--accent); font-weight: 700; }
+
+.ftab.closable { display: inline-flex; align-items: center; gap: 6px; }
+.ftabName { pointer-events: none; }
+/* Always there, quietly. It used to appear only on the tab under the pointer
+   or the open one, which reads as the cross vanishing rather than as a tidy
+   row: a control you have to go looking for is one people stop trusting. */
+.ftabX { opacity: .55; color: var(--dim); font-size: 13px; line-height: 1;
+         padding: 0 2px; border-radius: 2px; }
+.ftab.closable:hover .ftabX, .ftab.closable.on .ftabX { opacity: 1; }
+.ftabX:hover { color: #fff; background: var(--bad); }
+/* Text and Values carry no cross: they are views of the project, not open
+   documents, and closing one would leave nothing to reopen it with. */
+.ftab.strTab .ftabX { display: none; }
+
+#firstrun { position: absolute; inset: 0; z-index: 30; background: var(--ink);
+            display: flex; align-items: center; justify-content: center; }
+#firstrun .fr { max-width: 420px; text-align: center; padding: 0 20px; }
+#firstrun .frt { font: 700 15px/1.3 "Segoe UI", system-ui, sans-serif;
+                 letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-blue); }
+#firstrun .frd { color: var(--dim); margin: 8px 0 18px; font-size: 12px; }
+#firstrun button.primary { padding: 10px 18px; font-size: 11px; }
+#firstrun .frl { margin-top: 14px; }
+
+/* ---- buttons ------------------------------------------------------------ */
+button {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    padding: 5px 10px;
+    font: 700 10px/1.2 "Segoe UI", system-ui, sans-serif;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { background: var(--accent); }
+button.on { border-color: var(--accent); color: var(--accent); }
+button.link { background: none; border: none; color: var(--accent);
+              text-transform: none; letter-spacing: 0; font-weight: 400;
+              font-size: 11px; padding: 0; text-decoration: underline; }
+
+.sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.grow { flex: 1; }
+
+select, input[type=text] {
+    background: var(--ink); color: var(--text); border: 1px solid var(--line);
+    padding: 4px 6px; font: 11px "Segoe UI", system-ui, sans-serif;
+}
+input[type=text]:focus, select:focus { outline: none; border-color: var(--accent); }
+
+/* ---- banner ------------------------------------------------------------- */
+#banner { padding: 7px 10px; border-bottom: 1px solid var(--line);
+          background: var(--panel2); border-left: 3px solid var(--accent);
+          display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#banner.bad  { border-left-color: var(--bad); }
+#banner.warn { border-left-color: var(--warn); }
+#banner .msg { flex: 1; min-width: 200px; color: var(--text-blue); }
+#banner .sub2 { color: var(--dim); font-size: 11px; width: 100%; }
+
+/* ---- the handle strip ---------------------------------------------------
+   Named in plain words for somebody who has never scripted. Nothing here is
+   a tool word: the panel behind LEARN is the recipe list, the panel behind
+   WHAT WENT WRONG is the diagnostics, and neither name is on screen.
+   -------------------------------------------------------------------------- */
+.railbtn {
+    display: block; width: 100%; text-align: left; border: none;
+    border-left: 3px solid transparent; border-bottom: 1px solid var(--line);
+    background: none; padding: 10px 7px; color: var(--dim);
+    white-space: normal; line-height: 1.25; letter-spacing: 0.4px;
+}
+.railbtn.on { color: var(--accent); border-left-color: var(--accent); background: var(--panel2); }
+.railbtn:hover { color: var(--text); border-color: transparent; border-left-color: var(--accent-dim);
+                 border-bottom: 1px solid var(--line); }
+
+/* ---- side panels -------------------------------------------------------- */
+.pane { display: none; padding: 8px; }
+.pane.on { display: block; }
+.h {
+    font: 700 10px/1.2 "Segoe UI", system-ui, sans-serif;
+    letter-spacing: 0.8px; text-transform: uppercase;
+    color: var(--accent); margin: 12px 0 6px;
+}
+.h:first-child { margin-top: 0; }
+/* Every panel opens with one sentence saying what it is for. */
+.sub { color: var(--dim); font-size: 11px; margin: 0 0 8px; }
+.lede { color: var(--text-blue); font-size: 11px; margin: 0 0 10px; line-height: 1.45; }
+
+.row {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    padding: 6px 8px; border: 1px solid var(--line); background: var(--panel2);
+    margin-bottom: 4px; color: var(--text); font: 11px "Segoe UI", system-ui, sans-serif;
+    text-transform: none; letter-spacing: 0;
+}
+.row:hover { border-color: var(--accent); }
+.row .t { font-weight: 600; color: var(--text-blue); display: block; }
+.row .d { color: var(--dim); font-size: 10px; display: block; margin-top: 2px; }
+.row .cmd { color: #5d6a72; font-size: 10px; display: block; margin-top: 3px;
+            font-family: Consolas, "Cascadia Mono", monospace; }
+.row .care { color: var(--warn); font-size: 10px; display: block; margin-top: 3px; }
+.row.sel { border-color: var(--accent); }
+.row.busy { border-color: var(--accent); opacity: 0.6; }
+
+/* the file list, grouped by feature */
+.grp { color: var(--dim); font-size: 10px; text-transform: uppercase;
+       letter-spacing: 0.6px; font-weight: 700; margin: 9px 0 3px; }
+.grp:first-child { margin-top: 0; }
+.grp .why { text-transform: none; letter-spacing: 0; font-weight: 400;
+            color: #5d6a72; display: block; margin-top: 1px; }
+
+.card { border: 1px solid var(--line); background: var(--panel2); padding: 8px; margin-bottom: 6px; }
+.card .t { font-weight: 700; color: var(--text-blue); margin-bottom: 3px; }
+.card .w { color: var(--warn); font-size: 11px; margin-top: 5px; }
+.card .s { color: var(--dim); font-size: 10px; margin-top: 5px; font-style: italic; }
+.card.bad  { border-left: 3px solid var(--bad); }
+.card.warn { border-left: 3px solid var(--warn); }
+.card.ok   { border-left: 3px solid var(--ok); }
+
+.pill { display: inline-block; padding: 1px 5px; margin-right: 4px;
+        border: 1px solid var(--line); color: var(--dim); font-size: 9px;
+        text-transform: uppercase; letter-spacing: 0.5px; }
+.pill.acc { border-color: var(--accent-dim); color: var(--accent); }
+.pill.ok  { border-color: var(--ok); color: var(--ok); }
+.pill.warn { border-color: var(--warn); color: var(--warn); }
+
+/* a worked example, shown as code you can read before you take it */
+pre.code {
+    margin: 6px 0 4px; padding: 6px 8px; background: #08090a;
+    border: 1px solid var(--line); border-left: 2px solid var(--accent-dim);
+    font: 11px/1.45 Consolas, "Cascadia Mono", monospace; color: var(--text);
+    max-height: 260px; overflow: auto; white-space: pre; }
+.act { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
+.act button { font-size: 9px; padding: 4px 7px; }
+.gots { margin: 5px 0 0; padding-left: 16px; color: var(--warn); font-size: 11px; }
+.gots li { margin-bottom: 3px; }
+
+ol.steps { margin: 0; padding-left: 20px; }
+ol.steps li { margin-bottom: 10px; }
+ol.steps li.done { color: var(--dim); }
+ol.steps li.done .t { text-decoration: line-through; }
+
+/* ---- the structure map --------------------------------------------------
+   The panel is 344px wide and a mod's structure is wider than that, so the
+   drawing keeps its natural size and the box around it scrolls. Shrinking the
+   graph to fit would make the names unreadable, which is the one thing this
+   panel cannot afford.
+   -------------------------------------------------------------------------- */
+#mapGraph { border: 1px solid var(--line); background: #08090a;
+            max-height: 320px; overflow: auto; margin-bottom: 6px; }
+#mapGraph svg { display: block; }
+#mapGraph:empty { display: none; }
+
+.mnode { cursor: pointer; }
+.mnode rect { fill: var(--panel2); stroke: var(--line); }
+.mnode text { fill: var(--text-blue);
+              font: 10px "Segoe UI", system-ui, sans-serif; }
+.mnode text.msub { fill: #5d6a72; font-size: 8px; letter-spacing: 0.3px; }
+.mnode:hover rect { stroke: var(--accent); }
+.mnode.entry rect { stroke: var(--accent); }
+.mnode.entry text { fill: var(--text); }
+.mnode.val rect { fill: #101314; stroke: #3a4247; }
+/* Dashed and amber for a reason: nothing reaches this box, and the border says
+   so before anybody reads the label. */
+.mnode.dead rect { stroke: var(--warn); stroke-dasharray: 3 2; }
+.mnode.dead text.msub { fill: var(--warn); }
+.mnode.sel rect { stroke: var(--accent); stroke-width: 2; fill: #24282b; }
+
+.medge { fill: none; stroke: #3a4247; }
+.medge.far { stroke: #2d3540; stroke-dasharray: 5 3; }
+.medge.rw { stroke: #33413a; stroke-dasharray: 2 3; }
+
+.mfile rect { fill: none; stroke: var(--line); stroke-dasharray: 2 3; }
+.mfile text { fill: var(--dim); font: 700 9px "Segoe UI", system-ui, sans-serif;
+              letter-spacing: 0.6px; text-transform: uppercase; }
+
+/* ---- file tabs ---------------------------------------------------------- */
+#tabs { display: flex; background: var(--panel); border-bottom: 1px solid var(--line);
+        overflow-x: auto; min-height: 28px; }
+.ftab {
+    padding: 6px 12px; border-right: 1px solid var(--line); cursor: pointer;
+    white-space: nowrap; color: var(--dim); font-size: 11px;
+    border-bottom: 2px solid transparent;
+}
+.ftab.on { color: var(--text); background: var(--ink); border-bottom-color: var(--accent); }
+/* On the name, not the tab, so the unsaved mark stays beside the file name
+   instead of landing after the close cross. */
+.ftab.dirty .ftabName::after { content: " *"; color: var(--accent); }
+
+/* ---- editor and its explanation panel -----------------------------------
+   The panel explains where the caret IS, so it is an ordinary scrolling
+   column, not a set of notes pinned to line tops. Nothing here is positioned
+   against the code, so nothing here can drift out of line with it. */
+#split  { flex: 1; display: flex; min-height: 0; }
+#editor { flex: 1; min-width: 0; }
+#gutter {
+    width: 330px; border-left: 1px solid var(--line); background: var(--panel);
+    overflow-y: auto; overflow-x: hidden; display: none;
+}
+#gutter.on { display: flex; flex-direction: column; }
+#gutterInner, #aiInner { padding: 10px 12px 24px; overflow-y: auto; flex: 1; }
+
+#sideTabs { display: flex; align-items: center; gap: 4px; padding: 5px 8px;
+            border-bottom: 1px solid var(--line); background: var(--panel2); flex: 0 0 auto; }
+#sideTabs .grow { flex: 1; }
+#sideTabs button { background: none; border: 0; color: var(--dim); font-size: 11px;
+                   padding: 3px 8px; border-radius: 3px; cursor: pointer; }
+#sideTabs button:hover { color: var(--text); }
+#sideTabs button.on { color: var(--ink); background: var(--accent); }
+#aiWho { color: var(--dim); font-size: 10px; max-width: 110px; overflow: hidden;
+         text-overflow: ellipsis; white-space: nowrap; }
+#aiWho.local { color: var(--ok); }
+#aiWho.off { color: var(--warn); }
+
+/* ---- the conversation --------------------------------------------------- */
+.aiTurn { border-left: 2px solid var(--line); padding: 0 0 0 8px; margin: 0 0 14px; }
+.aiQ { color: var(--text-blue); font-size: 11px; line-height: 1.45; margin-bottom: 6px;
+       white-space: pre-wrap; word-break: break-word; }
+.aiA { color: var(--text); font-size: 11px; line-height: 1.5; white-space: pre-wrap;
+       word-break: break-word; }
+.aiA.bad { color: var(--bad); }
+.aiMeta { color: var(--dim); font-size: 10px; margin-bottom: 4px; }
+.aiCode { background: var(--ink); border: 1px solid var(--line); border-radius: 3px;
+          font-family: Consolas, "Courier New", monospace; font-size: 10px; line-height: 1.4;
+          padding: 6px 7px; margin: 6px 0 4px; white-space: pre; overflow-x: auto; }
+.aiActs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.aiActs button { font-size: 10px; padding: 2px 8px; }
+.aiWait { color: var(--dim); font-size: 11px; line-height: 1.5; margin-bottom: 8px; }
+.aiHelp { background: var(--ink); border: 1px solid var(--line); border-radius: 3px;
+          padding: 8px; margin: 6px 0; font-family: Consolas, monospace; font-size: 10px;
+          line-height: 1.45; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+
+/* ---- the question box --------------------------------------------------- */
+#askBox { position: fixed; z-index: 95; right: 24px; bottom: 34px; width: 460px;
+          max-width: calc(100vw - 48px); background: var(--panel);
+          border: 1px solid var(--accent); border-radius: 4px;
+          box-shadow: 0 12px 34px rgba(0, 0, 0, 0.6); padding: 10px 12px 12px; }
+#askBox[hidden] { display: none; }
+.askHead { display: flex; align-items: center; font-size: 12px; color: var(--text);
+           margin-bottom: 6px; }
+.askHead .grow { flex: 1; }
+#askClose { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 0 4px; }
+#askClose:hover { color: #fff; }
+.askWhat { color: var(--dim); font-size: 10px; line-height: 1.4; margin-bottom: 6px; }
+#askText { width: 100%; box-sizing: border-box; background: var(--ink); color: var(--text);
+           border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+           font: 12px "Segoe UI", system-ui, sans-serif; resize: vertical; }
+#askText:focus { outline: none; border-color: var(--accent); }
+.askChips { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0 4px; }
+.askChips button { background: var(--ink); color: var(--dim); border: 1px solid var(--line);
+                   border-radius: 10px; padding: 2px 9px; font-size: 10px; cursor: pointer; }
+.askChips button:hover { color: var(--text); border-color: var(--accent-dim); }
+.askFoot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.askFoot .grow { flex: 1; }
+.askNote { color: var(--dim); font-size: 10px; }
+.askNote.warn { color: var(--warn); }
+
+.exHead  { color: var(--dim); font-size: 10px; letter-spacing: .04em;
+           text-transform: uppercase; margin-bottom: 4px; }
+.exCodeLine {
+    font-family: Consolas, "Courier New", monospace; font-size: 11px;
+    color: var(--text-blue); background: var(--ink); border-radius: 3px;
+    padding: 5px 7px; margin-bottom: 8px; white-space: pre-wrap;
+    word-break: break-word; border-left: 2px solid var(--accent);
+}
+.exCard  { margin-bottom: 12px; }
+.exPart  { border-top: 1px solid var(--line); padding-top: 9px; margin-top: 11px; }
+.exLabel { color: var(--dim); font-size: 10px; letter-spacing: .04em;
+           text-transform: uppercase; margin-bottom: 4px; }
+.exName  { color: var(--text); font-size: 13px; font-weight: 600; margin-bottom: 3px;
+           font-family: Consolas, "Courier New", monospace; word-break: break-all; }
+.exSay   { color: var(--text); font-size: 11px; line-height: 1.45; margin-bottom: 5px; }
+.exSay.dim  { color: var(--dim); }
+.exSay.warn { color: var(--warn); }
+.exSay b { color: var(--text-blue); font-weight: 600; }
+.exSay a { color: var(--accent); }
+.exLn    { color: var(--dim); font-family: Consolas, monospace; font-size: 10px;
+           min-width: 30px; display: inline-block; text-align: right; margin-right: 6px; }
+.exUse {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    border-left: 2px solid var(--line); padding: 2px 0 2px 6px; margin: 0 0 2px;
+    cursor: pointer; color: var(--dim); font-size: 10px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+}
+.exUse:hover { border-left-color: var(--accent); color: var(--text); }
+.exSnip  { font-family: Consolas, "Courier New", monospace; }
+.exLink  {
+    background: none; border: 0; padding: 0; margin: 3px 8px 0 0; cursor: pointer;
+    color: var(--accent); font-size: 10px; text-decoration: underline;
+}
+
+/* ---- output ------------------------------------------------------------- */
+#out .l  { white-space: pre-wrap; word-break: break-word; }
+#out .e  { color: var(--bad); }
+#out .w  { color: var(--warn); }
+#out .g  { color: var(--ok); }
+#out .d  { color: var(--dim); }
+
+/* ---- status ------------------------------------------------------------- */
+#status { padding: 3px 8px; background: var(--panel); border-top: 1px solid var(--line);
+          font-size: 10px; color: var(--dim); display: flex; gap: 12px; align-items: center; }
+#status .k { color: var(--text-blue); }
+#status .grow { flex: 1; }
+#btnMsgs { padding: 2px 7px; font-size: 9px; }
+#btnMsgs.unread { border-color: var(--warn); color: var(--warn); }
+#btnMsgs.bad { border-color: var(--bad); color: var(--bad); }
+#lastMsg { color: var(--dim); overflow: hidden; text-overflow: ellipsis;
+           white-space: nowrap; max-width: 46vw; }
+
+/* ---- code lens and inline decoration colours ---------------------------- */
+.bf6-lens { color: var(--accent) !important; }
+.bf6-pitfall-line { background: rgba(244, 60, 48, 0.10); }
+.bf6-explain-line { background: rgba(255, 88, 26, 0.10); }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+    <!-- ---- toolbar -----------------------------------------------------
+         FIVE THINGS AT REST, and no more. Which project, save, build, put it
+         on Portal, and one MORE button holding everything a beginner does not
+         need on their first afternoon. Nothing was removed: every button that
+         used to sit here still exists, in #more below, so the code that clicks
+         them and the console commands that drive them are untouched.
+         ------------------------------------------------------------------- -->
+    <div id="bar">
+        <select id="projSel" title="Which script project this editor is on"></select>
+        <button id="btnSave" title="Write the open file to disk (Ctrl+S)">Save</button>
+        <button id="btnBuild" class="primary" title="Turn everything under src into one bundle the game can run">Build</button>
+        <button id="btnPush" title="Replace the Portal page's editor content with your built bundle">Put on Portal</button>
+        <button id="btnMore" title="Everything else">More</button>
+        <div class="grow"></div>
+        <!-- SEARCH, WHERE SEARCH LIVES. Every match in every file of the
+             project, listed, so a name can be followed rather than hunted.
+             Last in the bar and never allowed to shrink away: it was between
+             two spacers before, which centred it and let the wrap hide it. -->
+        <input type="text" id="findAll" placeholder="Search the whole project"
+               title="Every match in every file (Ctrl+F searches just this file)">
+    </div>
+
+    <!-- The overflow. Closed until MORE is pressed. -->
+    <!-- The right-click menu for a row in the Values list. Its own element
+         rather than a reuse of #more, which holds the toolbar's own buttons. -->
+    <!-- The sound and effect picker. A dialog rather than a pane, because it is
+         answering one question and then getting out of the way. -->
+    <div id="sfxPane" hidden>
+        <div class="sfxBox">
+            <div class="sfxHead">
+                <div id="sfxTitle">Choose a sound</div>
+                <button class="link" id="sfxClose">Close</button>
+            </div>
+            <input type="text" id="sfxSearch" placeholder="Search - try alarm, explosion, door, ui">
+            <div class="sfxMeta"><span id="sfxCount"></span><span id="sfxSource"></span></div>
+            <div id="sfxList"></div>
+        </div>
+    </div>
+
+    <!-- The results, over the editor rather than beside it: a list of matches
+         is read once and dismissed, and taking a permanent column for it would
+         cost the code the room it needs. -->
+    <div id="findPanel" hidden>
+        <div class="findHead">
+            <span id="findCount"></span>
+            <button class="link" id="findClose">Close</button>
+        </div>
+        <div id="findList"></div>
+    </div>
+
+    <div id="ctxMenu" hidden></div>
+
+    <!-- ---- ASKING FOR SOMETHING -------------------------------------------
+         Right-click, Ask the AI, and this is where the sentence gets typed.
+         It says what is going with the question before it goes, because "help
+         me with this" quietly attaching six thousand lines of somebody's mod
+         to a request leaving their machine is not a thing to find out
+         afterwards. -->
+    <div id="askBox" hidden>
+        <div class="askHead">
+            <span id="askTitle">Ask the AI</span>
+            <span class="grow"></span>
+            <button id="askClose" title="Close">x</button>
+        </div>
+        <div id="askWhat" class="askWhat"></div>
+        <textarea id="askText" rows="4" placeholder="What would you like it to check, explain, or change?"></textarea>
+        <div id="askChips" class="askChips"></div>
+        <div class="askFoot">
+            <span id="askNote" class="askNote"></span>
+            <span class="grow"></span>
+            <button id="askCopy" title="Put the whole briefing on the clipboard to paste into whatever you already use">Copy the briefing</button>
+            <button id="askSend" class="primary">Ask</button>
+        </div>
+    </div>
+
+    <div id="more" hidden>
+        <div class="mh">This project</div>
+        <button id="btnNew">Make a new script project</button>
+        <button id="btnInstall">Install the packages it needs</button>
+        <div class="mh">Portal</div>
+        <button id="btnPull">Bring down what is on Portal</button>
+        <button id="btnSavePortal">Press Save on the Portal page</button>
+        <div class="mh">While you write</div>
+        <button id="btnGuided" class="on" title="Explains whatever line the cursor is on, and the name under it">Explain where I am</button>
+        <button id="btnInsertObj">Use the object I picked in the scene</button>
+    </div>
+
+    <!-- Sits between the toolbar and the editor and is empty most of the time.
+         It is where the tool says the things a user must not miss: Portal
+         signed you out, a bundle is built and not yet saved, Portal refused
+         the save. -->
+    <div id="banner" hidden></div>
+
+    <div id="body">
+
+        <!-- ---- the handle strip ------------------------------------------
+             One small labelled handle each. Plain words only. Closed at rest.
+             ------------------------------------------------------------- -->
+        <div id="rail">
+            <button class="railbtn" data-pane="walk">Start here</button>
+            <button class="railbtn" data-pane="files">Your files</button>
+            <button class="railbtn" data-pane="project">Project</button>
+            <button class="railbtn" data-pane="map">How it fits together</button>
+            <button class="railbtn" data-pane="learn">Learn</button>
+            <button class="railbtn" data-pane="api">Find a command</button>
+            <button class="railbtn" data-pane="snippets">Examples</button>
+            <button class="railbtn" data-pane="explain">Explain this</button>
+            <button class="railbtn" data-pane="diagnose">What went wrong</button>
+            <button class="railbtn" data-pane="faq">Ask a question</button>
+        </div>
+
+        <!-- ---- the slide-out -------------------------------------------- -->
+        <div id="side">
+            <div id="sideHead">
+                <span class="name" id="sideTitle">Start here</span>
+                <button id="sidePin" title="Leave this open while you work in the code">Keep open</button>
+                <button id="sideClose" title="Close it (Escape)">Close</button>
+            </div>
+            <div id="sideBody">
+
+            <div class="pane" id="pane-files">
+                <div class="lede">The files this project is made of. Click one to open it in the editor.</div>
+                <div class="sub" id="projPath">No project open.</div>
+                <div id="fileList"></div>
+                <div class="h">Add</div>
+                <button class="row" id="btnNewFile"><span class="t">New file in src</span><span class="d">A new .ts module you can import from index.ts</span></button>
+            </div>
+
+            <!-- The template's own tools, and the feature split. Both used to be
+                 invisible: six of the eight npm scripts had nothing offering
+                 them, and nothing anywhere said a project is written in
+                 separate folders and built into one file. -->
+            <div class="pane" id="pane-project">
+                <div class="lede">A project is written as separate feature folders, and everything is built into one file at the end. That one file is what goes to Portal.</div>
+                <div class="h">Features</div>
+                <div class="sub">Each one is a folder under src with its own code and its own words on screen.</div>
+                <div style="display:flex;gap:4px;margin-bottom:6px">
+                    <button id="btnAddFeature" style="flex:1">Add a feature</button>
+                    <button id="btnRemoveFeature" style="flex:1">Remove a feature</button>
+                </div>
+                <div id="featureList"></div>
+                <div class="h">Tools</div>
+                <div class="sub">Everything the template can do. The small grey line is what to type in a terminal if you would rather.</div>
+                <div id="toolList"></div>
+                <div id="toolOut"></div>
+            </div>
+
+            <!-- The project panel above teaches the folder per feature layout.
+                 This one answers the question that comes straight after it: of
+                 all those files, which piece does the game actually start, and
+                 what does that piece reach. Everything in it is read out of the
+                 user's own source by map.js. -->
+            <div class="pane" id="pane-map">
+                <div class="lede">Every piece of your script and what starts it. The boxes on the left are where the game begins. Everything to the right of them is what those pieces reach.</div>
+                <div class="sub">Click any box to jump to the line that writes it.</div>
+                <button id="btnMapRedraw" style="width:100%;margin-bottom:6px">Read my files again</button>
+                <div id="mapLegend" style="margin-bottom:5px"></div>
+                <div id="mapGraph"></div>
+                <div id="mapWhere" class="sub"></div>
+                <div id="mapMissing"></div>
+                <div id="mapDetail"></div>
+            </div>
+
+            <div class="pane" id="pane-learn">
+                <div class="lede">Small working setups you can read a line at a time, then try for yourself.</div>
+                <div class="sub">Try it makes a project or drops the code into the file you have open.</div>
+                <div id="recipeList"></div>
+            </div>
+
+            <div class="pane" id="pane-faq">
+                <div class="lede">Search what other creators already asked, and the answers they were given.</div>
+                <input type="text" id="faqQ" placeholder="Type a few words about the problem" style="width:100%;margin-bottom:5px">
+                <div style="display:flex;gap:4px;margin-bottom:6px">
+                    <select id="faqTheme" style="flex:1"></select>
+                    <select id="faqEditor">
+                        <option value="">Any editor</option>
+                        <option value="typescript">TypeScript</option>
+                        <option value="blocks">Blocks</option>
+                        <option value="both">Both</option>
+                    </select>
+                </div>
+                <div id="faqCount" class="sub"></div>
+                <div id="faqList"></div>
+            </div>
+
+            <!-- Everything the game exposes, searchable by what it is called AND
+                 by what its documentation says, so somebody who does not know
+                 the name can still find it by typing "spawn". -->
+            <div class="pane" id="pane-api">
+                <div class="lede">Every command the game gives you. Type what you want to do, not what it is called.</div>
+                <input type="text" id="apiQ" placeholder="spawn, damage, message, timer..." style="width:100%;margin-bottom:5px">
+                <div id="apiCount" class="sub"></div>
+                <div id="apiList"></div>
+                <div class="h">Where these came from</div>
+                <div class="sub">The editor reads every description of the game's API it can find on this machine, richest first.</div>
+                <div id="typeSrc"></div>
+            </div>
+
+            <div class="pane" id="pane-snippets">
+                <div class="lede">Code you can take. The worked answers were written out and compiled; the pieces below them are shapes to fill in.</div>
+                <input type="text" id="snipQ" placeholder="What are you trying to do?" style="width:100%;margin-bottom:6px">
+                <div id="snipList"></div>
+            </div>
+
+            <div class="pane" id="pane-explain">
+                <div class="lede">Says what a piece of code does, one plain line for every line of it.</div>
+                <div class="sub">Select some code first and this panel explains that. Select nothing and it explains where your cursor is.</div>
+                <button id="btnExplain" style="width:100%;margin-bottom:8px">Explain what I selected</button>
+                <div id="explainOut"></div>
+            </div>
+
+            <div class="pane" id="pane-diagnose">
+                <div class="lede">Whatever the tool, the compiler or the game is unhappy about, said in plain words.</div>
+                <div class="sub">Check my script also scans for the traps that bite everybody once.</div>
+                <button id="btnCheck" style="width:100%;margin-bottom:4px">Check my script</button>
+                <button id="btnTail" style="width:100%;margin-bottom:8px">Watch the game's log</button>
+                <div id="diagOut"></div>
+                <div class="h">This machine</div>
+                <div class="sub">Node <span class="k" id="stNode">?</span> &nbsp; Type files <span class="k" id="stTypes">0</span> &nbsp; Error checking <span class="k" id="stMode">starting</span></div>
+            </div>
+
+            <div class="pane" id="pane-walk">
+                <div class="lede">Five steps from nothing to a script running in your own match.</div>
+                <ol class="steps" id="walkList"></ol>
+            </div>
+
+            </div>
+        </div>
+
+        <!-- ---- the canvas ------------------------------------------------ -->
+        <div id="main">
+            <div id="tabs"></div>
+            <!-- Only shown on a file that actually contains the template's own
+                 code, so it never sits here meaninglessly. -->
+            <div id="bundleHide" class="bundleHide" hidden>
+                <label><input type="checkbox" id="chkBundleHide"> Show <span id="bundleHideCount">the template's own code</span></label>
+                <span class="bundleWhy">Hidden by default: you did not write it, and it comes back on its own when the mod is built.</span>
+            </div>
+            <div id="split">
+                <div id="editor"></div>
+                <!-- ---- the right hand column -------------------------------
+                     Two views of the same place in the code, because they
+                     answer the same question at different depths: what is this
+                     line, and what would I like done about it. One column, one
+                     switch, so neither is hidden behind a menu. -->
+                <div id="gutter" class="on">
+                    <div id="sideTabs">
+                        <button id="sideExplain" class="on">Explain</button>
+                        <button id="sideAi">Ask the AI</button>
+                        <span class="grow"></span>
+                        <span id="aiWho" title="Which AI this is going to"></span>
+                    </div>
+                    <div id="gutterInner"></div>
+                    <div id="aiInner" hidden></div>
+                </div>
+            </div>
+
+            <!-- ---- the text a player sees -------------------------------
+                 A plain list of lines of text, for somebody who does not write
+                 code and should not have to open a JSON file to change what
+                 their mod says. Every row is one piece of text: type into it to
+                 change it, press + to add one, and USE gives the one line of
+                 code that puts it on screen.
+
+                 The template's own strings are not here. They belong to the
+                 debug tool and the starter example, nobody's mod says them, and
+                 a list that opens on eighteen map names nobody wrote is a list
+                 people stop reading. -->
+            <div id="stringsPane" hidden>
+                <div class="strHead">
+                    <div class="strLede">
+                        Every piece of text your mod can show a player.
+                        Change one by typing in it. The code beside it is how you
+                        use it in your script.
+                    </div>
+                    <div class="strActions">
+                        <button class="primary" id="btnStrAdd">+ Add a line of text</button>
+                        <label class="strShowAll"><input type="checkbox" id="chkStrAll"> Show the template's own text</label>
+                    </div>
+                </div>
+                <div id="strList"></div>
+                <div id="strEmpty" class="strEmpty" hidden>
+                    <div class="strEmptyT">No text yet</div>
+                    <div class="strEmptyD">Press <b>+ Add a line of text</b> and type what you want a player to see.</div>
+                </div>
+            </div>
+
+            <!-- ---- the settings worth finding twice ----------------------
+                 Values pulled out of the script by right-clicking them. The
+                 value itself never moves: this is a shortcut to it, plus the
+                 name the author wants to call it. -->
+            <div id="quickPane" hidden>
+                <div class="strHead">
+                    <div class="strLede">
+                        The settings you pulled out of your script. Change one here and it
+                        is changed in the code. Right-click any named value in a file and
+                        choose <b>Add to Values</b> to put it on this list.
+                    </div>
+                </div>
+                <!-- Offered when there is something to offer, and never acted
+                     on by itself: what goes on this list is the author's choice. -->
+                <div id="quickOffer" class="qOffer" hidden>
+                    <span id="quickOfferText"></span>
+                    <button class="primary" id="btnOfferYes">Show me them</button>
+                    <button class="link" id="btnOfferNo">No thanks</button>
+                </div>
+                <div class="strActions" style="padding:0 18px 10px">
+                    <button id="btnFindValues">Find values in my script</button>
+                </div>
+                <div id="suggestPane" hidden><div id="suggestList"></div></div>
+                <div id="quickList"></div>
+                <div id="quickEmpty" class="strEmpty" hidden>
+                    <div class="strEmptyT">Nothing on the list yet</div>
+                    <div class="strEmptyD">Open a script file, right-click a value such as
+                        <b>const START_CASH = 500</b>, and choose <b>Add to Values</b>.</div>
+                </div>
+            </div>
+
+            <!-- Shown instead of an empty editor until there is a project.
+                 ONE next step, not a menu. -->
+            <div id="firstrun" hidden>
+                <div class="fr">
+                    <div class="frt">Nothing open yet</div>
+                    <div class="frd">A script project is a folder of your own rules. Make one and the editor fills it with a working starting point you can change a line at a time.</div>
+                    <button class="primary" id="btnFirstMake">Make my first script project</button>
+                    <div class="frl"><button class="link" id="btnFirstTour">Or read the five steps first</button></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <div id="out"></div>
+    <div id="status">
+        <span>Project <span class="k" id="stProj">none</span></span>
+        <span>Portal <span class="k" id="stSite">not on a script page</span></span>
+        <span>Saved <span class="k" id="stSaved">not yet</span></span>
+        <span id="stPortalSave"></span>
+        <span id="lastMsg"></span>
+        <span class="grow"></span>
+        <span id="mode" class="pill">starting</span>
+        <button id="btnMsgs" title="Show everything the tool has said">Messages</button>
+    </div>
+
+</div>
+
+<!-- The guided layer's data. A plain script tag, because file:// forbids fetch. -->
+<script src="guide.js"></script>
+<!-- The structure map. Loaded before editor.js because editor.js hands it its
+     handles the first time the panel is opened; it does nothing on its own. -->
+<script src="map.js"></script>
+<!-- The briefing an AI is given: the rules, the vocabulary and the project, in
+     one text. It is deliberately usable with nothing linked, which is what the
+     Copy the briefing button is for. -->
+<script src="../assist/contextpack.js"></script>
+<!-- Monaco's AMD loader. editor.js calls require() once it is present. -->
+<script src="vendor/monaco/min/vs/loader.js"></script>
+<!-- CACHE BUSTED ON PURPOSE.
+     CEF caches file:// resources, so an edited editor.js can keep serving the
+     copy from a previous editor session. That is not theoretical: the host was
+     logging "telling the page to show dist/bundle.ts first" while the page went
+     on opening src/index.ts, because the page running in the browser predated
+     the fix. A per-load query makes a stale copy impossible, and a local file
+     costs nothing to re-read. -->
+<script>document.write('<scr' + 'ipt src="editor.js?v=' + Date.now() + '"><\/scr' + 'ipt>');</script>
+
+</body>
+</html>

@@ -18,7 +18,8 @@
 		},
 		{
 			"Name": "BF6HighPoly",
-			"Enabled": true
+			"Enabled": true,
+			"Optional": true
 		},
 		{
 			"Name": "ModelingToolsEditorMode",

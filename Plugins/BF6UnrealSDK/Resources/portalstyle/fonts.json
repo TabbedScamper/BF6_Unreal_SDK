@@ -1,0 +1,465 @@
+{
+  "meta": {
+    "buildId": "15249075",
+    "extractedUtc": "2026-09-06T05:34:42+00:00",
+    "note": "The Portal site self-hosts its own BF typefaces; it does NOT use Google Fonts. The shell carries a preconnect to fonts.gstatic.com but the stylesheet requests no Google font. The tool loads these faces from the user-local mirror; no font binary is stored in the plugin.",
+    "googleFonts": {
+      "used": false,
+      "evidence": "<link rel=\"preconnect\" href=\"https://fonts.gstatic.com/\"> is present in the SPA shell, but no @font-face or @import in index-*.css names a Google-hosted family."
+    },
+    "mirrorRoot": "C:\\Users\\mwalt\\Documents\\Unreal Projects\\BF6_High_Poly\\Saved\\BF6UnrealSDK\\portalstyle\\portal.battlefield.com\\bf6\\15249075\\fonts",
+    "typekit": {
+      "kitUrl": "https://use.typekit.net/txn1klh.js",
+      "loadedBy": "<ea-type-kit kit-url=...> in the SPA shell, part of EA's shared ea-elements web components, not the Portal stylesheet.",
+      "note": "One face reaches the block editor from this kit rather than the self-hosted set: PortalConstantProvider.FIELD_TEXT_HEADER_FONTFAMILY is 'Purista-Semibold, sans-serif'. Typekit serves it only through templated URLs that carry no fetchable form, so the file is not in the mirror. Anything the tool draws with the header face falls back to BFSubHeadline-Bold, which is the site's own heading family.",
+      "mirrored": false
+    }
+  },
+  "faces": {
+    "BFMono-Bold": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BF_MONO_BOLD.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFMono-Book": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BF_MONO_BOOK.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFMono-Medium": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BF_MONO_MEDIUM.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFSubHeadline-Bold": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BF_SUB_HEADLINE_BOLD.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFSubHeadline-Medium": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BF_SUB_HEADLINE_MEDIUM.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFTitle-Narrow-Bold": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BF_TITLE_NARROW-BOLD.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFTitle-Semi-Bold": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BF_TITLE_SEMI-BOLD.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFText-Regular": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BFText-Regular.woff2",
+          "format": "woff2"
+        },
+        {
+          "url": "/bf6/15249075/fonts/BFText-Regular.woff",
+          "format": "woff"
+        },
+        {
+          "url": "/bf6/15249075/fonts/BFText-Regular.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFText-Bold": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BFText-Bold.woff2",
+          "format": "woff2"
+        },
+        {
+          "url": "/bf6/15249075/fonts/BFText-Bold.woff",
+          "format": "woff"
+        },
+        {
+          "url": "/bf6/15249075/fonts/BFText-Bold.ttf",
+          "format": "truetype"
+        }
+      ]
+    },
+    "BFText-Light": {
+      "style": "normal",
+      "sources": [
+        {
+          "url": "/bf6/15249075/fonts/BFText-Light.woff2",
+          "format": "woff2"
+        },
+        {
+          "url": "/bf6/15249075/fonts/BFText-Light.woff",
+          "format": "woff"
+        },
+        {
+          "url": "/bf6/15249075/fonts/BFText-Light.ttf",
+          "format": "truetype"
+        }
+      ]
+    }
+  },
+  "roles": {
+    "titlePrimary": {
+      "token": "--tmln-font-title-primary",
+      "family": "BFTitle-Narrow-Bold",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFTitle-Narrow-Bold",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BF_TITLE_NARROW-BOLD.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    },
+    "titleSecondary": {
+      "token": "--tmln-font-title-secondary",
+      "family": "BFTitle-Semi-Bold",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFTitle-Semi-Bold",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BF_TITLE_SEMI-BOLD.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    },
+    "headingPrimary": {
+      "token": "--tmln-font-heading-primary",
+      "family": "BFSubHeadline-Bold",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFSubHeadline-Bold",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BF_SUB_HEADLINE_BOLD.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    },
+    "headingSecondary": {
+      "token": "--tmln-font-heading-secondary",
+      "family": "BFSubHeadline-Medium",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFSubHeadline-Medium",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BF_SUB_HEADLINE_MEDIUM.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    },
+    "textPrimary": {
+      "token": "--tmln-font-text-primary",
+      "family": "BFText-Regular",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFText-Regular",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BFText-Regular.woff2",
+            "format": "woff2"
+          },
+          {
+            "url": "/bf6/15249075/fonts/BFText-Regular.woff",
+            "format": "woff"
+          },
+          {
+            "url": "/bf6/15249075/fonts/BFText-Regular.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    },
+    "textSecondary": {
+      "token": "--tmln-font-text-secondary",
+      "family": "BFText-Bold",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFText-Bold",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BFText-Bold.woff2",
+            "format": "woff2"
+          },
+          {
+            "url": "/bf6/15249075/fonts/BFText-Bold.woff",
+            "format": "woff"
+          },
+          {
+            "url": "/bf6/15249075/fonts/BFText-Bold.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    },
+    "textTertiary": {
+      "token": "--tmln-font-text-tertiary",
+      "family": "BFText-Light",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFText-Light",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BFText-Light.woff2",
+            "format": "woff2"
+          },
+          {
+            "url": "/bf6/15249075/fonts/BFText-Light.woff",
+            "format": "woff"
+          },
+          {
+            "url": "/bf6/15249075/fonts/BFText-Light.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    },
+    "codePrimary": {
+      "token": "--tmln-font-code-primary",
+      "family": "BFMono-Bold",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFMono-Bold",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BF_MONO_BOLD.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    },
+    "codeSecondary": {
+      "token": "--tmln-font-code-secondary",
+      "family": "BFMono-Book",
+      "fallback": "sans-serif",
+      "stack": [
+        "BFMono-Book",
+        "sans-serif"
+      ],
+      "face": {
+        "style": "normal",
+        "sources": [
+          {
+            "url": "/bf6/15249075/fonts/BF_MONO_BOOK.ttf",
+            "format": "truetype"
+          }
+        ]
+      },
+      "selector": ":root"
+    }
+  },
+  "usage": [
+    {
+      "part": "buttonPrimary",
+      "state": "rest",
+      "family": "BFSubHeadline-Bold",
+      "selector": ".button-module_button__51-il"
+    },
+    {
+      "part": "dialog",
+      "state": "content",
+      "family": "BFText-Regular",
+      "selector": ".dialog-content-module_content__pP1Nj"
+    },
+    {
+      "part": "dialog",
+      "state": "header",
+      "family": "BFSubHeadline-Bold",
+      "selector": ".dialog-content-module_header__a60Rl"
+    },
+    {
+      "part": "dropdown",
+      "state": "list",
+      "family": "BFSubHeadline-Medium",
+      "selector": ".dropdown-module_list__mkxNl"
+    },
+    {
+      "part": "headerBar",
+      "state": "navLabel",
+      "family": "BFSubHeadline-Medium",
+      "selector": ".main-nav-module_headerBtn__kol24"
+    },
+    {
+      "part": "input",
+      "state": "base",
+      "family": "BFText-Regular",
+      "selector": ".textInput-module_inputBase__EqKon"
+    },
+    {
+      "part": "listRow",
+      "state": "header",
+      "family": "BFSubHeadline-Bold",
+      "selector": ".listItemHeader-module_item__qdcEi"
+    },
+    {
+      "part": "listRow",
+      "state": "list",
+      "family": "BFText-Bold",
+      "selector": ".list-module_list__lx7OA"
+    },
+    {
+      "part": "menu",
+      "state": "item",
+      "family": "BFSubHeadline-Bold",
+      "selector": ".menu-item-module_item__S1V0Y"
+    },
+    {
+      "part": "page",
+      "state": "background",
+      "family": "BFText-Regular,sans-serif",
+      "selector": "body"
+    },
+    {
+      "part": "tabBar",
+      "state": "tab",
+      "family": "BFSubHeadline-Medium",
+      "selector": ".tab-module_tab__KBO2-"
+    },
+    {
+      "part": "table",
+      "state": "table",
+      "family": "BFSubHeadline-Bold",
+      "selector": ".table-module_table__omg7p"
+    },
+    {
+      "part": "tooltip",
+      "state": "tip",
+      "family": "BFText-Regular",
+      "selector": ".tooltip-module_tip__24MAk"
+    },
+    {
+      "part": "typeScale",
+      "state": "body",
+      "family": "BFText-Regular",
+      "selector": ".paragraph-module_paragraph__VVyCO"
+    },
+    {
+      "part": "typeScale",
+      "state": "caption",
+      "family": "BFSubHeadline-Medium",
+      "selector": ".caption-module_caption__zlBd0"
+    },
+    {
+      "part": "typeScale",
+      "state": "heading",
+      "family": "BFTitle-Semi-Bold",
+      "selector": ".heading-module_header__bp2rs.heading-module_heading__gao0o"
+    },
+    {
+      "part": "typeScale",
+      "state": "hero",
+      "family": "BFTitle-Semi-Bold",
+      "selector": ".heading-module_header__bp2rs.heading-module_hero__JDUlz"
+    },
+    {
+      "part": "typeScale",
+      "state": "label",
+      "family": "BFSubHeadline-Medium",
+      "selector": ".heading-module_header__bp2rs.heading-module_label__lj-in"
+    },
+    {
+      "part": "typeScale",
+      "state": "link",
+      "family": "BFSubHeadline-Medium",
+      "selector": ".link-module_link__vby5l"
+    },
+    {
+      "part": "typeScale",
+      "state": "numeric",
+      "family": "BFSubHeadline-Medium",
+      "selector": ".textInput-module_inputBase__EqKon.textInput-module_numberFormat__qhXzi"
+    },
+    {
+      "part": "typeScale",
+      "state": "pageTitle",
+      "family": "BFTitle-Narrow-Bold",
+      "selector": ".heading-module_header__bp2rs.heading-module_pageTitle__AUI3-"
+    },
+    {
+      "part": "typeScale",
+      "state": "subheading",
+      "family": "BFSubHeadline-Medium",
+      "selector": ".heading-module_header__bp2rs.heading-module_secondarySubheading__IuM4P,.heading-module_header__bp2rs.heading-module_subheading__PUXzu"
+    }
+  ]
+}

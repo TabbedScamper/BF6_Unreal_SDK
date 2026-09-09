@@ -1,0 +1,4007 @@
+{
+ "v": 1,
+ "theme": "presentation",
+ "builtAt": "2026-09-06T07:29:53.389Z",
+ "entries": [
+  {
+   "id": "presentation-ui-first-panel",
+   "themes": [
+    "ui"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I put my own text on the screen? I made a UI container and a text widget and nothing shows up.",
+   "short": "Build a container, then a text widget parented to it, and set the text from a strings.json key.",
+   "answer": "A widget is one box drawn on the screen. A container is an empty box you put other widgets inside, and a text widget is a box that draws a line of text. You need both: the container gives you a background and a place to hang things, and the text widget carries the words. The AddUI calls do not hand you the widget back, so you name each one and fetch it again with FindUIWidgetWithName when you want to change it or use it as a parent. The words themselves cannot be typed straight into the script: in TypeScript they have to come from a key in strings.json through mod.Message, and in the block editor you type them into a Text block and the editor writes the string table for you. Set the depth to AboveGameUI or the normal game HUD will cover your panel. Build the whole thing once, at the start of the round, and leave it there.",
+   "gotchas": [
+    "AddUIContainer and AddUIText return nothing. Ask for the widget back by its name with FindUIWidgetWithName.",
+    "A child that is not parented to your container is parented to the screen instead, so it will not move or hide with the panel.",
+    "Without UIDepth.AboveGameUI the game HUD draws over your panel and it looks like nothing appeared.",
+    "In TypeScript, mod.Message will not take a plain string you typed in the script. Every visible word needs a strings.json key.",
+    "The official UI examples and the community BF UI Builder both author this tree with modlib.ParseUI, which is the same widgets written as one nested object. The plain mod calls below are the same thing spelled out, and they need no extra module."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "UI Panel",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "AddUIContainer",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Text",
+              "fields": {
+               "TEXT": "faqPanel"
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "CreateVector",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 24
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 24
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-2": {
+             "block": {
+              "type": "CreateVector",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 420
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 96
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-3": {
+             "block": {
+              "type": "UIAnchorItem",
+              "fields": {
+               "VALUE-0": "UIAnchor",
+               "VALUE-1": "TopLeft"
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "SetUIWidgetBgFill",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "FindUIWidgetWithName",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "faqPanel"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "UIBgFillItem",
+                "fields": {
+                 "VALUE-0": "UIBgFill",
+                 "VALUE-1": "Solid"
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "SetUIWidgetBgColor",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "FindUIWidgetWithName",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "faqPanel"
+                     }
+                    }
+                   }
+                  }
+                 }
+                },
+                "VALUE-1": {
+                 "block": {
+                  "type": "CreateVector",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0
+                     }
+                    }
+                   },
+                   "VALUE-1": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0
+                     }
+                    }
+                   },
+                   "VALUE-2": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "next": {
+                "block": {
+                 "type": "SetUIWidgetBgAlpha",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "FindUIWidgetWithName",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Text",
+                       "fields": {
+                        "TEXT": "faqPanel"
+                       }
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-1": {
+                   "block": {
+                    "type": "Number",
+                    "fields": {
+                     "NUM": 0.7
+                    }
+                   }
+                  }
+                 },
+                 "next": {
+                  "block": {
+                   "type": "SetUIWidgetDepth",
+                   "inputs": {
+                    "VALUE-0": {
+                     "block": {
+                      "type": "FindUIWidgetWithName",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "Text",
+                         "fields": {
+                          "TEXT": "faqPanel"
+                         }
+                        }
+                       }
+                      }
+                     }
+                    },
+                    "VALUE-1": {
+                     "block": {
+                      "type": "UIDepthItem",
+                      "fields": {
+                       "VALUE-0": "UIDepth",
+                       "VALUE-1": "AboveGameUI"
+                      }
+                     }
+                    }
+                   },
+                   "next": {
+                    "block": {
+                     "type": "AddUIText",
+                     "inputs": {
+                      "VALUE-0": {
+                       "block": {
+                        "type": "Text",
+                        "fields": {
+                         "TEXT": "faqPanelLine"
+                        }
+                       }
+                      },
+                      "VALUE-1": {
+                       "block": {
+                        "type": "CreateVector",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         },
+                         "VALUE-1": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         },
+                         "VALUE-2": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         }
+                        }
+                       }
+                      },
+                      "VALUE-2": {
+                       "block": {
+                        "type": "CreateVector",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 404
+                           }
+                          }
+                         },
+                         "VALUE-1": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 80
+                           }
+                          }
+                         },
+                         "VALUE-2": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         }
+                        }
+                       }
+                      },
+                      "VALUE-3": {
+                       "block": {
+                        "type": "UIAnchorItem",
+                        "fields": {
+                         "VALUE-0": "UIAnchor",
+                         "VALUE-1": "Center"
+                        }
+                       }
+                      },
+                      "VALUE-4": {
+                       "block": {
+                        "type": "Message",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Text",
+                           "fields": {
+                            "TEXT": "READY"
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     },
+                     "next": {
+                      "block": {
+                       "type": "SetUIWidgetParent",
+                       "inputs": {
+                        "VALUE-0": {
+                         "block": {
+                          "type": "FindUIWidgetWithName",
+                          "inputs": {
+                           "VALUE-0": {
+                            "block": {
+                             "type": "Text",
+                             "fields": {
+                              "TEXT": "faqPanelLine"
+                             }
+                            }
+                           }
+                          }
+                         }
+                        },
+                        "VALUE-1": {
+                         "block": {
+                          "type": "FindUIWidgetWithName",
+                          "inputs": {
+                           "VALUE-0": {
+                            "block": {
+                             "type": "Text",
+                             "fields": {
+                              "TEXT": "faqPanel"
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       },
+                       "next": {
+                        "block": {
+                         "type": "SetUITextSize",
+                         "inputs": {
+                          "VALUE-0": {
+                           "block": {
+                            "type": "FindUIWidgetWithName",
+                            "inputs": {
+                             "VALUE-0": {
+                              "block": {
+                               "type": "Text",
+                               "fields": {
+                                "TEXT": "faqPanelLine"
+                               }
+                              }
+                             }
+                            }
+                           }
+                          },
+                          "VALUE-1": {
+                           "block": {
+                            "type": "Number",
+                            "fields": {
+                             "NUM": 28
+                            }
+                           }
+                          }
+                         },
+                         "next": {
+                          "block": {
+                           "type": "SetUITextColor",
+                           "inputs": {
+                            "VALUE-0": {
+                             "block": {
+                              "type": "FindUIWidgetWithName",
+                              "inputs": {
+                               "VALUE-0": {
+                                "block": {
+                                 "type": "Text",
+                                 "fields": {
+                                  "TEXT": "faqPanelLine"
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            },
+                            "VALUE-1": {
+                             "block": {
+                              "type": "CreateVector",
+                              "inputs": {
+                               "VALUE-0": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 1
+                                 }
+                                }
+                               },
+                               "VALUE-1": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 1
+                                 }
+                                }
+                               },
+                               "VALUE-2": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 1
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            }
+                           },
+                           "next": {
+                            "block": {
+                             "type": "SetUITextAnchor",
+                             "inputs": {
+                              "VALUE-0": {
+                               "block": {
+                                "type": "FindUIWidgetWithName",
+                                "inputs": {
+                                 "VALUE-0": {
+                                  "block": {
+                                   "type": "Text",
+                                   "fields": {
+                                    "TEXT": "faqPanelLine"
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              },
+                              "VALUE-1": {
+                               "block": {
+                                "type": "UIAnchorItem",
+                                "fields": {
+                                 "VALUE-0": "UIAnchor",
+                                 "VALUE-1": "Center"
+                                }
+                               }
+                              }
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnGameModeStarted. It builds the container, tints it, then adds the text widget and parents it to the container. Lands 24 pixels in from the left edge and 24 down from the top of the 1920 by 1080 safe area."
+   },
+   "ts": {
+    "code": "// A HUD panel with one line of text, built once when the round starts.\n//\n// A widget is one box on the screen. A container is an empty box you put other\n// widgets inside. Every widget has a name, and the name is how you find it again.\n\nconst PANEL = \"faqPanel\";\nconst LINE = \"faqPanelLine\";\n\nexport function OnGameModeStarted(): void {\n    // Position and size are measured on a 1920 by 1080 safe area.\n    // The offset runs inward from the anchored edge, so 24, 24 under TopLeft\n    // means 24 pixels in from the left and 24 pixels down from the top.\n    mod.AddUIContainer(\n        PANEL,\n        mod.CreateVector(24, 24, 0), // offset from the anchor\n        mod.CreateVector(420, 96, 0), // width and height\n        mod.UIAnchor.TopLeft,\n        mod.GetUIRoot(), // parent: the whole screen\n        true, // visible\n        8, // padding\n        mod.CreateVector(0, 0, 0), // background colour, red green blue, each 0 to 1\n        0.7, // background alpha, 0 is invisible and 1 is opaque\n        mod.UIBgFill.Solid,\n        mod.UIDepth.AboveGameUI // draw over the normal game HUD\n    );\n\n    // AddUIContainer returns nothing, so ask for the widget back by its name.\n    const panel = mod.FindUIWidgetWithName(PANEL) as mod.UIWidget;\n\n    mod.AddUIText(\n        LINE,\n        mod.CreateVector(0, 0, 0),\n        mod.CreateVector(404, 80, 0),\n        mod.UIAnchor.Center, // centred inside the panel, not the screen\n        panel, // parent is the panel, so the text moves with it\n        true,\n        0,\n        mod.CreateVector(0, 0, 0),\n        0, // no background of its own\n        mod.UIBgFill.None,\n        mod.Message(mod.stringkeys.faq.panel.ready), // text must come from strings.json\n        28, // text size\n        mod.CreateVector(1, 1, 1), // text colour, white\n        1, // text alpha\n        mod.UIAnchor.Center, // where the text sits inside its own box\n        mod.UIDepth.AboveGameUI\n    );\n}\n",
+    "note": "Lands 24 pixels in from the left edge and 24 down from the top of the 1920 by 1080 safe area, 420 wide and 96 tall, with the text centred inside it."
+   },
+   "sources": [
+    "scripts-blocks (PORTAL GENERAL)",
+    "BF User interface builder tool (community-tools)",
+    "portal (Portal)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-ui-anchor-offsets",
+   "themes": [
+    "ui"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "My panel is off the screen, or it moves the wrong way when I change the numbers. How do UI positions actually work?",
+   "short": "The offset is an inward inset from the edge the anchor names, not a screen coordinate.",
+   "answer": "UI positions are not screen coordinates. The anchor picks a reference point on the parent box, and the offset then runs inward from that point. Under TopLeft, x and y behave the way you expect: bigger x moves right, bigger y moves down. Under any Right anchor a bigger x moves the widget further LEFT, and under any Bottom anchor a bigger y moves it further UP, because you are measuring in from that edge. The widget also lines up its own matching corner with that point, so a TopRight widget hangs its top right corner off the top right. Everything is measured on a 1920 by 1080 safe area, whatever the player's real resolution is. Getting the sign backwards is the usual reason a panel is half off the screen: a negative x under TopRight pushes it out past the edge instead of pulling it in.",
+   "gotchas": [
+    "A negative offset almost always means you have the anchor wrong. Fix the anchor, keep the offset positive.",
+    "The offset is measured against the PARENT box, not the screen. A child inside a 400 wide container is inset from that container.",
+    "Anchor to the edge or corner you actually care about. Absolute offsets from Center drift on ultrawide screens, while edge anchored panels stay put.",
+    "The safe area is always 1920 by 1080. Do not scale your numbers to the player's resolution."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Corner Test",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "AddUIContainer",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Text",
+              "fields": {
+               "TEXT": "faqCornerTopLeft"
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "CreateVector",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 24
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 24
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-2": {
+             "block": {
+              "type": "CreateVector",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 200
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 120
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-3": {
+             "block": {
+              "type": "UIAnchorItem",
+              "fields": {
+               "VALUE-0": "UIAnchor",
+               "VALUE-1": "TopLeft"
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "SetUIWidgetBgFill",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "FindUIWidgetWithName",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "faqCornerTopLeft"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "UIBgFillItem",
+                "fields": {
+                 "VALUE-0": "UIBgFill",
+                 "VALUE-1": "Solid"
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "SetUIWidgetBgColor",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "FindUIWidgetWithName",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "faqCornerTopLeft"
+                     }
+                    }
+                   }
+                  }
+                 }
+                },
+                "VALUE-1": {
+                 "block": {
+                  "type": "CreateVector",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 1
+                     }
+                    }
+                   },
+                   "VALUE-1": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0.514
+                     }
+                    }
+                   },
+                   "VALUE-2": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0.38
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "next": {
+                "block": {
+                 "type": "SetUIWidgetBgAlpha",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "FindUIWidgetWithName",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Text",
+                       "fields": {
+                        "TEXT": "faqCornerTopLeft"
+                       }
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-1": {
+                   "block": {
+                    "type": "Number",
+                    "fields": {
+                     "NUM": 0.6
+                    }
+                   }
+                  }
+                 },
+                 "next": {
+                  "block": {
+                   "type": "AddUIContainer",
+                   "inputs": {
+                    "VALUE-0": {
+                     "block": {
+                      "type": "Text",
+                      "fields": {
+                       "TEXT": "faqCornerTopRight"
+                      }
+                     }
+                    },
+                    "VALUE-1": {
+                     "block": {
+                      "type": "CreateVector",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "Number",
+                         "fields": {
+                          "NUM": 24
+                         }
+                        }
+                       },
+                       "VALUE-1": {
+                        "block": {
+                         "type": "Number",
+                         "fields": {
+                          "NUM": 24
+                         }
+                        }
+                       },
+                       "VALUE-2": {
+                        "block": {
+                         "type": "Number",
+                         "fields": {
+                          "NUM": 0
+                         }
+                        }
+                       }
+                      }
+                     }
+                    },
+                    "VALUE-2": {
+                     "block": {
+                      "type": "CreateVector",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "Number",
+                         "fields": {
+                          "NUM": 200
+                         }
+                        }
+                       },
+                       "VALUE-1": {
+                        "block": {
+                         "type": "Number",
+                         "fields": {
+                          "NUM": 120
+                         }
+                        }
+                       },
+                       "VALUE-2": {
+                        "block": {
+                         "type": "Number",
+                         "fields": {
+                          "NUM": 0
+                         }
+                        }
+                       }
+                      }
+                     }
+                    },
+                    "VALUE-3": {
+                     "block": {
+                      "type": "UIAnchorItem",
+                      "fields": {
+                       "VALUE-0": "UIAnchor",
+                       "VALUE-1": "TopRight"
+                      }
+                     }
+                    }
+                   },
+                   "next": {
+                    "block": {
+                     "type": "SetUIWidgetBgFill",
+                     "inputs": {
+                      "VALUE-0": {
+                       "block": {
+                        "type": "FindUIWidgetWithName",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Text",
+                           "fields": {
+                            "TEXT": "faqCornerTopRight"
+                           }
+                          }
+                         }
+                        }
+                       }
+                      },
+                      "VALUE-1": {
+                       "block": {
+                        "type": "UIBgFillItem",
+                        "fields": {
+                         "VALUE-0": "UIBgFill",
+                         "VALUE-1": "Solid"
+                        }
+                       }
+                      }
+                     },
+                     "next": {
+                      "block": {
+                       "type": "SetUIWidgetBgColor",
+                       "inputs": {
+                        "VALUE-0": {
+                         "block": {
+                          "type": "FindUIWidgetWithName",
+                          "inputs": {
+                           "VALUE-0": {
+                            "block": {
+                             "type": "Text",
+                             "fields": {
+                              "TEXT": "faqCornerTopRight"
+                             }
+                            }
+                           }
+                          }
+                         }
+                        },
+                        "VALUE-1": {
+                         "block": {
+                          "type": "CreateVector",
+                          "inputs": {
+                           "VALUE-0": {
+                            "block": {
+                             "type": "Number",
+                             "fields": {
+                              "NUM": 1
+                             }
+                            }
+                           },
+                           "VALUE-1": {
+                            "block": {
+                             "type": "Number",
+                             "fields": {
+                              "NUM": 0.514
+                             }
+                            }
+                           },
+                           "VALUE-2": {
+                            "block": {
+                             "type": "Number",
+                             "fields": {
+                              "NUM": 0.38
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       },
+                       "next": {
+                        "block": {
+                         "type": "SetUIWidgetBgAlpha",
+                         "inputs": {
+                          "VALUE-0": {
+                           "block": {
+                            "type": "FindUIWidgetWithName",
+                            "inputs": {
+                             "VALUE-0": {
+                              "block": {
+                               "type": "Text",
+                               "fields": {
+                                "TEXT": "faqCornerTopRight"
+                               }
+                              }
+                             }
+                            }
+                           }
+                          },
+                          "VALUE-1": {
+                           "block": {
+                            "type": "Number",
+                            "fields": {
+                             "NUM": 0.6
+                            }
+                           }
+                          }
+                         },
+                         "next": {
+                          "block": {
+                           "type": "AddUIContainer",
+                           "inputs": {
+                            "VALUE-0": {
+                             "block": {
+                              "type": "Text",
+                              "fields": {
+                               "TEXT": "faqCornerBottomLeft"
+                              }
+                             }
+                            },
+                            "VALUE-1": {
+                             "block": {
+                              "type": "CreateVector",
+                              "inputs": {
+                               "VALUE-0": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 24
+                                 }
+                                }
+                               },
+                               "VALUE-1": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 24
+                                 }
+                                }
+                               },
+                               "VALUE-2": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 0
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            },
+                            "VALUE-2": {
+                             "block": {
+                              "type": "CreateVector",
+                              "inputs": {
+                               "VALUE-0": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 200
+                                 }
+                                }
+                               },
+                               "VALUE-1": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 120
+                                 }
+                                }
+                               },
+                               "VALUE-2": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 0
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            },
+                            "VALUE-3": {
+                             "block": {
+                              "type": "UIAnchorItem",
+                              "fields": {
+                               "VALUE-0": "UIAnchor",
+                               "VALUE-1": "BottomLeft"
+                              }
+                             }
+                            }
+                           },
+                           "next": {
+                            "block": {
+                             "type": "SetUIWidgetBgFill",
+                             "inputs": {
+                              "VALUE-0": {
+                               "block": {
+                                "type": "FindUIWidgetWithName",
+                                "inputs": {
+                                 "VALUE-0": {
+                                  "block": {
+                                   "type": "Text",
+                                   "fields": {
+                                    "TEXT": "faqCornerBottomLeft"
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              },
+                              "VALUE-1": {
+                               "block": {
+                                "type": "UIBgFillItem",
+                                "fields": {
+                                 "VALUE-0": "UIBgFill",
+                                 "VALUE-1": "Solid"
+                                }
+                               }
+                              }
+                             },
+                             "next": {
+                              "block": {
+                               "type": "SetUIWidgetBgColor",
+                               "inputs": {
+                                "VALUE-0": {
+                                 "block": {
+                                  "type": "FindUIWidgetWithName",
+                                  "inputs": {
+                                   "VALUE-0": {
+                                    "block": {
+                                     "type": "Text",
+                                     "fields": {
+                                      "TEXT": "faqCornerBottomLeft"
+                                     }
+                                    }
+                                   }
+                                  }
+                                 }
+                                },
+                                "VALUE-1": {
+                                 "block": {
+                                  "type": "CreateVector",
+                                  "inputs": {
+                                   "VALUE-0": {
+                                    "block": {
+                                     "type": "Number",
+                                     "fields": {
+                                      "NUM": 1
+                                     }
+                                    }
+                                   },
+                                   "VALUE-1": {
+                                    "block": {
+                                     "type": "Number",
+                                     "fields": {
+                                      "NUM": 0.514
+                                     }
+                                    }
+                                   },
+                                   "VALUE-2": {
+                                    "block": {
+                                     "type": "Number",
+                                     "fields": {
+                                      "NUM": 0.38
+                                     }
+                                    }
+                                   }
+                                  }
+                                 }
+                                }
+                               },
+                               "next": {
+                                "block": {
+                                 "type": "SetUIWidgetBgAlpha",
+                                 "inputs": {
+                                  "VALUE-0": {
+                                   "block": {
+                                    "type": "FindUIWidgetWithName",
+                                    "inputs": {
+                                     "VALUE-0": {
+                                      "block": {
+                                       "type": "Text",
+                                       "fields": {
+                                        "TEXT": "faqCornerBottomLeft"
+                                       }
+                                      }
+                                     }
+                                    }
+                                   }
+                                  },
+                                  "VALUE-1": {
+                                   "block": {
+                                    "type": "Number",
+                                    "fields": {
+                                     "NUM": 0.6
+                                    }
+                                   }
+                                  }
+                                 },
+                                 "next": {
+                                  "block": {
+                                   "type": "AddUIContainer",
+                                   "inputs": {
+                                    "VALUE-0": {
+                                     "block": {
+                                      "type": "Text",
+                                      "fields": {
+                                       "TEXT": "faqCornerBottomRight"
+                                      }
+                                     }
+                                    },
+                                    "VALUE-1": {
+                                     "block": {
+                                      "type": "CreateVector",
+                                      "inputs": {
+                                       "VALUE-0": {
+                                        "block": {
+                                         "type": "Number",
+                                         "fields": {
+                                          "NUM": 24
+                                         }
+                                        }
+                                       },
+                                       "VALUE-1": {
+                                        "block": {
+                                         "type": "Number",
+                                         "fields": {
+                                          "NUM": 24
+                                         }
+                                        }
+                                       },
+                                       "VALUE-2": {
+                                        "block": {
+                                         "type": "Number",
+                                         "fields": {
+                                          "NUM": 0
+                                         }
+                                        }
+                                       }
+                                      }
+                                     }
+                                    },
+                                    "VALUE-2": {
+                                     "block": {
+                                      "type": "CreateVector",
+                                      "inputs": {
+                                       "VALUE-0": {
+                                        "block": {
+                                         "type": "Number",
+                                         "fields": {
+                                          "NUM": 200
+                                         }
+                                        }
+                                       },
+                                       "VALUE-1": {
+                                        "block": {
+                                         "type": "Number",
+                                         "fields": {
+                                          "NUM": 120
+                                         }
+                                        }
+                                       },
+                                       "VALUE-2": {
+                                        "block": {
+                                         "type": "Number",
+                                         "fields": {
+                                          "NUM": 0
+                                         }
+                                        }
+                                       }
+                                      }
+                                     }
+                                    },
+                                    "VALUE-3": {
+                                     "block": {
+                                      "type": "UIAnchorItem",
+                                      "fields": {
+                                       "VALUE-0": "UIAnchor",
+                                       "VALUE-1": "BottomRight"
+                                      }
+                                     }
+                                    }
+                                   },
+                                   "next": {
+                                    "block": {
+                                     "type": "SetUIWidgetBgFill",
+                                     "inputs": {
+                                      "VALUE-0": {
+                                       "block": {
+                                        "type": "FindUIWidgetWithName",
+                                        "inputs": {
+                                         "VALUE-0": {
+                                          "block": {
+                                           "type": "Text",
+                                           "fields": {
+                                            "TEXT": "faqCornerBottomRight"
+                                           }
+                                          }
+                                         }
+                                        }
+                                       }
+                                      },
+                                      "VALUE-1": {
+                                       "block": {
+                                        "type": "UIBgFillItem",
+                                        "fields": {
+                                         "VALUE-0": "UIBgFill",
+                                         "VALUE-1": "Solid"
+                                        }
+                                       }
+                                      }
+                                     },
+                                     "next": {
+                                      "block": {
+                                       "type": "SetUIWidgetBgColor",
+                                       "inputs": {
+                                        "VALUE-0": {
+                                         "block": {
+                                          "type": "FindUIWidgetWithName",
+                                          "inputs": {
+                                           "VALUE-0": {
+                                            "block": {
+                                             "type": "Text",
+                                             "fields": {
+                                              "TEXT": "faqCornerBottomRight"
+                                             }
+                                            }
+                                           }
+                                          }
+                                         }
+                                        },
+                                        "VALUE-1": {
+                                         "block": {
+                                          "type": "CreateVector",
+                                          "inputs": {
+                                           "VALUE-0": {
+                                            "block": {
+                                             "type": "Number",
+                                             "fields": {
+                                              "NUM": 1
+                                             }
+                                            }
+                                           },
+                                           "VALUE-1": {
+                                            "block": {
+                                             "type": "Number",
+                                             "fields": {
+                                              "NUM": 0.514
+                                             }
+                                            }
+                                           },
+                                           "VALUE-2": {
+                                            "block": {
+                                             "type": "Number",
+                                             "fields": {
+                                              "NUM": 0.38
+                                             }
+                                            }
+                                           }
+                                          }
+                                         }
+                                        }
+                                       },
+                                       "next": {
+                                        "block": {
+                                         "type": "SetUIWidgetBgAlpha",
+                                         "inputs": {
+                                          "VALUE-0": {
+                                           "block": {
+                                            "type": "FindUIWidgetWithName",
+                                            "inputs": {
+                                             "VALUE-0": {
+                                              "block": {
+                                               "type": "Text",
+                                               "fields": {
+                                                "TEXT": "faqCornerBottomRight"
+                                               }
+                                              }
+                                             }
+                                            }
+                                           }
+                                          },
+                                          "VALUE-1": {
+                                           "block": {
+                                            "type": "Number",
+                                            "fields": {
+                                             "NUM": 0.6
+                                            }
+                                           }
+                                          }
+                                         }
+                                        }
+                                       }
+                                      }
+                                     }
+                                    }
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "Four identical 200 by 120 boxes at the same 24, 24 offset, one under each corner anchor. Loading this rule and looking at the result is the fastest way to see the rule: you get one box tucked into each corner of the screen."
+   },
+   "ts": {
+    "code": "// Proof of how UI offsets work: four identical boxes at the same 24, 24 offset,\n// one under each corner anchor. They land one in each corner of the screen.\n//\n// The offset is an INWARD inset from the edge the anchor names. Under a Right\n// anchor a bigger x moves the box further LEFT, and under a Bottom anchor a\n// bigger y moves it further UP. Nothing here is a screen coordinate.\n\nconst CORNERS: { name: string; anchor: mod.UIAnchor }[] = [\n    { name: \"faqCornerTopLeft\", anchor: mod.UIAnchor.TopLeft },\n    { name: \"faqCornerTopRight\", anchor: mod.UIAnchor.TopRight },\n    { name: \"faqCornerBottomLeft\", anchor: mod.UIAnchor.BottomLeft },\n    { name: \"faqCornerBottomRight\", anchor: mod.UIAnchor.BottomRight },\n];\n\nexport function OnGameModeStarted(): void {\n    for (const corner of CORNERS) {\n        mod.AddUIContainer(\n            corner.name,\n            mod.CreateVector(24, 24, 0), // the SAME offset for all four\n            mod.CreateVector(200, 120, 0),\n            corner.anchor,\n            mod.GetUIRoot(),\n            true,\n            0,\n            mod.CreateVector(1, 0.514, 0.38),\n            0.6,\n            mod.UIBgFill.Solid,\n            mod.UIDepth.AboveGameUI\n        );\n    }\n}\n",
+    "note": "Four identical 200 by 120 boxes at the same 24, 24 offset, one per corner anchor. They land one in each corner of the screen, 24 pixels in from both edges."
+   },
+   "sources": [
+    "scripts-blocks (PORTAL GENERAL)",
+    "BF User interface builder tool (community-tools)",
+    "(WIP) Web-Browser Typescript Sandbox (community-tools)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-ui-update-dont-rebuild",
+   "themes": [
+    "ui"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I make a counter or a timer that updates on screen? Mine works for a while and then the whole mod stops running.",
+   "short": "Create the widgets once and change only the label afterwards. Deleting and rebuilding them every tick leaks.",
+   "answer": "Build the panel and the text widget one time, when the round starts, and keep them. To change what the text says, call SetUITextLabel on the widget you already have with a new Message. Do not delete the widgets and add them again on every update: that churn leaks memory, and after enough of it the script stops running altogether, which looks exactly like a random crash. The same rule covers showing and hiding. SetUIWidgetVisible costs almost nothing and is reversible, so use it instead of deleting a panel you plan to show again. Update at a rate a human can read, about once a second for a clock, rather than every frame.",
+   "gotchas": [
+    "Rebuilding widgets on a loop is the single most common cause of a mod that dies partway through a round.",
+    "To hide a panel use SetUIWidgetVisible, not DeleteUIWidget.",
+    "A dynamic line still needs a strings.json template with a {} in it. There is no way to push a free string into a label.",
+    "Once a second is plenty. A UI update runs on the same thread as your game logic, so a heavy update loop slows everything else down."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Match Clock",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "AddUIContainer",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Text",
+              "fields": {
+               "TEXT": "faqClockPanel"
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "CreateVector",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 24
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-2": {
+             "block": {
+              "type": "CreateVector",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 240
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 72
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-3": {
+             "block": {
+              "type": "UIAnchorItem",
+              "fields": {
+               "VALUE-0": "UIAnchor",
+               "VALUE-1": "TopCenter"
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "SetUIWidgetBgFill",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "FindUIWidgetWithName",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "faqClockPanel"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "UIBgFillItem",
+                "fields": {
+                 "VALUE-0": "UIBgFill",
+                 "VALUE-1": "Solid"
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "SetUIWidgetBgColor",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "FindUIWidgetWithName",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "faqClockPanel"
+                     }
+                    }
+                   }
+                  }
+                 }
+                },
+                "VALUE-1": {
+                 "block": {
+                  "type": "CreateVector",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0
+                     }
+                    }
+                   },
+                   "VALUE-1": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0
+                     }
+                    }
+                   },
+                   "VALUE-2": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "next": {
+                "block": {
+                 "type": "SetUIWidgetBgAlpha",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "FindUIWidgetWithName",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Text",
+                       "fields": {
+                        "TEXT": "faqClockPanel"
+                       }
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-1": {
+                   "block": {
+                    "type": "Number",
+                    "fields": {
+                     "NUM": 0.7
+                    }
+                   }
+                  }
+                 },
+                 "next": {
+                  "block": {
+                   "type": "SetUIWidgetDepth",
+                   "inputs": {
+                    "VALUE-0": {
+                     "block": {
+                      "type": "FindUIWidgetWithName",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "Text",
+                         "fields": {
+                          "TEXT": "faqClockPanel"
+                         }
+                        }
+                       }
+                      }
+                     }
+                    },
+                    "VALUE-1": {
+                     "block": {
+                      "type": "UIDepthItem",
+                      "fields": {
+                       "VALUE-0": "UIDepth",
+                       "VALUE-1": "AboveGameUI"
+                      }
+                     }
+                    }
+                   },
+                   "next": {
+                    "block": {
+                     "type": "AddUIText",
+                     "inputs": {
+                      "VALUE-0": {
+                       "block": {
+                        "type": "Text",
+                        "fields": {
+                         "TEXT": "faqClockLine"
+                        }
+                       }
+                      },
+                      "VALUE-1": {
+                       "block": {
+                        "type": "CreateVector",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         },
+                         "VALUE-1": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         },
+                         "VALUE-2": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         }
+                        }
+                       }
+                      },
+                      "VALUE-2": {
+                       "block": {
+                        "type": "CreateVector",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 228
+                           }
+                          }
+                         },
+                         "VALUE-1": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 60
+                           }
+                          }
+                         },
+                         "VALUE-2": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         }
+                        }
+                       }
+                      },
+                      "VALUE-3": {
+                       "block": {
+                        "type": "UIAnchorItem",
+                        "fields": {
+                         "VALUE-0": "UIAnchor",
+                         "VALUE-1": "Center"
+                        }
+                       }
+                      },
+                      "VALUE-4": {
+                       "block": {
+                        "type": "Message",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Text",
+                           "fields": {
+                            "TEXT": "TIME {}"
+                           }
+                          }
+                         },
+                         "VALUE-1": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 0
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     },
+                     "next": {
+                      "block": {
+                       "type": "SetUIWidgetParent",
+                       "inputs": {
+                        "VALUE-0": {
+                         "block": {
+                          "type": "FindUIWidgetWithName",
+                          "inputs": {
+                           "VALUE-0": {
+                            "block": {
+                             "type": "Text",
+                             "fields": {
+                              "TEXT": "faqClockLine"
+                             }
+                            }
+                           }
+                          }
+                         }
+                        },
+                        "VALUE-1": {
+                         "block": {
+                          "type": "FindUIWidgetWithName",
+                          "inputs": {
+                           "VALUE-0": {
+                            "block": {
+                             "type": "Text",
+                             "fields": {
+                              "TEXT": "faqClockPanel"
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       },
+                       "next": {
+                        "block": {
+                         "type": "SetUITextSize",
+                         "inputs": {
+                          "VALUE-0": {
+                           "block": {
+                            "type": "FindUIWidgetWithName",
+                            "inputs": {
+                             "VALUE-0": {
+                              "block": {
+                               "type": "Text",
+                               "fields": {
+                                "TEXT": "faqClockLine"
+                               }
+                              }
+                             }
+                            }
+                           }
+                          },
+                          "VALUE-1": {
+                           "block": {
+                            "type": "Number",
+                            "fields": {
+                             "NUM": 32
+                            }
+                           }
+                          }
+                         },
+                         "next": {
+                          "block": {
+                           "type": "SetUITextColor",
+                           "inputs": {
+                            "VALUE-0": {
+                             "block": {
+                              "type": "FindUIWidgetWithName",
+                              "inputs": {
+                               "VALUE-0": {
+                                "block": {
+                                 "type": "Text",
+                                 "fields": {
+                                  "TEXT": "faqClockLine"
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            },
+                            "VALUE-1": {
+                             "block": {
+                              "type": "CreateVector",
+                              "inputs": {
+                               "VALUE-0": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 1
+                                 }
+                                }
+                               },
+                               "VALUE-1": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 1
+                                 }
+                                }
+                               },
+                               "VALUE-2": {
+                                "block": {
+                                 "type": "Number",
+                                 "fields": {
+                                  "NUM": 1
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            }
+                           },
+                           "next": {
+                            "block": {
+                             "type": "SetUITextAnchor",
+                             "inputs": {
+                              "VALUE-0": {
+                               "block": {
+                                "type": "FindUIWidgetWithName",
+                                "inputs": {
+                                 "VALUE-0": {
+                                  "block": {
+                                   "type": "Text",
+                                   "fields": {
+                                    "TEXT": "faqClockLine"
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              },
+                              "VALUE-1": {
+                               "block": {
+                                "type": "UIAnchorItem",
+                                "fields": {
+                                 "VALUE-0": "UIAnchor",
+                                 "VALUE-1": "Center"
+                                }
+                               }
+                              }
+                             },
+                             "next": {
+                              "block": {
+                               "type": "While",
+                               "inputs": {
+                                "VALUE-0": {
+                                 "block": {
+                                  "type": "Boolean",
+                                  "fields": {
+                                   "BOOL": "true"
+                                  }
+                                 }
+                                },
+                                "DO": {
+                                 "block": {
+                                  "type": "Wait",
+                                  "inputs": {
+                                   "VALUE-0": {
+                                    "block": {
+                                     "type": "Number",
+                                     "fields": {
+                                      "NUM": 1
+                                     }
+                                    }
+                                   }
+                                  },
+                                  "next": {
+                                   "block": {
+                                    "type": "SetUITextLabel",
+                                    "inputs": {
+                                     "VALUE-0": {
+                                      "block": {
+                                       "type": "FindUIWidgetWithName",
+                                       "inputs": {
+                                        "VALUE-0": {
+                                         "block": {
+                                          "type": "Text",
+                                          "fields": {
+                                           "TEXT": "faqClockLine"
+                                          }
+                                         }
+                                        }
+                                       }
+                                      }
+                                     },
+                                     "VALUE-1": {
+                                      "block": {
+                                       "type": "Message",
+                                       "inputs": {
+                                        "VALUE-0": {
+                                         "block": {
+                                          "type": "Text",
+                                          "fields": {
+                                           "TEXT": "TIME {}"
+                                          }
+                                         }
+                                        },
+                                        "VALUE-1": {
+                                         "block": {
+                                          "type": "GetMatchTimeElapsed"
+                                         }
+                                        }
+                                       }
+                                      }
+                                     }
+                                    }
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnGameModeStarted. It builds the panel and the label, then loops forever: wait one second, set the label. The AddUI blocks are outside the loop and the Set block is inside it, which is the whole point."
+   },
+   "ts": {
+    "code": "// A round timer that counts up once a second.\n//\n// The widgets are created ONCE. After that only the label changes. Deleting and\n// rebuilding a widget every tick leaks memory until the script stops running.\n\nconst PANEL = \"faqClockPanel\";\nconst LINE = \"faqClockLine\";\n\nlet clockLine: mod.UIWidget | undefined;\nlet seconds = 0;\n\nfunction build(): void {\n    mod.AddUIContainer(\n        PANEL,\n        mod.CreateVector(0, 24, 0),\n        mod.CreateVector(240, 72, 0),\n        mod.UIAnchor.TopCenter,\n        mod.GetUIRoot(),\n        true,\n        6,\n        mod.CreateVector(0, 0, 0),\n        0.7,\n        mod.UIBgFill.Solid,\n        mod.UIDepth.AboveGameUI\n    );\n\n    const panel = mod.FindUIWidgetWithName(PANEL) as mod.UIWidget;\n\n    mod.AddUIText(\n        LINE,\n        mod.CreateVector(0, 0, 0),\n        mod.CreateVector(228, 60, 0),\n        mod.UIAnchor.Center,\n        panel,\n        true,\n        0,\n        mod.CreateVector(0, 0, 0),\n        0,\n        mod.UIBgFill.None,\n        mod.Message(mod.stringkeys.faq.clock.line, 0),\n        32,\n        mod.CreateVector(1, 1, 1),\n        1,\n        mod.UIAnchor.Center,\n        mod.UIDepth.AboveGameUI\n    );\n\n    clockLine = mod.FindUIWidgetWithName(LINE) as mod.UIWidget;\n}\n\nexport async function OnGameModeStarted(): Promise<void> {\n    build();\n\n    while (true) {\n        await mod.Wait(1);\n        seconds = seconds + 1;\n\n        // One cheap call. No AddUI, no DeleteUIWidget, no rebuild.\n        if (clockLine !== undefined) {\n            mod.SetUITextLabel(clockLine, mod.Message(mod.stringkeys.faq.clock.line, seconds));\n        }\n    }\n}\n",
+    "note": "Panel at the top centre, 24 pixels down from the top edge, 240 wide. Builds once, then only SetUITextLabel runs inside the loop."
+   },
+   "sources": [
+    "scripts-blocks (PORTAL GENERAL)",
+    "BF User interface builder tool (community-tools)",
+    "SolidUI: A Reactive UI Framework for Portal (community-tools)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-ui-button-which",
+   "themes": [
+    "ui"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "In the button event I cannot tell which button was pressed. Comparing the widget I am given against my stored widget never matches.",
+   "short": "Compare the widget's name, which is a plain string, not the widget itself.",
+   "answer": "The button event hands you a widget, but comparing that widget against one you saved earlier, or against the result of FindUIWidgetWithName, does not work. Widget values do not compare reliably. Call GetUIWidgetName on the widget you were given and compare the name string instead, which is why you name every button when you create it. The event also fires several times for one click, once for hovering in, once for the press going down, once for it coming up, so check the event type first and act only on ButtonUp or you will run your handler three times. Players also need a mouse cursor before they can click anything: call EnableUIInputMode with true for that player when the menu opens, and false when it closes, or they will be stuck unable to shoot.",
+   "gotchas": [
+    "Comparing two widget values with == does not work. Compare GetUIWidgetName instead.",
+    "The handler fires for hover, focus, press and release. Filter on UIButtonEvent.ButtonUp or your code runs several times per click.",
+    "EnableUIInputMode true takes gameplay control away from that player. Always turn it off again when you close the menu.",
+    "Give every button a name you can recognise. An unnamed button cannot be identified when it is pressed."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Button Pressed",
+         "EVENTTYPE": "OnPlayerUIButtonEvent"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayNotificationMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "You picked yes"
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "EventPlayer"
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "EnableUIInputMode",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Boolean",
+                "fields": {
+                 "BOOL": "false"
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "EventPlayer"
+               }
+              }
+             }
+            }
+           }
+          }
+         },
+         "CONDITIONS": {
+          "block": {
+           "type": "conditionBlock",
+           "fields": {
+            "NAME": "Condition"
+           },
+           "inputs": {
+            "CONDITION": {
+             "block": {
+              "type": "Equals",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "GetUIWidgetName",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "EventUIWidget"
+                   }
+                  }
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "faqBtnYes"
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnPlayerUIButtonEvent with a condition that compares GetUIWidgetName against the button name. Copy the rule once per button and change the name in the Text block."
+   },
+   "ts": {
+    "code": "// Two buttons, and telling them apart when one is pressed.\n//\n// Comparing the widget you are handed against a stored widget with == does not\n// work. Compare the widget's NAME instead, which is a plain string.\n\nconst MENU = \"faqMenu\";\nconst BTN_YES = \"faqBtnYes\";\nconst BTN_NO = \"faqBtnNo\";\n\nfunction addButton(name: string, y: number, label: mod.Message, parent: mod.UIWidget): void {\n    mod.AddUIButton(\n        name,\n        mod.CreateVector(0, y, 0),\n        mod.CreateVector(240, 56, 0),\n        mod.UIAnchor.TopCenter,\n        parent,\n        true,\n        0,\n        mod.CreateVector(0.1, 0.1, 0.1),\n        1,\n        mod.UIBgFill.Solid,\n        true, // button enabled\n        mod.CreateVector(0.1, 0.1, 0.1), // base colour\n        1,\n        mod.CreateVector(0.2, 0.2, 0.2), // disabled colour\n        0.5,\n        mod.CreateVector(1, 0.514, 0.38), // pressed colour\n        1,\n        mod.CreateVector(0.3, 0.3, 0.3), // hover colour\n        1,\n        mod.CreateVector(0.25, 0.25, 0.25), // focused colour\n        1\n    );\n\n    const button = mod.FindUIWidgetWithName(name) as mod.UIWidget;\n\n    mod.AddUIText(\n        name + \"Label\",\n        mod.CreateVector(0, 0, 0),\n        mod.CreateVector(230, 50, 0),\n        mod.UIAnchor.Center,\n        button,\n        true,\n        0,\n        mod.CreateVector(0, 0, 0),\n        0,\n        mod.UIBgFill.None,\n        label,\n        24,\n        mod.CreateVector(1, 1, 1),\n        1,\n        mod.UIAnchor.Center,\n        mod.UIDepth.AboveGameUI\n    );\n}\n\nexport function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    mod.AddUIContainer(\n        MENU,\n        mod.CreateVector(0, 200, 0),\n        mod.CreateVector(280, 140, 0),\n        mod.UIAnchor.TopCenter,\n        mod.GetUIRoot(),\n        true,\n        10,\n        mod.CreateVector(0, 0, 0),\n        0.8,\n        mod.UIBgFill.Solid,\n        mod.UIDepth.AboveGameUI,\n        eventPlayer // only this player sees it\n    );\n\n    const menu = mod.FindUIWidgetWithName(MENU) as mod.UIWidget;\n    addButton(BTN_YES, 0, mod.Message(mod.stringkeys.faq.menu.yes), menu);\n    addButton(BTN_NO, 64, mod.Message(mod.stringkeys.faq.menu.no), menu);\n\n    // Give the player a mouse cursor so the buttons can be clicked.\n    mod.EnableUIInputMode(true, eventPlayer);\n}\n\nexport function OnPlayerUIButtonEvent(\n    eventPlayer: mod.Player,\n    eventUIWidget: mod.UIWidget,\n    eventUIButtonEvent: mod.UIButtonEvent\n): void {\n    if (eventUIButtonEvent !== mod.UIButtonEvent.ButtonUp) return;\n\n    const pressed = mod.GetUIWidgetName(eventUIWidget);\n\n    if (pressed === BTN_YES) {\n        mod.DisplayNotificationMessage(mod.Message(mod.stringkeys.faq.menu.pickedYes), eventPlayer);\n    } else if (pressed === BTN_NO) {\n        mod.DisplayNotificationMessage(mod.Message(mod.stringkeys.faq.menu.pickedNo), eventPlayer);\n    }\n\n    mod.EnableUIInputMode(false, eventPlayer);\n}\n",
+    "note": "Menu is 280 by 140 at the top centre, 200 pixels down from the top edge, built per player on deploy so only that player sees it."
+   },
+   "sources": [
+    "scripts-blocks (PORTAL GENERAL)",
+    "BF User interface builder tool (community-tools)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-ui-remove-safely",
+   "themes": [
+    "ui"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "My server crashes when I clear my UI at the end of the round. What is the right way to take a panel down?",
+   "short": "Delete the root container only. Deleting it already freed every child, so deleting a child afterwards crashes.",
+   "answer": "Deleting a container also deletes everything inside it. That means once you have deleted your root panel, the text widgets and buttons you built inside it are already gone. Calling DeleteUIWidget on one of those children afterwards frees the same memory a second time and takes the server down with it. So delete the root, once, and then forget every handle you kept to its children. In TypeScript, set your stored variables back to undefined immediately so a later call cannot reach a dead widget. Most of the time you do not want to delete at all: if the panel is coming back, hide it with SetUIWidgetVisible, which is cheap and cannot crash anything.",
+   "gotchas": [
+    "Deleting a parent deletes its children. A second delete on a child is a double free and crashes the server.",
+    "Clear your saved references right after the delete so nothing can call into a dead widget later.",
+    "Hiding is not deleting. SetUIWidgetVisible false is the right tool for anything you will show again.",
+    "There is a DeleteAllUIWidgets call, but it takes down every widget in the mod including ones other rules own, so only use it as a last resort."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Tear Down UI",
+         "EVENTTYPE": "OnGameModeEnding"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "SetUIWidgetVisible",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "FindUIWidgetWithName",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "faqTeardownPanel"
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "Boolean",
+              "fields": {
+               "BOOL": "false"
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "DeleteUIWidget",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "FindUIWidgetWithName",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "faqTeardownPanel"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnGameModeEnding: hide the panel, then one DeleteUIWidget on the panel itself. There is deliberately no delete for the text inside it."
+   },
+   "ts": {
+    "code": "// Showing and hiding a panel, and taking it down once at the end of the round.\n//\n// Deleting a container also deletes everything inside it. Deleting a child after\n// its parent is already gone frees the same memory twice and crashes the server,\n// so delete the ROOT only, and forget your references to the children.\n\nconst PANEL = \"faqTeardownPanel\";\nconst LINE = \"faqTeardownLine\";\n\nlet panel: mod.UIWidget | undefined;\n\nexport function OnGameModeStarted(): void {\n    mod.AddUIContainer(\n        PANEL,\n        mod.CreateVector(24, 24, 0),\n        mod.CreateVector(360, 80, 0),\n        mod.UIAnchor.BottomLeft,\n        mod.GetUIRoot(),\n        true,\n        8,\n        mod.CreateVector(0, 0, 0),\n        0.7,\n        mod.UIBgFill.Solid,\n        mod.UIDepth.AboveGameUI\n    );\n\n    panel = mod.FindUIWidgetWithName(PANEL) as mod.UIWidget;\n\n    mod.AddUIText(\n        LINE,\n        mod.CreateVector(0, 0, 0),\n        mod.CreateVector(344, 64, 0),\n        mod.UIAnchor.Center,\n        panel,\n        true,\n        0,\n        mod.CreateVector(0, 0, 0),\n        0,\n        mod.UIBgFill.None,\n        mod.Message(mod.stringkeys.faq.teardown.line),\n        24,\n        mod.CreateVector(1, 1, 1),\n        1,\n        mod.UIAnchor.Center,\n        mod.UIDepth.AboveGameUI\n    );\n}\n\n// To hide it during play, do NOT delete it. Hiding is free and reversible.\nexport function hidePanel(): void {\n    if (panel !== undefined) mod.SetUIWidgetVisible(panel, false);\n}\n\nexport function showPanel(): void {\n    if (panel !== undefined) mod.SetUIWidgetVisible(panel, true);\n}\n\nexport function OnGameModeEnding(): void {\n    if (panel === undefined) return;\n\n    // One delete, on the root. The text widget inside goes with it.\n    mod.DeleteUIWidget(panel);\n    panel = undefined; // never call DeleteUIWidget on this handle again\n}\n",
+    "note": "Panel sits 24 in from the left and 24 up from the bottom edge. The teardown handler deletes the root only and clears the handle."
+   },
+   "sources": [
+    "scripts-blocks (PORTAL GENERAL)",
+    "QuickJS Script Crash After ~2800 OnPlayerDamaged Events (bug-reports)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-ui-per-player",
+   "themes": [
+    "ui"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "My UI shows for me but not for my friends, or players who join partway through the round never get it. How do I give each player their own?",
+   "short": "Pass the player as the last argument of the AddUI calls, and build it on deploy rather than on join.",
+   "answer": "Every AddUI call takes an optional receiver as its last argument. Leave it out and the widget is built for everybody on the server. Pass a player and only that player sees it; pass a team and only that team sees it. That is how you give each player their own panel. Build it on OnPlayerDeployed, not on OnPlayerJoinGame: a player who has just joined has not been put on their final team yet, so a team targeted widget built that early can miss them entirely, which is exactly why a team panel often appears only after somebody switches sides. Keep a list of the players you have already built for so a redeploy does not stack a second copy on top of the first. Give each player's widgets a unique name, usually the player's object id glued onto a prefix, or the second player's widgets will collide with the first player's.",
+   "gotchas": [
+    "No receiver means everyone. That is the default and it surprises people building a private menu.",
+    "Building on OnPlayerJoinGame is too early for anything team targeted. Use OnPlayerDeployed.",
+    "OnPlayerDeployed fires on every respawn. Guard it or you will build the panel again every time the player dies.",
+    "Widget names are global. Put the player's object id in the name so two players do not fight over one name.",
+    "The leave handler is given the player's id as a plain number, not a player. Getting a handler signature wrong is a common cause of a mod that will not save."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Own Panel",
+         "EVENTTYPE": "OnPlayerDeployed"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "AddUIContainer",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Text",
+              "fields": {
+               "TEXT": "faqOwnPanel"
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "CreateVector",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 24
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 120
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-2": {
+             "block": {
+              "type": "CreateVector",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 320
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 72
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-3": {
+             "block": {
+              "type": "UIAnchorItem",
+              "fields": {
+               "VALUE-0": "UIAnchor",
+               "VALUE-1": "TopRight"
+              }
+             }
+            },
+            "VALUE-4": {
+             "block": {
+              "type": "EventPlayer"
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "SetUIWidgetBgFill",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "FindUIWidgetWithName",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "faqOwnPanel"
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "UIBgFillItem",
+                "fields": {
+                 "VALUE-0": "UIBgFill",
+                 "VALUE-1": "Solid"
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "SetUIWidgetBgAlpha",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "FindUIWidgetWithName",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "faqOwnPanel"
+                     }
+                    }
+                   }
+                  }
+                 }
+                },
+                "VALUE-1": {
+                 "block": {
+                  "type": "Number",
+                  "fields": {
+                   "NUM": 0.7
+                  }
+                 }
+                }
+               },
+               "next": {
+                "block": {
+                 "type": "AddUIText",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "Text",
+                    "fields": {
+                     "TEXT": "faqOwnLine"
+                    }
+                   }
+                  },
+                  "VALUE-1": {
+                   "block": {
+                    "type": "CreateVector",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 0
+                       }
+                      }
+                     },
+                     "VALUE-1": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 0
+                       }
+                      }
+                     },
+                     "VALUE-2": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 0
+                       }
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-2": {
+                   "block": {
+                    "type": "CreateVector",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 304
+                       }
+                      }
+                     },
+                     "VALUE-1": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 56
+                       }
+                      }
+                     },
+                     "VALUE-2": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 0
+                       }
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-3": {
+                   "block": {
+                    "type": "UIAnchorItem",
+                    "fields": {
+                     "VALUE-0": "UIAnchor",
+                     "VALUE-1": "Center"
+                    }
+                   }
+                  },
+                  "VALUE-4": {
+                   "block": {
+                    "type": "Message",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Text",
+                       "fields": {
+                        "TEXT": "GOOD LUCK {}"
+                       }
+                      }
+                     },
+                     "VALUE-1": {
+                      "block": {
+                       "type": "EventPlayer"
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-5": {
+                   "block": {
+                    "type": "EventPlayer"
+                   }
+                  }
+                 },
+                 "next": {
+                  "block": {
+                   "type": "SetUIWidgetParent",
+                   "inputs": {
+                    "VALUE-0": {
+                     "block": {
+                      "type": "FindUIWidgetWithName",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "Text",
+                         "fields": {
+                          "TEXT": "faqOwnLine"
+                         }
+                        }
+                       }
+                      }
+                     }
+                    },
+                    "VALUE-1": {
+                     "block": {
+                      "type": "FindUIWidgetWithName",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "Text",
+                         "fields": {
+                          "TEXT": "faqOwnPanel"
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   },
+                   "next": {
+                    "block": {
+                     "type": "SetUITextSize",
+                     "inputs": {
+                      "VALUE-0": {
+                       "block": {
+                        "type": "FindUIWidgetWithName",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Text",
+                           "fields": {
+                            "TEXT": "faqOwnLine"
+                           }
+                          }
+                         }
+                        }
+                       }
+                      },
+                      "VALUE-1": {
+                       "block": {
+                        "type": "Number",
+                        "fields": {
+                         "NUM": 24
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnPlayerDeployed. The Event Player block goes into the last socket of both the container and the text block, which is the receiver. Add a condition of your own if you only want it built once per player."
+   },
+   "ts": {
+    "code": "// A panel that only one player sees, rebuilt for every player as they deploy,\n// including players who join in the middle of a round.\n//\n// The last argument of the AddUI calls is the receiver. Leave it out and every\n// player on the server gets the widget. Pass a player and only that player sees\n// it. Pass a team and only that team sees it.\n//\n// Build it on OnPlayerDeployed, not on OnPlayerJoinGame: a joining player is not\n// on their final team yet, so a team targeted widget built that early can miss.\n\nconst built: number[] = [];\n\nfunction panelName(player: mod.Player): string {\n    return \"faqOwnPanel_\" + mod.GetObjId(player);\n}\n\nexport function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    const id = mod.GetObjId(eventPlayer);\n    if (built.indexOf(id) !== -1) return; // already has one, do not build twice\n\n    built.push(id);\n\n    const name = panelName(eventPlayer);\n\n    mod.AddUIContainer(\n        name,\n        mod.CreateVector(24, 120, 0),\n        mod.CreateVector(320, 72, 0),\n        mod.UIAnchor.TopRight, // 24 in from the RIGHT edge, 120 down from the top\n        mod.GetUIRoot(),\n        true,\n        8,\n        mod.CreateVector(0, 0, 0),\n        0.7,\n        mod.UIBgFill.Solid,\n        mod.UIDepth.AboveGameUI,\n        eventPlayer // the receiver\n    );\n\n    const panel = mod.FindUIWidgetWithName(name) as mod.UIWidget;\n\n    mod.AddUIText(\n        name + \"Line\",\n        mod.CreateVector(0, 0, 0),\n        mod.CreateVector(304, 56, 0),\n        mod.UIAnchor.Center,\n        panel,\n        true,\n        0,\n        mod.CreateVector(0, 0, 0),\n        0,\n        mod.UIBgFill.None,\n        mod.Message(mod.stringkeys.faq.own.greeting, eventPlayer),\n        24,\n        mod.CreateVector(1, 1, 1),\n        1,\n        mod.UIAnchor.Center,\n        mod.UIDepth.AboveGameUI,\n        eventPlayer\n    );\n}\n\n// Careful: this handler is given the leaving player id as a plain number, not a\n// Player. Getting a handler signature wrong is a common cause of a mod that will\n// not save.\nexport function OnPlayerLeaveGame(eventNumber: number): void {\n    const at = built.indexOf(eventNumber);\n    if (at !== -1) built.splice(at, 1);\n}\n",
+    "note": "Panel is anchored TopRight, so 24 means 24 pixels in from the RIGHT edge, and 120 means 120 down from the top."
+   },
+   "sources": [
+    "Team UI fails to draw for players joining mid match (bug-reports)",
+    "scripts-blocks (PORTAL GENERAL)",
+    "[TEMPLATE] Team Switch UI (experiences-projects)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-ui-quick-message",
+   "themes": [
+    "ui",
+    "strings"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "I just want a line of text on screen for a few seconds. Do I really have to build a whole panel?",
+   "short": "No. There are three built in message calls that need no widgets at all.",
+   "answer": "For anything temporary, skip the widgets. DisplayNotificationMessage puts a short line in the top right for a few seconds. DisplayHighlightedWorldLogMessage puts a highlighted line into the kill log down the left, which is good for events like a capture or an elimination. DisplayCustomNotificationMessage writes into a bigger notification with named slots: one call fills the header, and further calls fill up to four message lines, with a number for how many seconds it stays. All three take an optional receiver as the last argument, so leaving it off shows the message to the whole server and passing a player or a team narrows it. Build real widgets only when the text has to stay put, sit somewhere specific, or change on the fly.",
+   "gotchas": [
+    "The text still has to come from strings.json in TypeScript. These calls take a Message, not a string.",
+    "DisplayCustomNotificationMessage is one call per slot. Sending the header and the body is two calls, not one.",
+    "With no receiver every player on the server sees it, which is rarely what you want for a private prompt.",
+    "These are not a debug log. They queue and overwrite each other, so a message sent every frame will not be readable."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Quick Messages",
+         "EVENTTYPE": "OnPlayerDeployed"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayNotificationMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "Welcome to the server"
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "EventPlayer"
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "DisplayHighlightedWorldLogMessage",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Message",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "{} deployed"
+                   }
+                  }
+                 },
+                 "VALUE-1": {
+                  "block": {
+                   "type": "EventPlayer"
+                  }
+                 }
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "DisplayCustomNotificationMessage",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "Message",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "OBJECTIVE"
+                     }
+                    }
+                   }
+                  }
+                 }
+                },
+                "VALUE-1": {
+                 "block": {
+                  "type": "CustomNotificationSlotsItem",
+                  "fields": {
+                   "VALUE-0": "CustomNotificationSlots",
+                   "VALUE-1": "HeaderText"
+                  }
+                 }
+                },
+                "VALUE-2": {
+                 "block": {
+                  "type": "Number",
+                  "fields": {
+                   "NUM": 6
+                  }
+                 }
+                },
+                "VALUE-3": {
+                 "block": {
+                  "type": "EventPlayer"
+                 }
+                }
+               },
+               "next": {
+                "block": {
+                 "type": "DisplayCustomNotificationMessage",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "Message",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Text",
+                       "fields": {
+                        "TEXT": "Hold the centre point"
+                       }
+                      }
+                     }
+                    }
+                   }
+                  },
+                  "VALUE-1": {
+                   "block": {
+                    "type": "CustomNotificationSlotsItem",
+                    "fields": {
+                     "VALUE-0": "CustomNotificationSlots",
+                     "VALUE-1": "MessageText1"
+                    }
+                   }
+                  },
+                  "VALUE-2": {
+                   "block": {
+                    "type": "Number",
+                    "fields": {
+                     "NUM": 6
+                    }
+                   }
+                  },
+                  "VALUE-3": {
+                   "block": {
+                    "type": "EventPlayer"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnPlayerDeployed showing all three, with Event Player in the receiver socket so only the deploying player sees them."
+   },
+   "ts": {
+    "code": "// The three ways to put a line of text on screen without building any widgets.\n// Use these for a quick message. Build a panel only when the text has to stay put.\n\nexport function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    // 1. A notification in the top right, for a few seconds.\n    //    No receiver means everyone sees it; pass a player or a team to narrow it.\n    mod.DisplayNotificationMessage(mod.Message(mod.stringkeys.faq.quick.welcome), eventPlayer);\n\n    // 2. A highlighted line in the kill log on the left.\n    mod.DisplayHighlightedWorldLogMessage(mod.Message(mod.stringkeys.faq.quick.joined, eventPlayer));\n\n    // 3. A custom notification with named slots. The header and up to four\n    //    message lines are separate calls, and the number is how long it stays.\n    mod.DisplayCustomNotificationMessage(\n        mod.Message(mod.stringkeys.faq.quick.header),\n        mod.CustomNotificationSlots.HeaderText,\n        6,\n        eventPlayer\n    );\n    mod.DisplayCustomNotificationMessage(\n        mod.Message(mod.stringkeys.faq.quick.body),\n        mod.CustomNotificationSlots.MessageText1,\n        6,\n        eventPlayer\n    );\n}\n",
+    "note": "No widgets, so nothing to position. The notification lands top right and the world log line lands in the kill feed on the left."
+   },
+   "sources": [
+    "scripts-blocks (PORTAL GENERAL)",
+    "portal (Portal)",
+    "DisplayCustomNotificationMessage Renders All Messages in the Same Location (bug-reports)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-strings-no-raw-text",
+   "themes": [
+    "strings",
+    "ui"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "Why can I not just show a string? mod.Message with my own text does nothing, or the mod will not save.",
+   "short": "In TypeScript every visible word must be a key in strings.json. In the block editor you type it into a Text block and the editor writes that file for you.",
+   "answer": "mod.Message accepts three kinds of thing: a key from mod.stringkeys, a number, or a player. It does not accept a string you typed in the script, and passing one gives you either a mod that refuses to save or a message that never appears. The keys come from strings.json, a file that ships alongside your script and holds every word a player can see. This exists so the text can be translated and moderated, and there is no way around it: there is no hidden call that turns a runtime string into a Message. Plain strings are still fine anywhere the player never sees them, such as widget names, object lookups and console.log. If you are in the block editor this is invisible to you, because you type the words into a Text block and the editor builds the string table when it saves. If you genuinely need to show text you cannot know ahead of time, the only trick that works is to add one key per character and draw the string one letter at a time, which the community logger tools do, and it is fine for a scrolling debug log but not for a styled panel.",
+   "gotchas": [
+    "The key path in the script must match the nesting in strings.json exactly, including capital letters.",
+    "Writing a key as an object of language codes does not make the game pick a language for you. That is not how the file is read.",
+    "Widget names, console.log and your own comparisons are ordinary strings. Only what the player reads needs a key.",
+    "There is no supported way to show a truly free form string. The per character trick is the honest workaround, and it is slow."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Show Text",
+         "EVENTTYPE": "OnPlayerDeployed"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayNotificationMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "Hello"
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "EventPlayer"
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "DisplayHighlightedWorldLogMessage",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Message",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "Vehicles are disabled in this mode"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnPlayerDeployed. The words go straight into the Text blocks feeding the Message blocks. This is the whole answer for the block editor: the string table is generated for you when you save."
+   },
+   "ts": {
+    "code": "// Every piece of text a player can see has to exist in strings.json first.\n//\n// mod.Message will NOT take a plain string you typed in the script. It accepts\n// a key from mod.stringkeys, a number, or a player. Passing \"Hello\" gives you a\n// mod that either refuses to save or shows nothing.\n\nexport function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    // WRONG, and the reason most first mods show no text at all:\n    //   mod.DisplayNotificationMessage(mod.Message(\"Hello\"), eventPlayer);\n\n    // RIGHT. The key comes from strings.json, which sits next to this file.\n    mod.DisplayNotificationMessage(mod.Message(mod.stringkeys.faq.text.hello), eventPlayer);\n\n    // Keys can be nested as deep as you like. The nesting in the script has to\n    // match the nesting in the file exactly, including capital letters.\n    mod.DisplayHighlightedWorldLogMessage(mod.Message(mod.stringkeys.faq.text.rules.noVehicles));\n}\n\n// Plain strings are still fine anywhere the PLAYER never sees them: widget\n// names, object lookups, console.log, your own comparisons.\nexport function OnGameModeStarted(): void {\n    const internalName = \"faqInternalOnly\";\n    console.log(\"boot: \" + internalName);\n}\n",
+    "note": "No UI is built here, so nothing to position. The notification lands top right and the world log line lands in the kill feed."
+   },
+   "sources": [
+    "Feature Request: Support Raw Strings in UI (feature-request)",
+    "scripts-blocks (PORTAL GENERAL)",
+    "UI String Logger (In Experience, Typescript) (community-tools)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-strings-arguments",
+   "themes": [
+    "strings"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I put a player's name or a score number into my message?",
+   "short": "Write {} in the strings.json template where the value goes, then pass the value to mod.Message. Three values maximum.",
+   "answer": "In strings.json put {} everywhere a value should appear, for example SCORE {} or {} eliminated {}. Then pass the values to mod.Message after the key, in the same order as the braces. Each value can be a number, a player, or another key from mod.stringkeys, and the game writes the player's name for you. The hard limit is three: mod.Message takes the template plus three values and no more, so a template with four braces cannot be filled. That limit is the reason to keep templates short and to pick between whole phrases rather than trying to assemble a sentence out of fragments. Passing another strings.json key as one of the values is the supported way to swap a word at runtime, which is how you get one line that reads on a run or holding steady from the same template.",
+   "gotchas": [
+    "Three values is the ceiling. A fourth brace in the template cannot be filled.",
+    "The braces are empty. It is {} and not {0} or {1}, so order is the only thing that matters.",
+    "A value can be a number, a player, or another mod.stringkeys value. It cannot be a plain string you built at runtime.",
+    "Reusing one template with values is also how you keep the strings file small, which matters against the upload size limit."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Kill Feed",
+         "EVENTTYPE": "OnPlayerEarnedKill"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayNotificationMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "MATCH TIME {}"
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "GetMatchTimeElapsed"
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "EventPlayer"
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "DisplayHighlightedWorldLogMessage",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Message",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "{} eliminated {}"
+                   }
+                  }
+                 },
+                 "VALUE-1": {
+                  "block": {
+                   "type": "EventPlayer"
+                  }
+                 },
+                 "VALUE-2": {
+                  "block": {
+                   "type": "EventOtherPlayer"
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnPlayerEarnedKill. The Text block holds the template with the braces and the extra sockets on the Message block hold the values, in order."
+   },
+   "ts": {
+    "code": "// Putting numbers, player names and other strings into your text.\n//\n// In strings.json write {} where the value goes. A template can hold at most\n// THREE of them, because mod.Message takes the template plus three arguments and\n// no more. Each argument is a number, a player, or another mod.stringkeys value.\n\nlet squadScore = 0;\n\nexport function OnPlayerEarnedKill(\n    eventPlayer: mod.Player,\n    eventOtherPlayer: mod.Player,\n    eventDeathType: mod.DeathType,\n    eventWeaponUnlock: mod.WeaponUnlock\n): void {\n    squadScore = squadScore + 1;\n\n    // One argument: a number.\n    mod.DisplayNotificationMessage(mod.Message(mod.stringkeys.faq.args.score, squadScore), eventPlayer);\n\n    // Two arguments: a player, then a number. The game writes the player's name.\n    mod.DisplayHighlightedWorldLogMessage(\n        mod.Message(mod.stringkeys.faq.args.playerScore, eventPlayer, squadScore)\n    );\n\n    // Three arguments, the maximum. One of them is another key from\n    // strings.json, which is how you pick between two words at runtime.\n    const how = squadScore >= 10 ? mod.stringkeys.faq.args.onFire : mod.stringkeys.faq.args.steady;\n    mod.DisplayHighlightedWorldLogMessage(\n        mod.Message(mod.stringkeys.faq.args.kill, eventPlayer, eventOtherPlayer, how)\n    );\n}\n",
+    "note": "No UI is built here. The notification lands top right, the two world log lines land in the kill feed on the left."
+   },
+   "sources": [
+    "scripts-blocks (PORTAL GENERAL)",
+    "portal (Portal)",
+    "CONCAT - Programming Block doesn't work (bug-reports)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-strings-ascii-only",
+   "themes": [
+    "strings",
+    "deploy"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "My accented letters and symbols show up as empty boxes, or the upload just fails and never says why.",
+   "short": "Script and strings must be plain ASCII. Anything above U+00FF fails the upload, and anything outside the game font draws as a box.",
+   "answer": "Two separate limits bite here. First, the upload rejects any character above U+00FF anywhere in the files, and that includes characters inside a comment, so a decorative arrow in a comment block can make a mod that saved yesterday refuse to save today with no useful error. Second, the in game font only carries plain ASCII, so a character that does survive the upload but is not in the font is drawn as an empty box. The safe set is the letters, digits and punctuation on a US keyboard. Write CAFE rather than a version with an accent, write -> rather than an arrow character, use * for a bullet, and use straight quotes rather than curly ones. Emoji are out entirely. If your mod suddenly stops saving after an edit that looked harmless, this is the first thing to check, and searching the file for anything outside the plain ASCII range usually finds it in seconds.",
+   "gotchas": [
+    "A non ASCII character inside a COMMENT is enough to fail the upload. Comments are not stripped before validation.",
+    "Curly quotes and long dashes pasted from a document are the usual culprits, and they are almost invisible in an editor.",
+    "A character can pass the upload and still draw as an empty box, because the font is a separate limit from the upload check.",
+    "Never assume the site will tell you which character. It usually will not, so check the file yourself."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Safe Labels",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayHighlightedWorldLogMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "OPERATION CAFE"
+                 }
+                }
+               }
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "DisplayHighlightedWorldLogMessage",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Message",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "MOVE TO -> POINT B"
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "DisplayHighlightedWorldLogMessage",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "Message",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "* Hold the point"
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnGameModeStarted showing three labels that are all safe: a plain word instead of an accented one, -> instead of an arrow, * instead of a bullet."
+   },
+   "ts": {
+    "code": "// The in game font only carries plain ASCII, and the upload only accepts it too.\n//\n// A character above U+00FF anywhere in the script or in strings.json makes the\n// upload fail, and that includes characters inside a COMMENT. Characters that do\n// survive the upload but are not in the font are drawn as an empty box.\n//\n// So: no accents, no emoji, no curly quotes, no arrows, no box drawing. Write\n// every label in the plain letters, digits and punctuation on a US keyboard.\n\nexport function OnGameModeStarted(): void {\n    // These labels are all safe.\n    mod.DisplayHighlightedWorldLogMessage(mod.Message(mod.stringkeys.faq.ascii.title));\n    mod.DisplayHighlightedWorldLogMessage(mod.Message(mod.stringkeys.faq.ascii.arrow));\n    mod.DisplayHighlightedWorldLogMessage(mod.Message(mod.stringkeys.faq.ascii.bullet));\n    mod.DisplayHighlightedWorldLogMessage(mod.Message(mod.stringkeys.faq.ascii.quote));\n}\n",
+    "note": "No UI is built here. All four lines land in the kill feed on the left. Every string in the example is inside the safe ASCII set on purpose."
+   },
+   "sources": [
+    "Multibyte Characters in Script Cause Message Display Functions to Fail (bug-reports)",
+    "general (PORTAL GENERAL)",
+    "scripts-blocks (PORTAL GENERAL)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-sound-play-sfx",
+   "themes": [
+    "sound"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I play a sound effect, and how do I stop it again? Nothing happens when I call PlaySound.",
+   "short": "A sound needs a carrier object. Place one in the map or spawn one at game start, then play through it.",
+   "answer": "PlaySound does not take the name of a sound, it takes a carrier object that already exists. You get one of two ways: place an SFX object in the map in the editor and fetch it in script with GetSFX and its object id, or spawn one at runtime from the RuntimeSpawn_Common list. Spawn the carriers you need when the round starts, not at the moment you want the sound, because a carrier is not ready in the same tick it is created. The second argument is amplitude, a multiplier where 1 is the sound's normal loudness, so 0.5 is quieter and 2 is louder. Add a position and a range in metres for a 3D sound, where the range is roughly how far away it fades to nothing; leave both off for a 2D sound that is heard at the same level wherever the player is. StopSound with no receiver stops it for everybody, and with a player, squad or team it stops it just for them, which is how one carrier can serve several groups at once.",
+   "gotchas": [
+    "A 3D sound plays at the position of its carrier object and the carrier cannot be moved once placed. Spawn one carrier per place you want the sound to come from.",
+    "Reusing a carrier that is still playing drags the running sound to the new position. Let it finish, or use a separate carrier.",
+    "Amplitude is a multiplier, not a percentage. There is no upper clamp on PlaySound, so a large number is genuinely painful.",
+    "Range defaults to 20 metres. If a 3D sound seems inaudible, try a much larger range before assuming it is broken.",
+    "Since patch 1.1.3.0 PlaySound requires a real SFX value. Code that passed a generic object type will need to say SFX."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Capture Sound",
+         "EVENTTYPE": "OnCapturePointCaptured"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "PlaySound",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "GetSFX",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 1001
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "Number",
+              "fields": {
+               "NUM": 1
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "PlaySound",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "GetSFX",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 1002
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 0.8
+                }
+               }
+              },
+              "VALUE-2": {
+               "block": {
+                "type": "GetObjectPosition",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "EventCapturePoint"
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-3": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 40
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "StopSound",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "GetSFX",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 1003
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnCapturePointCaptured using SFX objects placed in the map. Replace 1001, 1002 and 1003 with the object ids of your own SFX objects from the editor. The third block stops a looping alarm the moment the point falls."
+   },
+   "ts": {
+    "code": "// Playing a sound effect, and stopping it again.\n//\n// A sound needs a carrier object. Either place an SFX object in the map in the\n// editor and fetch it with mod.GetSFX(objectId), or spawn one at runtime from\n// the mod.RuntimeSpawn_Common list. Spawn the carriers you will need at game\n// start, not at the moment you want the sound.\n//\n// The second argument of PlaySound is amplitude: a multiplier, where 1 is the\n// sound's normal loudness. The four argument form adds a position and a range in\n// metres, which is roughly how far away the sound fades to nothing.\n\nlet alarm: mod.SFX | undefined;\nlet stinger: mod.SFX | undefined;\n\nexport function OnGameModeStarted(): void {\n    const origin = mod.CreateVector(0, 0, 0);\n\n    // A looping 3D alarm. A 3D sound plays at the position of its carrier\n    // object, and the carrier cannot be moved once it is placed, so spawn one\n    // carrier per place you want the sound to come from.\n    alarm = mod.SpawnObject(mod.RuntimeSpawn_Common.SFX_Alarm, origin, origin) as mod.SFX;\n\n    // A 2D interface sting, heard at the same loudness wherever the player is.\n    stinger = mod.SpawnObject(\n        mod.RuntimeSpawn_Common.SFX_UI_Gamemode_Shared_CaptureObjectives_CaptureNeutralize_OneShot2D,\n        origin,\n        origin\n    ) as mod.SFX;\n}\n\nexport function OnCapturePointCaptured(eventCapturePoint: mod.CapturePoint): void {\n    if (stinger === undefined) return;\n\n    // 2D, everyone hears it, normal loudness.\n    mod.PlaySound(stinger, 1);\n}\n\nexport function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    if (alarm === undefined) return;\n\n    // 3D, only this player hears it, audible out to about 40 metres.\n    mod.PlaySound(alarm, 0.8, mod.CreateVector(0, 0, 0), 40, eventPlayer);\n}\n\nexport function OnGameModeEnding(): void {\n    if (alarm === undefined) return;\n\n    // No receiver stops it for everyone. Pass a player, squad or team to stop it\n    // for just them, which is how one carrier serves several groups at once.\n    mod.StopSound(alarm);\n}\n",
+    "note": "No UI is built here. The carriers are spawned at the world origin at game start and the 3D example is audible out to about 40 metres from that point."
+   },
+   "sources": [
+    "Portal Music Guide (portal-guides)",
+    "scripts-blocks (PORTAL GENERAL)",
+    "Sounds Module (Object-Oriented with spawned resource management) (community-tools)",
+    "Sounds play at 1.0 amplitude momentarily before the specified amplitude (bug-reports)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-vo-announcer",
+   "themes": [
+    "sound"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "How do I make the announcer say something? PlayVO runs but I hear nothing.",
+   "short": "Spawn the voice carrier at game start, always pass a flag, and play objective lines with no receiver. Some lines are dead in the retail game, so keep a sound stinger as a fallback.",
+   "answer": "A voice over needs its own carrier, separate from a sound effect carrier. Either place a VO object in the map and fetch it with GetVO, or spawn SFX_VOModule_OneShot2D at runtime. If you spawn it, do it when the round starts and let at least one tick pass before you play anything through it, because spawning and playing in the same tick is silent. PlayVO always needs a flag, even for lines that have nothing to do with a flag, and Alpha is the usual stand in. Objective and MCom lines are played with no receiver so the whole server hears them, while lines that are relative to a side, such as who is winning, take a team as the fourth argument. Several announcer events simply do not speak in the retail game whatever you do, and that is not something your script can fix. When a line refuses to play, use one of the SFX_UI_Gamemode_Shared_CaptureObjectives stingers instead: they are ordinary sound effects, they always work, and for most mods a sting says what you needed anyway.",
+   "gotchas": [
+    "Never spawn a carrier and play through it in the same tick. Spawn the pool at game start.",
+    "A flag argument is always required. An empty flag errors out, so pass Alpha when the line has no flag of its own.",
+    "Objective and MCom lines play globally with no receiver. Adding a player scope silences most of them.",
+    "Some events are silent in the retail game no matter what you do. Test each line you rely on and keep a stinger fallback.",
+    "For lines that name a flag letter, keep one carrier per letter, Alpha through India, and play the matching one."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Objective Voice",
+         "EVENTTYPE": "OnCapturePointCaptured"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "PlayVO",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "GetVO",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 2001
+                 }
+                }
+               }
+              }
+             }
+            },
+            "VALUE-1": {
+             "block": {
+              "type": "VoiceOverEvents2DItem",
+              "fields": {
+               "VALUE-0": "VoiceOverEvents2D",
+               "VALUE-1": "ObjectiveCaptured"
+              }
+             }
+            },
+            "VALUE-2": {
+             "block": {
+              "type": "VoiceOverFlagsItem",
+              "fields": {
+               "VALUE-0": "VoiceOverFlags",
+               "VALUE-1": "Alpha"
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "PlaySound",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "GetSFX",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 1004
+                   }
+                  }
+                 }
+                }
+               }
+              },
+              "VALUE-1": {
+               "block": {
+                "type": "Number",
+                "fields": {
+                 "NUM": 1
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnCapturePointCaptured using a VO object placed in the map, which avoids the spawn timing problem entirely. Replace 2001 with your VO object id and 1004 with the object id of a CaptureObjectives stinger SFX. The stinger is there on purpose as the reliable half."
+   },
+   "ts": {
+    "code": "// Getting the announcer to speak.\n//\n// A voice over needs its own carrier, spawned from SFX_VOModule_OneShot2D.\n// Spawn the carriers at game start and wait at least one tick before playing\n// anything through them: spawning and playing in the same tick is silent.\n//\n// PlayVO always needs a flag, even for lines that have nothing to do with a\n// flag. Use Alpha as the stand in. Objective and MCom lines are played with NO\n// receiver, so the whole server hears them. Lines that are relative to a side,\n// such as who is winning, take a team as the fourth argument.\n//\n// Several announcer events are silent in the retail game whatever you do. When a\n// line refuses to play, use one of the SFX_UI_Gamemode_Shared_CaptureObjectives\n// stingers instead, which always work. There is one at the bottom of this file.\n\nconst LETTERS: mod.VoiceOverFlags[] = [\n    mod.VoiceOverFlags.Alpha,\n    mod.VoiceOverFlags.Bravo,\n    mod.VoiceOverFlags.Charlie,\n    mod.VoiceOverFlags.Delta,\n    mod.VoiceOverFlags.Echo,\n    mod.VoiceOverFlags.Foxtrot,\n    mod.VoiceOverFlags.Golf,\n    mod.VoiceOverFlags.Hotel,\n    mod.VoiceOverFlags.India,\n];\n\nconst carriers: mod.VO[] = [];\nlet stinger: mod.SFX | undefined;\n\nexport async function OnGameModeStarted(): Promise<void> {\n    const origin = mod.CreateVector(0, 0, 0);\n\n    // One carrier per flag letter, all spawned now, long before anything speaks.\n    for (let i = 0; i < LETTERS.length; i++) {\n        carriers.push(\n            mod.SpawnObject(mod.RuntimeSpawn_Common.SFX_VOModule_OneShot2D, origin, origin) as mod.VO\n        );\n    }\n\n    stinger = mod.SpawnObject(\n        mod.RuntimeSpawn_Common.SFX_UI_Gamemode_Shared_CaptureObjectives_CaptureStartedByFriendly_OneShot2D,\n        origin,\n        origin\n    ) as mod.SFX;\n\n    // Let a tick pass so the carriers are ready.\n    await mod.Wait(1);\n}\n\n// letterIndex 0 is Alpha, 1 is Bravo and so on.\nfunction sayObjective(event: mod.VoiceOverEvents2D, letterIndex: number): void {\n    if (carriers.length === 0) return;\n\n    const i = letterIndex < carriers.length ? letterIndex : 0;\n\n    // No fourth argument: the whole server hears it.\n    mod.PlayVO(carriers[i], event, LETTERS[i]);\n}\n\nfunction sayTeamLine(event: mod.VoiceOverEvents2D, team: mod.Team): void {\n    if (carriers.length === 0) return;\n\n    // A team relative line takes the team. Alpha is the stand in flag.\n    mod.PlayVO(carriers[0], event, mod.VoiceOverFlags.Alpha, team);\n}\n\nexport function OnCapturePointCaptured(eventCapturePoint: mod.CapturePoint): void {\n    sayObjective(mod.VoiceOverEvents2D.ObjectiveCaptured, 0);\n    sayTeamLine(mod.VoiceOverEvents2D.ProgressEarlyWinning, mod.GetTeam(1));\n\n    // The reliable fallback when a voice line will not play.\n    if (stinger !== undefined) mod.PlaySound(stinger, 1);\n}\n",
+    "note": "No UI is built here. Nine carriers are spawned at the world origin at game start, one per flag letter, and a tick is allowed to pass before anything speaks."
+   },
+   "sources": [
+    "scripts-blocks (PORTAL GENERAL)",
+    "general (PORTAL GENERAL)",
+    "Portal Music Guide (portal-guides)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-deploy-action-needed",
+   "themes": [
+    "deploy"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "The site says Action Needed but my script has no errors and I cannot see my experience in game. What is wrong?",
+   "short": "It almost always means the script did not load at all. Add a boot message so you can tell that apart from a logic bug.",
+   "answer": "Action Needed nearly always means the script failed to load, not that one of your rules is wrong. The site will not tell you which line broke, so the first move is to prove whether the script is running at all. Add a boot message on OnGameModeStarted that prints a build number, bump that number every time you upload, and look for it in game. If you see it, the script is running and your problem is in your logic. If you do not, the script never started. From there, work backwards: check the whole file for characters outside plain ASCII, including inside comments, since one of those is enough on its own; check strings.json for duplicate keys; check that every event handler you export has the argument types the engine declares for it, because a wrong signature is silently accepted locally and rejected on upload. If you deploy from a script rather than the site, refresh the experience list before reading the errors, or you will be looking at the previous attempt. And if the beacon shows an old build number, the site is still serving your previous bundle and nothing you changed has been uploaded yet.",
+   "gotchas": [
+    "It usually means the script did not load, not that a rule is wrong. Prove which one before you start changing code.",
+    "One character above plain ASCII anywhere in the files, comments included, is enough to cause it.",
+    "A duplicate key in strings.json, or a duplicate object id in the map file, will do it too.",
+    "An event handler with the wrong argument types passes your local check and fails on upload. Compare against the declared signature.",
+    "Bump the build number every upload. Seeing an old number is how you catch a stale bundle."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Boot Beacon",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayHighlightedWorldLogMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "MOD BUILD {}"
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 7
+                 }
+                }
+               }
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "DisplayNotificationMessage",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Message",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "MOD BUILD {}"
+                   }
+                  }
+                 },
+                 "VALUE-1": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 7
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnGameModeStarted that prints the build number to the kill feed and as a notification. Change the number in both Number blocks every time you save, and watch for it in game."
+   },
+   "ts": {
+    "code": "// A boot beacon: the first thing to add when the site says \"Action Needed\" or\n// when your mod saves cleanly but nothing happens in game.\n//\n// \"Action Needed\" almost always means the script did not load, not that a rule\n// is wrong. This tells the two apart. If you see the beacon, the script is\n// running and the problem is in your logic. If you do not, the script never\n// started and the fault is in the bundle, the strings file or the spatial file.\n//\n// Bump BUILD every time you upload. Seeing an old number is how you catch the\n// case where the site is still serving the previous bundle.\n\nconst BUILD = 7;\n\nexport function OnGameModeStarted(): void {\n    // Goes to the server log, which you can read with the developer console.\n    console.log(\"mod booted, build \" + BUILD);\n\n    // Goes on screen, so you can check it without a console.\n    mod.DisplayHighlightedWorldLogMessage(mod.Message(mod.stringkeys.faq.boot.line, BUILD));\n}\n\nexport function OnPlayerDeployed(eventPlayer: mod.Player): void {\n    // A second beacon, because a script can boot and still fail later.\n    mod.DisplayNotificationMessage(mod.Message(mod.stringkeys.faq.boot.line, BUILD), eventPlayer);\n}\n",
+    "note": "No UI is built here. The world log line lands in the kill feed on the left and the notification lands top right."
+   },
+   "sources": [
+    "portal (Portal)",
+    "general (PORTAL GENERAL)",
+    "scripts-blocks (PORTAL GENERAL)",
+    "Portal TypeScript Template [Full Toolset] (community-tools)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-deploy-invalid-argument",
+   "themes": [
+    "deploy"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "Saving or deploying is refused with INVALID_ARGUMENT and a long message. How do I find the real cause?",
+   "short": "Read the whole message, it names the cause. The two common ones are a stale publish state and an object id that no longer resolves.",
+   "answer": "The site refuses a save with a status and a message, and INVALID_ARGUMENT is the common one. The message is not decoration, it names the problem, so read all of it before changing anything. Two shapes come up again and again. One is about state, along the lines of cannot transition from published to draft, or a mutator that is required but not present; both mean the site's copy of your settings and your local copy have drifted apart, and saving once in the Portal editor on the site puts them back in step so the next deploy goes through. The other is a reference that does not resolve: an object id in your script or your spatial file points at something that was deleted, renamed or duplicated in the editor. Nothing tells you which id, so add a startup self check that looks up every id your script depends on and logs whether it answered, and a broken reference becomes one line in the log instead of a rule that quietly never fires. Duplicate object ids in the map file cause the same failure from the other direction, so check for those as well.",
+   "gotchas": [
+    "Read the entire error string. It names the mutator or the state transition that failed.",
+    "Cannot transition from published to draft, and a missing mutator, both usually clear after one manual save in the Portal editor on the site.",
+    "An object id that no longer exists in the map is the other common cause, and nothing will tell you which one.",
+    "A duplicate object id in the spatial file causes the same rejection. Look for repeats, not just missing ones.",
+    "Non physical objects such as spawners and interact points report a position near zero. Do not use a zero position as your test for whether an object exists; compare the object id instead."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Id Self Check",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayHighlightedWorldLogMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "capture point 300 answers as {}"
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "GetObjId",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "GetCapturePoint",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 300
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "DisplayHighlightedWorldLogMessage",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Message",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "area trigger 200 answers as {}"
+                   }
+                  }
+                 },
+                 "VALUE-1": {
+                  "block": {
+                   "type": "GetObjId",
+                   "inputs": {
+                    "VALUE-0": {
+                     "block": {
+                      "type": "GetAreaTrigger",
+                      "inputs": {
+                       "VALUE-0": {
+                        "block": {
+                         "type": "Number",
+                         "fields": {
+                          "NUM": 200
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "DisplayHighlightedWorldLogMessage",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "Message",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "spatial object 100 answers as {}"
+                     }
+                    }
+                   },
+                   "VALUE-1": {
+                    "block": {
+                     "type": "GetObjId",
+                     "inputs": {
+                      "VALUE-0": {
+                       "block": {
+                        "type": "GetSpatialObject",
+                        "inputs": {
+                         "VALUE-0": {
+                          "block": {
+                           "type": "Number",
+                           "fields": {
+                            "NUM": 100
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnGameModeStarted that looks up a capture point, an area trigger and a spatial object and prints the id each one answers with. An id that comes back as something other than what you asked for, or as zero, is the broken reference. Change the numbers to the ids your own mod needs."
+   },
+   "ts": {
+    "code": "// A startup self check for the object ids your script depends on.\n//\n// When a save is refused with INVALID_ARGUMENT, or the mod saves but a rule\n// silently does nothing, the cause is very often an id in the script that no\n// longer matches anything in the map: an object was deleted, renamed or\n// duplicated in the editor. The site will not tell you which one.\n//\n// List every id the script needs here. On the first run each one is looked up\n// and logged, so a broken reference appears as one line in the log instead of a\n// rule that quietly never fires.\n\nconst REQUIRED_SPATIAL_IDS: number[] = [100, 101, 102];\nconst REQUIRED_AREA_TRIGGER_IDS: number[] = [200];\nconst REQUIRED_CAPTURE_POINT_IDS: number[] = [300, 301];\n\nfunction report(kind: string, id: number, actualId: number): void {\n    // GetObjId on the object you looked up should give the id back. A different\n    // number, or 0, means nothing in the map answers to that id.\n    if (actualId === id) {\n        console.log(\"ok      \" + kind + \" \" + id);\n    } else {\n        console.log(\"MISSING \" + kind + \" \" + id + \" (got \" + actualId + \")\");\n    }\n}\n\nexport function OnGameModeStarted(): void {\n    for (const id of REQUIRED_SPATIAL_IDS) {\n        report(\"spatial\", id, mod.GetObjId(mod.GetSpatialObject(id)));\n    }\n    for (const id of REQUIRED_AREA_TRIGGER_IDS) {\n        report(\"areaTrigger\", id, mod.GetObjId(mod.GetAreaTrigger(id)));\n    }\n    for (const id of REQUIRED_CAPTURE_POINT_IDS) {\n        report(\"capturePoint\", id, mod.GetObjId(mod.GetCapturePoint(id)));\n    }\n\n    // A duplicate id in the map is the other half of the same problem, and it\n    // shows up here as two different objects both answering to one number.\n    const seen: number[] = [];\n    const all = REQUIRED_SPATIAL_IDS.concat(REQUIRED_AREA_TRIGGER_IDS, REQUIRED_CAPTURE_POINT_IDS);\n    for (const id of all) {\n        if (seen.indexOf(id) !== -1) console.log(\"DUPLICATE id listed twice: \" + id);\n        seen.push(id);\n    }\n}\n",
+    "note": "No UI is built here. Everything goes to the server log through console.log, so read it with the developer console."
+   },
+   "sources": [
+    "Portal TypeScript Template [Full Toolset] (community-tools)",
+    "general (PORTAL GENERAL)",
+    "GetObjectPosition fails for some object types (bug-reports)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  },
+  {
+   "id": "presentation-deploy-size-limit",
+   "themes": [
+    "deploy",
+    "strings"
+   ],
+   "editors": [
+    "blocks",
+    "typescript"
+   ],
+   "question": "My upload is rejected for being too big. How much can a mod actually hold and how do I get under it?",
+   "short": "Script plus strings are budgeted together at roughly a megabyte. Strip comments, minify, and reuse string templates.",
+   "answer": "The script and its strings file are counted together and the budget is around a megabyte. The spatial file for the map is counted separately, so a large map is not what is filling your script budget. The quickest win costs you nothing: build with the comment stripping option, and if that is not enough, with the full minifier, both of which are built into the community bundler. After that, look at what is actually large. Repeated long argument lists are one half, so wrap a call you make often in a small function and call the wrapper everywhere. The strings file is the other half, and it grows fastest when you write one key per variation of a line. Fold those into one template with {} in it and pass the differences as values, so ten score lines become one key. If you are working in the block editor the same idea applies as a subroutine: define the sequence once and call it, rather than copying the same stack of blocks ten times.",
+   "gotchas": [
+    "Script and strings share the budget. The map spatial file has its own, so shrinking the map will not help here.",
+    "Build with comment stripping first, then the minifier. Both ship with the bundler and neither changes behaviour.",
+    "One string key per variation is what makes a strings file explode. One template plus values is far smaller.",
+    "In the block editor the same saving comes from a subroutine, which is a second top level block you add next to your rule.",
+    "The spatial file has its own practical ceiling and building nearer the map origin makes it smaller, because the coordinates are shorter."
+   ],
+   "blocks": {
+    "workspace": {
+     "blocks": {
+      "languageVersion": 0,
+      "blocks": [
+       {
+        "type": "ruleBlock",
+        "extraState": {
+         "isOngoingEvent": false
+        },
+        "fields": {
+         "NAME": "Score Board",
+         "EVENTTYPE": "OnGameModeStarted"
+        },
+        "inputs": {
+         "ACTIONS": {
+          "block": {
+           "type": "DisplayHighlightedWorldLogMessage",
+           "inputs": {
+            "VALUE-0": {
+             "block": {
+              "type": "Message",
+              "inputs": {
+               "VALUE-0": {
+                "block": {
+                 "type": "Text",
+                 "fields": {
+                  "TEXT": "SQUAD {} SCORE {}"
+                 }
+                }
+               },
+               "VALUE-1": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 1
+                 }
+                }
+               },
+               "VALUE-2": {
+                "block": {
+                 "type": "Number",
+                 "fields": {
+                  "NUM": 0
+                 }
+                }
+               }
+              }
+             }
+            }
+           },
+           "next": {
+            "block": {
+             "type": "DisplayHighlightedWorldLogMessage",
+             "inputs": {
+              "VALUE-0": {
+               "block": {
+                "type": "Message",
+                "inputs": {
+                 "VALUE-0": {
+                  "block": {
+                   "type": "Text",
+                   "fields": {
+                    "TEXT": "SQUAD {} SCORE {}"
+                   }
+                  }
+                 },
+                 "VALUE-1": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 2
+                   }
+                  }
+                 },
+                 "VALUE-2": {
+                  "block": {
+                   "type": "Number",
+                   "fields": {
+                    "NUM": 0
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             },
+             "next": {
+              "block": {
+               "type": "DisplayHighlightedWorldLogMessage",
+               "inputs": {
+                "VALUE-0": {
+                 "block": {
+                  "type": "Message",
+                  "inputs": {
+                   "VALUE-0": {
+                    "block": {
+                     "type": "Text",
+                     "fields": {
+                      "TEXT": "SQUAD {} SCORE {}"
+                     }
+                    }
+                   },
+                   "VALUE-1": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 3
+                     }
+                    }
+                   },
+                   "VALUE-2": {
+                    "block": {
+                     "type": "Number",
+                     "fields": {
+                      "NUM": 0
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "next": {
+                "block": {
+                 "type": "DisplayHighlightedWorldLogMessage",
+                 "inputs": {
+                  "VALUE-0": {
+                   "block": {
+                    "type": "Message",
+                    "inputs": {
+                     "VALUE-0": {
+                      "block": {
+                       "type": "Text",
+                       "fields": {
+                        "TEXT": "SQUAD {} SCORE {}"
+                       }
+                      }
+                     },
+                     "VALUE-1": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 4
+                       }
+                      }
+                     },
+                     "VALUE-2": {
+                      "block": {
+                       "type": "Number",
+                       "fields": {
+                        "NUM": 0
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "x": 40,
+        "y": 40
+       }
+      ]
+     }
+    },
+    "note": "One rule on OnGameModeStarted showing four lines that all share ONE text template with two braces in it. Four separate templates would be four entries in the string table; this is one."
+   },
+   "ts": {
+    "code": "// Two habits that keep a script under the upload size limit.\n//\n// The script and the strings file are counted together, and the budget is around\n// a megabyte. The spatial file for the map is counted separately. Long argument\n// lists and a separate string key per line of text are what fill the budget up.\n//\n// 1. Wrap the long API calls once and call the wrapper everywhere.\n// 2. Reuse one templated string key with arguments instead of writing a key per\n//    variation. Ten score lines become one key and one number.\n\nfunction addLine(name: string, parent: mod.UIWidget, y: number, label: mod.Message): void {\n    mod.AddUIText(\n        name,\n        mod.CreateVector(8, y, 0),\n        mod.CreateVector(300, 28, 0),\n        mod.UIAnchor.TopLeft,\n        parent,\n        true,\n        0,\n        mod.CreateVector(0, 0, 0),\n        0,\n        mod.UIBgFill.None,\n        label,\n        20,\n        mod.CreateVector(1, 1, 1),\n        1,\n        mod.UIAnchor.CenterLeft,\n        mod.UIDepth.AboveGameUI\n    );\n}\n\nexport function OnGameModeStarted(): void {\n    mod.AddUIContainer(\n        \"faqBoard\",\n        mod.CreateVector(24, 24, 0),\n        mod.CreateVector(320, 140, 0),\n        mod.UIAnchor.TopLeft,\n        mod.GetUIRoot(),\n        true,\n        8,\n        mod.CreateVector(0, 0, 0),\n        0.7,\n        mod.UIBgFill.Solid,\n        mod.UIDepth.AboveGameUI\n    );\n\n    const board = mod.FindUIWidgetWithName(\"faqBoard\") as mod.UIWidget;\n\n    // Four rows, one wrapper call each, and ONE string key shared by all of them.\n    for (let i = 0; i < 4; i++) {\n        addLine(\"faqRow\" + i, board, i * 30, mod.Message(mod.stringkeys.faq.board.row, i + 1, 0));\n    }\n}\n",
+    "note": "Board sits 24 in from the left and 24 down from the top, 320 wide. Four rows, one wrapper function, and one shared string key."
+   },
+   "sources": [
+    "Portal TypeScript Template [Full Toolset] (community-tools)",
+    "scripts-blocks (PORTAL GENERAL)",
+    "Spatial JSON Minifier [UPDATED 4/19 v1.3] (community-tools)"
+   ],
+   "verified": {
+    "blocks": true,
+    "ts": true
+   }
+  }
+ ]
+}
