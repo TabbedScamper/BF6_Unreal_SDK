@@ -2,6 +2,94 @@
 
 ## 0.8.0 (2026-09-09)
 
+0.8.0 brings mode creation into the map editor: build the scene, edit Portal blocks or TypeScript, design the HUD, configure the experience, and preview it with the matching High Poly add-on.
+
+**Blocks inside Unreal**
+
+- A local Blockly editor with Portal's block definitions, categories, colors, tooltips and value types. The captured catalogue ships with the tool, so you can start editing before connecting to the website.
+- Inputs display multiple accepted-type icons where Portal accepts more than one kind of value, including the Message block's text, number and player arguments.
+- Import and export Portal workspaces and experience files. Connect the Portal panel to exchange block edits with the site's editor and use its save flow.
+- Navigate larger modes with canvas panning, zoom, a minimap and contextual what-fits-here suggestions. Corrected panning and minimap coordinates keep navigation usable away from the origin.
+- Connect rules to the scene through object IDs: find the placed object a rule refers to, or use a selected object's ID while authoring.
+- Move between supported block logic and TypeScript with conversion diagnostics. Export preserves disabled rules and comments more faithfully.
+- Extended blocks provide a visual route to TypeScript with lexical locals, custom functions, waits, loops, lists, maps and records. Native Portal blocks and extended TypeScript are explicit output targets; unsupported or mixed roots are rejected on native export. This is a bounded visual language, not a lossless importer for every possible TypeScript project.
+
+**TypeScript with help for first-time coders**
+
+- An integrated Monaco editor with completion, parameter hints, hover documentation, go-to-definition and live TypeScript errors.
+- Projects use Mike DeLuca's Portal scripting template and its bundler. Keep working on the same source folder in an external editor when you want to.
+- Plain-language explanations of common Portal calls, annotated beginner recipes, a searchable community FAQ and diagnostics for common gameplay mistakes.
+- Eleven starter recipes cover common setups, including player events, teams, objectives, areas, UI, moving objects, vehicles and sounds. Recipes were checked against the installed SDK declarations.
+- Build your project inside the tool, inspect the result, and push it to the connected Portal Script editor. Push and pull check the experience identity, so another open experience is not mistaken for the destination.
+- Imported bundles are identified as bundles. Attach the real source folder to resume source editing instead of silently guessing imports or replacing the mode with template code.
+- Publish mode can remove unused debugging workbench code from the output when the dependency checks permit it.
+- Pull and follow the local Battlefield game log from the editors or the dedicated LOG view. Multiple views can watch together.
+
+**Visual UI and weapon cards**
+
+- Build HUDs with containers, text, images and buttons. Arrange a layer hierarchy, group or duplicate elements, and edit their layout and appearance visually.
+- Preview different screen shapes, use the game's HUD as a placement reference, and check for clipping and overlap.
+- Create animation clips with a timeline, keyframes and playback.
+- Import saved designs and supported community layouts. Export native TypeScript, supported DeLuca/Solid formats, strings, animation data or blocks, and insert supported output into the Script or Blocks editor.
+- UI designs belong to the project and participate in snapshots. A separate recovery copy helps retrieve newer unsaved work.
+- Generate a weapon card from a selected loot spawner's weapon and attachment configuration, then customize its layout in the UI builder. Refreshing the configuration preserves an existing layout.
+- The generated card uses Portal's weapon-image API in the mode. The design canvas uses a placeholder rather than claiming to reproduce the game's final weapon-card renderer.
+
+**Editable soldiers, loot and attachments**
+
+- Select a supported soldier or loot spawner and press Space, or use the Loadout pill, to open its menu.
+- Loot previews default to an M4A1 aligned with the SDK marker. Choose a weapon, gadget or throwable, then configure supported attachments from the available categories.
+- Soldier previews show a posed character holding a weapon, with character, outfit, faction and pose choices.
+- One configuration can supply a preview, a weapon card, a base-loot block recipe and a configured TypeScript pickup helper.
+- Reuse the generated helpers in proximity interactions, buy stations, Gunmaster-style progression or your own rules. They are building pieces for those modes, not complete ready-made mode implementations.
+- The configured pickup hook replaces a confirmed pickup in its weapon slot with the attachment package. A conservative optional watcher refuses ambiguous inventory changes and requires two distinct known weapons already equipped.
+- Preview selections are stored locally. Choosing an attachment in the editor does not, by itself, change the weapon picked up in Portal.
+
+**Experience settings and project organization**
+
+- Edit supported Portal settings from the tool: mode, map rotation, teams, modifiers and equipment restrictions, using the connected website's controls.
+- Import experience attachments into the project and keep maps, blocks, UI designs, script source and configuration together.
+- Object-ID tools support category bands and renumbering. A full band stops allocation with an explanation instead of silently using the next category's IDs.
+- Project snapshots cover authored files, including maps, spatial exports, UI designs and template configuration.
+- Saves write and verify a replacement before replacing the previous map file. Failed saves stop dependent builds and pushes.
+- Switching projects flushes pending work; edited files and generated files you have customized are protected from accidental replacement.
+
+**CHANGES: compare the SDK, website and installed game**
+
+- A dedicated CHANGES view gathers capability evidence from the installed SDK, observed Portal pages and supported installed-game scans.
+- Compare snapshots to discover additions, changed definitions, settings and candidate functions that have not yet reached the SDK.
+- Scan coverage is recorded per section. A page that was not fully read is reported as unobserved, rather than having all its controls falsely labeled removed.
+- A name found in game data, a website control, server acceptance and a measured runtime effect remain separate levels of evidence.
+- Watchlists include the four water getters and tick-rate candidates. A generated presence probe and game-log reader help investigate availability without calling the candidate functions.
+- Discovery does not unlock a feature the server rejects. Hidden names are candidates for investigation, not promises of usable Portal functions.
+
+**Optional AI integration**
+
+- Attach a compatible local or hosted provider of your choice for questions in the Script editor; none is connected by default.
+- Requests can include the current project briefing, Portal API information and scripting context. The interface identifies whether the configured endpoint is local or remote.
+- Provider keys are read from your environment or a file you supply, rather than embedded in the editor page.
+- This release provides scripting assistance. A universal right-click assistant that autonomously edits every scene, block and UI surface is not claimed as complete.
+
+**High Poly and paired installation**
+
+- Install the optional High Poly add-on directly from the map-selection screen. EA App and Steam installs are supported, with a game-folder selector for other locations.
+- The regular update button checks both installed components and plans a matching pair. New Features includes the add-on's notes.
+- Downloaded packages are validated before replacement; update staging, backups and recovery report the actual result for each component.
+- The starter project opens without the optional add-on and includes the editor target receipt needed by the packaged project.
+- High Poly includes its organized control panel, terrain, roads, water, lighting, map-scoped placed-object previews, loadouts and supported vehicle assemblies.
+- This release fixes opaque-black glass, police-car liveries, billboard advertisement textures and several missing placed-object material bindings. Smoke cards now use their source textures and transparency, with preview animation for the known packed rising-smoke sheet.
+- Build progress includes placed-object replacement, loadout previews and final asset/shader compilation. Shared native-reader access and sound-worker shutdown were corrected after a reproduced crash.
+
+**Current limits**
+
+- Native TypeScript-to-Blocks conversion needs review around waits, recursion and overlapping invocations. It does not preserve every source program's semantics.
+- Generated pickup helpers and weapon cards have compile and simulation coverage, but still need integration and playtesting in your Portal mode. Pickup replacement does not preserve ammunition.
+- Cold High Poly builds can exceed ten seconds; a universal 60 FPS result is not established.
+- Some vehicle mounts and specialized materials remain incomplete. Flying through smoke cards can expose their intersection; animation timing is a preview approximation.
+- Website integration depends on the pages and controls Portal exposes. Incomplete scans and rejected settings remain visible limitations.
+
+**Detailed fixes and release history**
+
 **High Poly, loadouts and weapon cards**
 
 - Install High Poly from the map selector. The existing update check checks both repositories; matching SDK and add-on updates share the updater. NEW FEATURES includes both components' release notes.
