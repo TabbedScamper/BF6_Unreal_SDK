@@ -1,5 +1,20 @@
 # BF6 Unreal SDK version history
 
+## 0.8.2 (2026-09-10)
+
+Hotfix for experience blocks disappearing from an already-open panel and for preserving block edits across updates. **Updating from 0.8.1 or earlier: save/export unsaved Blocks edits before accepting the update.** The automatic checkpoint described below becomes available after this version is installed. Existing saved experience files stay in place.
+
+- Opening an experience now loads its saved blocks even when the Blocks panel was already open. Switching maps within that experience retains current block edits and the viewport.
+- Experience switches wait for an active block import to finish. Loading and switching do not send canvas-clearing deletions to the connected Portal site.
+- Complete project recovery includes files and focused rules outside the current view. Recovery is stored beside the original workspace, which remains untouched by autosaves and update checkpoints, and restored when reopening the same workspace revision.
+- Before an update can restart the editor, Blocks must finish opening and supply a complete snapshot. The tool writes an independent backup and reads it back to verify it; failed writes or missing responses cancel the update.
+- Recovery and update backup JSON files can be opened using the normal Blocks Import command. Added `BF6.Blocks.Checkpoint` for making a verified update-style backup without installing anything.
+- Windows autosaves replace a completed temporary file without first deleting the previous copy. Recovery write failures are shown in the panel.
+- Fixed the experience-to-TypeScript converter resolving its own path relative to the experience folder, producing a duplicated path and a missing-module error.
+- Verified experience loading, map-switch recovery, queued imports, update snapshots and full-project preservation with the 5,088-block Night Ops workspace, including opening and restarting the panel inside Unreal.
+
+See [block recovery and safe updates](../docs/BLOCK-RECOVERY.md). All 0.8.1 improvements below remain included.
+
 ## 0.8.1 (2026-09-10)
 
 0.8.1 focuses on building bigger modes with fewer interruptions: smoother block navigation, a checked single-script export for Portal, more useful weapon cards, and fixes for saves and editor stability. Update the optional High Poly add-on to the matching 0.8.1 release for the new artwork, rendering and performance features.

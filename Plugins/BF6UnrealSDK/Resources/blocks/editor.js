@@ -3813,6 +3813,10 @@
     } else if (input && typeof input === 'object') {
       doc = input;
     }
+    // Local recovery files carry their project identity beside the complete
+    // workspace. Opening one must work through the normal Import button.
+    if (doc && ['autosave', 'projectRecovery', 'updateWorkspace'].indexOf(doc.op) >= 0 &&
+        doc.json && classifyJson(doc.json) === 'workspace') doc = doc.json;
     var format;
     if (doc) format = classifyJson(doc);
     else if (looksLikeTypeScript(text)) format = 'typescript';

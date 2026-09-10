@@ -7172,7 +7172,7 @@ struct FBF6UpdatePart
 	FString        Tag;          // v0.8.0
 };
 
-static void BF6_StageUpdateAndRestart(const TArray<FBF6UpdatePart>& Parts, bool bDryRun = false);
+static void BF6_StageUpdateAndRestart(const TArray<FBF6UpdatePart>& Parts, bool bDryRun = false, bool bBlocksSaved = false);
 
 // The single component call the existing paths use, unchanged for them.
 static void BF6_StageUpdateAndRestart(const TArray<uint8>& ZipBytes, const FString& Tag)
@@ -7305,9 +7305,22 @@ static void BF6_StageUpdateAndRestartLegacy(const TArray<uint8>& ZipBytes, const
 
 
 // The real one: any number of components, applied together or not at all.
-static void BF6_StageUpdateAndRestart(const TArray<FBF6UpdatePart>& Parts, bool bDryRun)
+static void BF6_StageUpdateAndRestart(const TArray<FBF6UpdatePart>& Parts, bool bDryRun, bool bBlocksSaved)
 {
 	if (Parts.Num() == 0) { return; }
+	if (!bDryRun && !bBlocksSaved)
+	{
+		static bool bWaitingForBlocks = false;
+		if (bWaitingForBlocks) return;
+		bWaitingForBlocks = true;
+		BF6Blocks::PrepareForUpdate([Parts](bool bOk)
+		{
+			bWaitingForBlocks = false;
+			if (bOk) BF6_StageUpdateAndRestart(Parts, false, true);
+			else Notify(TEXT("Update cancelled: the block workspace could not be backed up. Let it finish opening, or export it, then retry."));
+		});
+		return;
+	}
 
 	auto Win = [](const FString& P)
 	{
@@ -7374,11 +7387,8 @@ static void BF6_StageUpdateAndRestart(const TArray<FBF6UpdatePart>& Parts, bool 
 		// write cancels the update rather than proceeding and hoping. Nothing
 		// here is worth losing somebody's afternoon over.
 		//
-		// The editors that live in a browser panel (Blocks, Script, the UI
-		// builder) are NOT covered by this: their models live in the page and
-		// the host has no way to make them flush synchronously. They autosave,
-		// but "usually saved" is not a barrier, so the confirmation below says
-		// so plainly instead of implying a guarantee this does not give.
+		// Blocks already acknowledged its asynchronous disk checkpoint above.
+		// Script and UI still require their own explicit saves.
 		if (!FEditorFileUtils::SaveDirtyPackages(/*bPromptUser*/ true, /*bSaveMaps*/ true,
 			/*bSaveContent*/ true))
 		{
@@ -7391,9 +7401,9 @@ static void BF6_StageUpdateAndRestart(const TArray<FBF6UpdatePart>& Parts, bool 
 			FString::Printf(TEXT(
 				"Ready to apply %s.\n\n"
 				"The editor will close and reopen itself. Your map and project have been saved.\n\n"
-				"The Blocks, Script and UI panels keep their work in the page and cannot be "
-				"flushed from here, so if you have unsaved edits in any of them, press No, save "
-				"them, and run the update again."),
+				"Your block workspace has been backed up locally.\n\n"
+				"If you have unsaved edits in the Script or UI panel, press No, save them, "
+				"and run the update again."),
 				*Names)));
 		if (Go != EAppReturnType::Yes)
 		{

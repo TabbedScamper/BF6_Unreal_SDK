@@ -1142,8 +1142,8 @@ bool BF6Script::ConvertBlocksToTemplate(const FString& ExperienceId, const FStri
 		return false;
 	}
 
-	const FString Cli = FPaths::Combine(BF6Ext::ToolPluginDir(), TEXT("Resources"),
-		TEXT("convert"), TEXT("cli.js"));
+	const FString Cli = FPaths::ConvertRelativePathToFull(FPaths::Combine(BF6Ext::ToolPluginDir(), TEXT("Resources"),
+		TEXT("convert"), TEXT("cli.js")));
 	if (!FPaths::FileExists(Cli))
 	{
 		OutWhy = FString::Printf(TEXT("The converter is missing: %s"), *Cli);
@@ -1154,7 +1154,7 @@ bool BF6Script::ConvertBlocksToTemplate(const FString& ExperienceId, const FStri
 	if (!EnsureTemplateProject(ExperienceId, ExperienceName, Dir, OutWhy)) return false;
 
 	const FString Args = FString::Printf(TEXT("\"%s\" blocks2template \"%s\" \"%s\""),
-		*Cli, *WorkspaceJsonPath, *Dir);
+		*Cli, *FPaths::ConvertRelativePathToFull(WorkspaceJsonPath), *FPaths::ConvertRelativePathToFull(Dir));
 	// The converted workspace IS this experience's source, so a project that
 	// arrived as blocks builds normally from here on.
 	MarkSourceAdopted(Dir, TEXT("converted from this experience's block workspace"));

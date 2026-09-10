@@ -30,6 +30,7 @@
 #include "HAL/PlatformProcess.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -46,6 +47,9 @@
 #include "Widgets/Text/STextBlock.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#endif
 
 DEFINE_LOG_CATEGORY(LogBF6Blocks);
 
@@ -71,6 +75,10 @@ namespace
 	FTSTicker::FDelegateHandle GTicker;
 	FDelegateHandle GPageLoadedHandle;
 	FDelegateHandle GMapOpenedHandle;
+	TMap<FString, FString> GProjectRecoveryDirs;
+	TFunction<void(bool)> GUpdateSaved;
+	FString GUpdateSaveToken;
+	FTSTicker::FDelegateHandle GUpdateSaveTimeout;
 
 	bool    GToolReady = false;                // our page said hello
 	FString GPendingLootBinding, GPendingLootSave, GPendingLootLevel;
@@ -1721,8 +1729,8 @@ namespace
 	}
 
 	// ---- autosave ----------------------------------------------------------
-	// Written through a temp file and a rename, so a crash or a pulled plug
-	// leaves either the old file or the new one, never half of either.
+	// Replace only after the temporary file has been written completely.
+	// On Windows use replacement rename, without deleting the previous save first.
 	bool WriteAtomic(const FString& Path, const FString& Text)
 	{
 		const FString Temp = Path + TEXT(".tmp");
@@ -1730,9 +1738,13 @@ namespace
 		{
 			return false;
 		}
-		IFileManager& FM = IFileManager::Get();
-		if (FM.FileExists(*Path)) FM.Delete(*Path, false, true, true);
-		return FM.Move(*Path, *Temp, true, true);
+#if PLATFORM_WINDOWS
+		FString From = FPaths::ConvertRelativePathToFull(Temp), To = FPaths::ConvertRelativePathToFull(Path);
+		FPaths::MakePlatformFilename(From); FPaths::MakePlatformFilename(To);
+		return !!::MoveFileExW(*From, *To, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+		return IFileManager::Get().Move(*Path, *Temp, true, false);
+#endif
 	}
 
 	// Ten timestamped copies, oldest first out.
@@ -1766,6 +1778,29 @@ namespace
 		// One timestamped copy every tenth save keeps a history without turning
 		// a busy hour into a thousand files.
 		if (GAutosaves == 1 || (GAutosaves % 10) == 0) RotateAutosaves(Dir, Raw);
+	}
+
+	bool WriteProjectRecovery(const TSharedPtr<FJsonObject>& M, bool bCheckpoint)
+	{
+		const TSharedPtr<FJsonObject>* Json = nullptr;
+		if (!M->TryGetObjectField(TEXT("json"), Json) || !Json || !Json->IsValid()) return false;
+		FString Project; M->TryGetStringField(TEXT("project"), Project);
+		const FString* Dir = GProjectRecoveryDirs.Find(Project);
+		const FString Text = Write(M.ToSharedRef());
+		// A unique update copy is retained even for a workspace imported before
+		// a map was chosen. Never overwrite the imported workspace on this path.
+		if (bCheckpoint)
+		{
+			const FString Checkpoints = BF6Ext::ToolSavedDir() / TEXT("blocks/update-backups");
+			IFileManager::Get().MakeDirectory(*Checkpoints, true);
+			const FString Checkpoint = Checkpoints / (FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT(".json"));
+			if (!WriteAtomic(Checkpoint, Text)) return false;
+			FString Verified;
+			if (!FFileHelper::LoadFileToString(Verified, *Checkpoint) || Verified != Text) return false;
+		}
+		if (!Dir) return bCheckpoint;
+		IFileManager::Get().MakeDirectory(**Dir, true);
+		return WriteAtomic(*Dir / TEXT("recovery.json"), Text);
 	}
 
 	// The autosave, if it is ahead of what the site just handed back. Ahead
@@ -2063,24 +2098,44 @@ namespace
 	void SendProjectWorkspace()
 	{
 		const FString Save = BF6Api::CurrentSave();
-		if (Save.IsEmpty()) return;
-		const FString Dir = BF6Project::DirFor(Save);
-		if (Dir.IsEmpty()) return;
+		const FString Dir = Save.IsEmpty() ? FString() : BF6Project::DirFor(Save);
 
 		const FString Path = FPaths::Combine(Dir, TEXT("unreal"), TEXT("blockly"), TEXT("workspace.json"));
 		FString Text;
-		if (!FFileHelper::LoadFileToString(Text, *Path) || Text.IsEmpty()) return;
+		const bool bHasWorkspace = !Dir.IsEmpty() && FPaths::FileExists(Path);
+		if (bHasWorkspace && !FFileHelper::LoadFileToString(Text, *Path))
+		{
+			ToolNote(TEXT("status"), TEXT("text"), TEXT("Could not read this experience's block workspace."));
+			return;
+		}
+		if (!bHasWorkspace) Text = TEXT("{\"blocks\":{\"languageVersion\":0,\"blocks\":[]},\"variables\":[]}");
 
 		TSharedPtr<FJsonObject> Ws;
 		TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(Text);
 		if (!FJsonSerializer::Deserialize(R, Ws) || !Ws.IsValid())
 		{
 			UE_LOG(LogBF6Blocks, Warning, TEXT("%s is not readable as JSON, so it was not opened"), *Path);
+			ToolNote(TEXT("status"), TEXT("text"), TEXT("This experience's block workspace is invalid JSON. Its original file has been kept."));
 			return;
 		}
 
 		TSharedRef<FJsonObject> M = MakeShared<FJsonObject>();
-		M->SetStringField(TEXT("op"), TEXT("workspace"));
+		M->SetStringField(TEXT("op"), TEXT("projectWorkspace"));
+		M->SetStringField(TEXT("project"), Dir.IsEmpty()
+			? TEXT("unnamed:") + BF6Api::CurrentLevel()
+			: FPaths::ConvertRelativePathToFull(Dir).ToLower());
+		M->SetStringField(TEXT("revision"), FMD5::HashAnsiString(*Text));
+		M->SetStringField(TEXT("name"), Save);
+		const FString Project = M->GetStringField(TEXT("project"));
+		const FString RecoveryDir = Dir.IsEmpty()
+			? BF6Ext::ToolSavedDir() / TEXT("blocks/local") / FMD5::HashAnsiString(*Project)
+			: Dir / TEXT("unreal/blockly");
+		GProjectRecoveryDirs.Add(Project, RecoveryDir);
+		FString RecoveryText;
+		if (FFileHelper::LoadFileToString(RecoveryText, *(RecoveryDir / TEXT("recovery.json"))))
+		{
+			if (TSharedPtr<FJsonObject> Recovery = Parse(RecoveryText)) M->SetObjectField(TEXT("recovery"), Recovery);
+		}
 		M->SetObjectField(TEXT("json"), Ws);
 		ToTool(M);
 		UE_LOG(LogBF6Blocks, Display,
@@ -2422,7 +2477,24 @@ namespace
 
 		if (Op == TEXT("autosave"))
 		{
+			FString Project; M->TryGetStringField(TEXT("project"), Project);
+			if (GProjectRecoveryDirs.Contains(Project) && !WriteProjectRecovery(M, false))
+				ToolNote(TEXT("status"), TEXT("text"), TEXT("Could not save block recovery data. Export the workspace before closing."));
 			WriteAutosave(Raw);
+			return;
+		}
+		if (Op == TEXT("projectRecovery"))
+		{
+			if (!WriteProjectRecovery(M, false)) ToolNote(TEXT("status"), TEXT("text"), TEXT("Could not save block recovery data. Export the workspace before closing."));
+			return;
+		}
+		if (Op == TEXT("updateWorkspace"))
+		{
+			FString Token; M->TryGetStringField(TEXT("token"), Token);
+			if (!GUpdateSaved || Token != GUpdateSaveToken) return;
+			const bool bSaved = WriteProjectRecovery(M, true);
+			FTSTicker::GetCoreTicker().RemoveTicker(GUpdateSaveTimeout); GUpdateSaveTimeout.Reset();
+			auto Done = MoveTemp(GUpdateSaved); GUpdateSaveToken.Reset(); Done(bSaved);
 			return;
 		}
 		if (Op == TEXT("pref"))
@@ -3885,6 +3957,24 @@ FString BF6Blocks::Status()
 		GLastError.IsEmpty() ? TEXT("none") : *GLastError);
 }
 
+void BF6Blocks::PrepareForUpdate(TFunction<void(bool)> Done)
+{
+	if (!GBrowser.IsValid()) { Done(true); return; }
+	if (!GToolReady || GUpdateSaved) { Done(false); return; }
+	GUpdateSaved = MoveTemp(Done);
+	GUpdateSaveToken = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	GUpdateSaveTimeout = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float)
+	{
+		GUpdateSaveTimeout.Reset(); GUpdateSaveToken.Reset();
+		if (GUpdateSaved) { auto Callback = MoveTemp(GUpdateSaved); Callback(false); }
+		return false;
+	}), 30.f);
+	TSharedRef<FJsonObject> M = MakeShared<FJsonObject>();
+	M->SetStringField(TEXT("op"), TEXT("prepareUpdate"));
+	M->SetStringField(TEXT("token"), GUpdateSaveToken);
+	ToTool(M);
+}
+
 void BF6Blocks::ApplyLootBinding(const FString& Json)
 {
 	TSharedPtr<FJsonObject> Binding;
@@ -4187,6 +4277,15 @@ void BF6Blocks::Register()
 				TEXT("Block editor page reloading from %s"), *EditorPageUrl());
 		})));
 
+	GCmds.Add(CM.RegisterConsoleCommand(TEXT("BF6.Blocks.Checkpoint"),
+		TEXT("Back up the complete block project using the update save barrier, without installing an update."),
+		FConsoleCommandDelegate::CreateLambda([]
+		{
+			BF6Blocks::PrepareForUpdate([](bool bOk)
+			{
+				UE_LOG(LogBF6Blocks, Display, TEXT("Block update checkpoint: %s"), bOk ? TEXT("ready") : TEXT("failed; restart blocked"));
+			});
+		})));
 	GCmds.Add(CM.RegisterConsoleCommand(TEXT("BF6.Blocks.Status"),
 		TEXT("What the block editor is connected to and what it has cached."),
 		FConsoleCommandDelegate::CreateLambda([]
@@ -4291,22 +4390,12 @@ void BF6Blocks::Register()
 			BF6Blocks::SaveFile(A.Num() ? FString::Join(A, TEXT(" ")).TrimQuotes() : FString(), Format);
 		})));
 
-	// A NEW MAP IS A NEW PROJECT, AND THE CANVAS BELONGED TO THE OLD ONE.
-	//
-	// The blocks live in the page, and nothing told the page when the editor
-	// opened a different map. So starting a new project left the previous
-	// project's rules sitting on the canvas, looking like they belonged to the
-	// map now open. BF6PortalWeb already listens to this delegate to drop its
-	// caches; the blocks panel simply never did.
+	// An experience owns its blocks across its entire map rotation. Send that
+	// workspace when an already-open page changes projects, as well as on ready.
+	// Never clear first: clearing raised deletion events and never loaded the save.
 	GMapOpenedHandle = BF6Ext::OnMapOpened().AddLambda([](const FString& MapName, const FString&)
 	{
-		TSharedRef<FJsonObject> R = MakeShared<FJsonObject>();
-		R->SetStringField(TEXT("op"), TEXT("mapChanged"));
-		R->SetStringField(TEXT("map"), MapName);
-		ToTool(R);
-		UE_LOG(LogBF6Blocks, Display,
-			TEXT("Map opened (%s): the block canvas was cleared for the new project."),
-			*MapName);
+		if (GToolReady) { SendProjectWorkspace(); SendObjIds(); }
 	});
 
 	// A navigation away from the blocks page drops the connection until
@@ -4343,6 +4432,8 @@ void BF6Blocks::Register()
 
 void BF6Blocks::Unregister()
 {
+	if (GUpdateSaveTimeout.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(GUpdateSaveTimeout); GUpdateSaveTimeout.Reset(); }
+	GUpdateSaved = nullptr; GUpdateSaveToken.Reset(); GProjectRecoveryDirs.Reset();
 	BF6BlocksExport::Stop();
 	if (GTicker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(GTicker); GTicker.Reset(); }
 	if (GPageLoadedHandle.IsValid()) { BF6PortalWeb::OnPageLoaded().Remove(GPageLoadedHandle); GPageLoadedHandle.Reset(); }

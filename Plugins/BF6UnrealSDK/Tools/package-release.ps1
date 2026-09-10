@@ -1,5 +1,5 @@
 <#
-    Assemble the 0.8.1 release pair.
+    Assemble the 0.8.2 release pair.
 
     WHY THIS EXISTS RATHER THAN RunUAT BuildPlugin
     ----------------------------------------------
@@ -23,11 +23,11 @@
     - Anything derived from the game install. Website data may ship; game assets
       may not.
 
-    Usage:  ./package-release.ps1 [-OutDir <path>] [-Version 0.8.1]
+    Usage:  ./package-release.ps1 [-OutDir <path>] [-Version 0.8.2]
 #>
 param(
-    [string] $OutDir  = "$env:USERPROFILE\Documents\BF6-Release-0.8.1",
-    [string] $Version = "0.8.1"
+    [string] $OutDir  = "$env:USERPROFILE\Documents\BF6-Release-0.8.2",
+    [string] $Version = "0.8.2"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -177,7 +177,7 @@ Copy-Tree (Join-Path $sdkSrc 'Tools\context') (Join-Path $sdkOut 'Tools\context'
 Copy-Tree (Join-Path $sdkSrc 'Tools\stability') (Join-Path $sdkOut 'Tools\stability') 'local stability tests'
 Copy-Item -LiteralPath (Join-Path $sdkSrc 'Tools\Test-LowSpec.ps1') -Destination (Join-Path $sdkOut 'Tools')
 New-Item -ItemType Directory -Force -Path (Join-Path $sdkOut 'docs') | Out-Null
-foreach ($doc in 'LOADOUTS.md','PROJECT-CONTRACT.md','PORTAL-EXPORT.md','LOW-SPEC-TESTING.md','ATTACHING-AN-AI.md') {
+foreach ($doc in 'LOADOUTS.md','PROJECT-CONTRACT.md','PORTAL-EXPORT.md','LOW-SPEC-TESTING.md','BLOCK-RECOVERY.md','ATTACHING-AN-AI.md') {
     Copy-Item -LiteralPath (Join-Path $sdkSrc "docs\$doc") -Destination (Join-Path $sdkOut 'docs')
 }
 Copy-Binaries (Join-Path $sdkSrc 'Binaries\Win64') (Join-Path $sdkOut 'Binaries\Win64')

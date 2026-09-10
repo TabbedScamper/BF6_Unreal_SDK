@@ -2680,7 +2680,7 @@
 
   // ---- change plumbing ----------------------------------------------------
   function onChange(e) {
-    if (UI.applying > 0 || BF6.state.loading > 0) return;
+    if (UI.pendingProject || UI.applying > 0 || BF6.state.loading > 0) return;
     if (!e || e.isUiEvent) return;
     if (UI.debounce) clearTimeout(UI.debounce);
     UI.debounce = setTimeout(flush, 150);
@@ -2722,7 +2722,7 @@
 
   function flush() {
     UI.debounce = null;
-    if (!UI.ws) return;
+    if (!UI.ws || UI.pendingProject) return;
     /* A LOAD IS NOT A SET OF EDITS TO PUBLISH.
      *
      * Clearing the journal after a load was not enough: flush had already SENT
@@ -2796,7 +2796,7 @@
       var json = projectDocument();
       var counts = BF6.countWorkspace(json);
       send({
-        op: 'autosave', json: json,
+        op: 'autosave', json: json, project: UI.hostProject || '', revision: UI.hostRevision || '',
         meta: {
           savedAt: new Date().toISOString(),
           blocks: counts.blocks, rules: counts.rules,
@@ -3033,6 +3033,7 @@
       }
       case 'defs': applyCapture(msg); break;
       case 'style': applyStyle(msg); break;
+      case 'projectWorkspace': queueProjectWorkspace(msg); break;
       case 'workspace': {
         if (UI.loadingDoc || UI.applying || BF6.state.loading) {
           status('Wait for the current workspace to finish opening.', true); break;
@@ -3107,6 +3108,13 @@
    * become asynchronous without reindenting the whole switch. */
   function handleRest(msg) {
     switch (msg.op) {
+      case 'prepareUpdate':
+        try {
+          if (UI.pendingProject) throw Error('An experience is still opening.');
+          send({op:'updateWorkspace', token:msg.token, json:projectDocument(),
+            project:UI.hostProject || '', revision:UI.hostRevision || ''});
+        } catch (e) { send({op:'updateWorkspace', token:msg.token, error:String(e.message || e)}); }
+        break;
       case 'session': setSession(msg.state, msg.text); break;
       case 'portalResult': showPortalResult(msg); break;
       case 'replaceTop': UI.applying++; try { BF6.applyReplace(UI.ws, msg); } finally { UI.applying--; } after(); break;
@@ -6993,6 +7001,47 @@
         status('cancelled, nothing was changed');
       }, 5000)
     };
+  }
+
+  // Host-driven opens must wait for an in-flight import, never drop the new
+  // workspace or clear the old one through user-edit events. Maps in the same
+  // experience share one identity and retain their current edits and viewport.
+  function queueProjectWorkspace(msg) {
+    UI.pendingProject = msg;
+    if (UI.projectOpenTimer) clearTimeout(UI.projectOpenTimer);
+    if (UI.debounce) { clearTimeout(UI.debounce); UI.debounce = null; }
+    function openWhenReady() {
+      UI.projectOpenTimer = null;
+      if (UI.loadingDoc || UI.applying || BF6.state.loading) {
+        UI.projectOpenTimer = setTimeout(openWhenReady, 50); return;
+      }
+      var next = UI.pendingProject;
+      if (!next) return;
+      if (UI.hostProject === next.project && UI.hostRevision === next.revision) {
+        UI.pendingProject = null; scheduleAutosave(); return;
+      }
+      UI.projectWorkspaces = UI.projectWorkspaces || new Map();
+      if (UI.hostProject && !UI.loadFailed) {
+        var previous = { revision: UI.hostRevision, json: projectDocument() };
+        UI.projectWorkspaces.set(UI.hostProject, previous);
+        send({op:'projectRecovery', project:UI.hostProject, revision:UI.hostRevision, json:previous.json});
+        // Recovery survives reloading this browser tab; failure to store never
+        // prevents the in-memory copy from keeping the creator's edits.
+        try { sessionStorage.setItem('bf6-project:' + UI.hostProject, JSON.stringify(previous)); } catch (e) {}
+      }
+      var cached = UI.projectWorkspaces.get(next.project);
+      if (!cached) {
+        try { cached = JSON.parse(sessionStorage.getItem('bf6-project:' + next.project) || 'null'); } catch (e) {}
+      }
+      UI.pendingProject = null;
+      UI.hostProject = next.project; UI.hostRevision = next.revision;
+      UI.journal = {};
+      if (UI.autosaveTimer) { clearTimeout(UI.autosaveTimer); UI.autosaveTimer = null; }
+      if ((!cached || cached.revision !== next.revision) && next.recovery) cached = next.recovery;
+      loadWorkspaceDoc(cached && cached.revision === next.revision ? cached.json : next.json,
+        'opened ' + (next.name || 'this project'));
+    }
+    openWhenReady();
   }
 
   // The editor opened a different map, so the rules on the canvas belong to

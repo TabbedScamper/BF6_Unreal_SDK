@@ -29,6 +29,8 @@ namespace BF6Blocks
 	// Show the editor tab (BF6.Blocks.Open). The dock tab is the second way in;
 	// the BLOCKS button on the build screen's toolbar row is the first.
 	void Open();
+	// Continue only after the page's complete workspace has reached disk.
+	void PrepareForUpdate(TFunction<void(bool)> Done);
 
 	// ---- BF6EditorOverlay ----
 	// THE editor page, made on the first ask and kept for the life of the
