@@ -3395,6 +3395,9 @@
     if (!cp || !captured) return 0;
     var n = 0;
     Object.keys(captured).forEach(function (k) {
+      // This is a derived theme cache, not renderer geometry. Copying the
+      // captured cache here undoes setTheme(), including personal colors.
+      if (k === 'blockStyles') return;
       var v = captured[k];
       if (isPlainScalar(v)) { cp[k] = v; n++; }
       else if (withObjects && v && typeof v === 'object') {

@@ -299,6 +299,7 @@
         // attribute that says so used to be dropped here, which is why both
         // categories opened empty.
         if (node.custom) o.custom = node.custom;
+        if (node.custom === 'CUSTOM_VARIABLE_FLYOUT') { o.categorystyle = 'bf6-variables-category'; delete o.colour; }
         if (String(node.hidden) === 'true') return null;   // the site's own hidden search bin
         if (String(node.expanded) === 'true') o.expanded = true;
         return o;
@@ -1431,24 +1432,22 @@
 
   // Defining a theme registers it under its name, and a second definition under
   // the same name is refused, so every apply gets a fresh name.
-  function themeFor() {
+  function baseThemeSpec() {
     var spec = BF6.themeSpec ? BF6.themeSpec() : null;
     if (!spec) {
       // Nothing captured this session: the older defs-borne theme, if any.
       var t = BF6.state.theme;
-      if (!t) return null;
+      if (!t) t = Blockly.Themes.Classic;
       spec = {
         blockStyles: t.blockStyles || {}, categoryStyles: t.categoryStyles || {},
         componentStyles: t.componentStyles || {}, fontStyle: t.fontStyle || {},
         startHats: !!t.startHats
       };
     }
-    if (UI.redVariables) {
-      spec.blockStyles = Object.assign({}, spec.blockStyles);
-      spec.blockStyles['variable-block-style'] = Object.assign({}, spec.blockStyles['variable-block-style'], {
-        colourPrimary: '#6e0000', colourSecondary: '#870000', colourTertiary: '#460000'
-      });
-    }
+    return spec;
+  }
+  function themeFor() {
+    var spec = window.BF6BlockColors.apply(baseThemeSpec());
     try {
       return Blockly.Theme.defineTheme('bf6portal_' + (++themeSeq), {
         base: Blockly.Themes.Classic,
@@ -2190,6 +2189,7 @@
 
   function rebuildWorkspace(preserve) {
     var wsJson = UI.ws && preserve !== false ? BF6.saveWorkspace(UI.ws) : null;
+    UI.helpBlock = null;
     if (UI.glyphTimer) clearInterval(UI.glyphTimer);
     if (UI.sideObserver) UI.sideObserver.disconnect();
     UI.staleById = {};
@@ -2408,12 +2408,21 @@
 
   // ---- the help panel -----------------------------------------------------
   function showHelp(block) {
+    UI.helpBlock = block;
     var box = $('help');
     if (!box) return;
     box.innerHTML = '';
     if (!block) { box.appendChild(el('div', 'dim', 'Select a block to see what it takes and what it gives back.')); return; }
     var type = block.type;
     box.appendChild(el('div', 'help-type', type));
+    var family = window.BF6BlockColors.family(block);
+    var colorRow = window.BF6BlockColors.rows(UI.ws.getTheme()).find(function (r) { return r.key === family; });
+    if (colorRow) {
+      var badge = el('div', 'bf6-help-family');
+      var swatch = el('span', 'bf6-family-swatch'); swatch.style.backgroundColor = colorRow.color;
+      badge.appendChild(swatch); badge.appendChild(document.createTextNode(colorRow.name + ': ' + colorRow.meaning));
+      box.appendChild(badge);
+    }
     var cat = BF6.categoryOf(type);
     if (cat) box.appendChild(el('div', 'help-cat', cat));
     var sig = (BF6.state.signatures || {})[type] || [];
@@ -5033,7 +5042,16 @@
 
     box.appendChild(el('div', 'lgHead', 'The kinds of block'));
     box.appendChild(el('div', 'lgWhat',
-      'Colour tells you what a block is for. These are real blocks, drawn the same way the canvas draws them.'));
+      'These examples follow your category colors. Names, shapes and socket symbols explain what blocks do even when categories share a color. Personal colors do not change how a mode runs or how Portal displays it.'));
+    window.BF6BlockColors.rows(UI.ws.getTheme()).forEach(function (r) {
+      var row = el('div', 'bf6-family-row'); row.dataset.colorFamily = r.key;
+      var swatch = el('span', 'bf6-family-swatch'); swatch.style.backgroundColor = r.color;
+      row.appendChild(swatch);
+      row.appendChild(el('span', '', r.name + (r.custom ? ' (custom)' : '')));
+      var edit = el('button', 'ghost', 'Change'); edit.setAttribute('aria-label', 'Change ' + r.name + ' color');
+      edit.onclick = function () { window.BF6BlockColors.open(r.key); }; row.appendChild(edit);
+      box.appendChild(row); box.appendChild(el('div', 'lgWhat', r.meaning));
+    });
     LEGEND_FAMILIES.forEach(function (f) {
       if (!Blockly.Blocks[f[0]]) return;
       var row = legendShow(f[0], f[1], null);
@@ -7725,19 +7743,17 @@
     updateTextFloor();
     if (UI.ws && UI.ws.bf6Viewport) UI.ws.bf6Viewport.update();
   }
-  function applyVariableColor(on) {
-    UI.redVariables = !!on;
-    var button = $('btn-redvars');
-    if (button) {
-      button.textContent = 'Variable color: ' + (on ? 'Dark red' : 'Portal');
-      button.setAttribute('aria-pressed', String(!!on));
-    }
+  function refreshCategoryColors() {
     if (UI.ws) { var theme = themeFor(); if (theme) UI.ws.setTheme(theme); }
+    if ($('pane-legend') && $('pane-legend').classList.contains('on')) buildLegend();
+    if (UI.helpBlock && UI.helpBlock.workspace) showHelp(UI.helpBlock);
   }
   function applyPrefs(p) {
     if (p && p.compactFields !== undefined) applyFieldSpacing(String(p.compactFields) === 'true');
     applyReadability(p);
-    if (p && p.redVariables !== undefined) applyVariableColor(String(p.redVariables) === 'true');
+    if (p && (p.categoryColors !== undefined || p.redVariables !== undefined)) {
+      window.BF6BlockColors.load(p); refreshCategoryColors();
+    }
     if (prefsApplied) return;
     prefsApplied = true;
     var v = p || {};
@@ -7957,10 +7973,9 @@
       status('asking the site for its renderer, constants, theme and stylesheet');
       send({ op: 'captureStyle' });
     };
-    $('btn-redvars').onclick = function () {
-      applyVariableColor(!UI.redVariables);
-      setPref('redVariables', UI.redVariables);
-    };
+    window.BF6BlockColors.install({ base: baseThemeSpec,
+      save: function (value) { setPref('categoryColors', value); }, refresh: refreshCategoryColors }, Blockly);
+    $('btn-block-colors').onclick = function () { window.BF6BlockColors.open('variable-block-style'); };
     $('text-distance').oninput = function () {
       applyReadability({ textFloor: (.5 - Number(this.value) / 100).toFixed(2) });
     };

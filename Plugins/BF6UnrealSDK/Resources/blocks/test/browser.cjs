@@ -143,10 +143,12 @@ function duplicate(doc) {
         text.setFieldValue(old, 'TEXT'); await Blockly.renderManagement.finishQueuedRenders();
         // Appearance changes must leave the serialized program exactly intact.
         const before = JSON.stringify(BF6Blocks.saveWorkspace(ws));
-        document.getElementById('btn-redvars').click(); await Blockly.renderManagement.finishQueuedRenders();
-        assert(ws.getTheme().blockStyles['variable-block-style'].colourPrimary === '#6e0000', 'Red variables did not apply');
+        BF6Blocks.recv({ op: 'prefs', values: { categoryColors: '{"variable-block-style":0}' } });
+        await Blockly.renderManagement.finishQueuedRenders();
+        const variableBlock = ws.getAllBlocks(false).find(b => b.type === 'variableReferenceBlock');
+        assert(variableBlock.getColour() === '#601111', 'Category color did not reach actual blocks');
         assert(JSON.stringify(BF6Blocks.saveWorkspace(ws)) === before, 'Theme changed the program');
-        document.getElementById('btn-redvars').click(); await Blockly.renderManagement.finishQueuedRenders();
+        BF6Blocks.recv({ op: 'prefs', values: { categoryColors: '{}' } }); await Blockly.renderManagement.finishQueuedRenders();
         // Exercise undo/redo after culling, using actual Blockly move events.
         const spacing = document.getElementById('field-spacing');
         const originalHeight = text.getField('TEXT').getSize().height, originalFont = getComputedStyle(label).font;

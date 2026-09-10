@@ -534,7 +534,7 @@
   <input id="text-distance" type="range" min="0" max="50" step="1" value="35" style="width:calc(100% - 24px);margin:8px 12px" aria-describedby="text-distance-value" title="Slide right to keep labels visible farther out. At the far right, labels always stay visible.">
   <output id="text-distance-value" for="text-distance" style="display:block;padding:0 12px 8px">Visible at 15% zoom and closer</output>
   <label style="display:block;padding:8px 12px"><input id="simplified-overview" type="checkbox"> Simplify distant blocks for faster panning</label>
-  <button id="btn-redvars" aria-pressed="false" title="Give variable references a dark red color so they stand out. Saved blocks and Portal exports keep their original meaning.">Variable color: Portal</button>
+  <button id="btn-block-colors" title="Choose category colors for blocks and their help examples.">Block colors...</button>
 </div>
 
 <div class="banner" id="banner"></div>
@@ -720,6 +720,7 @@
 <script>
   (function () {
     var v = Date.now();
+    document.write('<link rel="stylesheet" href="category-colors.css?v=' + v + '">');
     /* The extended language loads after Blockly and the native converter and
        before the UI, because the UI installs its definitions and guards. Its
        three modules define BF6Extended, BF6ExtendedBlocks and
@@ -727,7 +728,7 @@
        blocks in a toolbox: a project has to opt in. */
     var ours = ["../convert/convert.js","measure.js","editor.js",
                 "extended/compiler.js","extended/blocks.js","extended/integration.js",
-                "../loot/binding.js","project-state.js","overview.js","viewport.js","editor_ui.js"];
+                "../loot/binding.js","project-state.js","overview.js","viewport.js","category-colors.js","editor_ui.js"];
     for (var i = 0; i < ours.length; i++) {
       document.write('<script src="' + ours[i] + '?v=' + v + '">' + '<\/script>');
     }

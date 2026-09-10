@@ -1943,7 +1943,7 @@ namespace
 	bool IsKnownBlocksPref(const FString& Name)
 	{
 		return Name == TEXT("shelf") || Name == TEXT("shelfOpen") || Name == TEXT("shelfPinned") ||
-			Name == TEXT("textFloor") || Name == TEXT("simplifiedOverview") || Name == TEXT("redVariables") || Name == TEXT("compactFields");
+			Name == TEXT("textFloor") || Name == TEXT("simplifiedOverview") || Name == TEXT("redVariables") || Name == TEXT("compactFields") || Name == TEXT("categoryColors");
 	}
 
 	FString BlocksPrefIniKey(const FString& Name) { return TEXT("BlocksUi_") + Name; }
@@ -1957,6 +1957,17 @@ namespace
 			return;
 		}
 		if (!GConfig) return;
+		if (Name == TEXT("categoryColors"))
+		{
+			TSharedPtr<FJsonObject> Palette;
+			if (Value.Len() > 4096 || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Value), Palette) || !Palette.IsValid()) return;
+			for (const auto& Pair : Palette->Values)
+			{
+				double Hue = 0;
+				if (Pair.Key.Len() > 80 || !FString(*Pair.Key).EndsWith(TEXT("-block-style")) ||
+					!Pair.Value.IsValid() || !Pair.Value->TryGetNumber(Hue) || !FMath::IsFinite(Hue) || Hue < 0 || Hue >= 360) return;
+			}
+		}
 		GConfig->SetString(kPrefSection, *BlocksPrefIniKey(Name), *Value, GEditorPerProjectIni);
 		GConfig->Flush(false, GEditorPerProjectIni);
 	}
@@ -2147,7 +2158,7 @@ namespace
 	{
 		TSharedRef<FJsonObject> Values = MakeShared<FJsonObject>();
 		static const TCHAR* kKeys[] = { TEXT("shelf"), TEXT("shelfOpen"), TEXT("shelfPinned"),
-			TEXT("textFloor"), TEXT("simplifiedOverview"), TEXT("redVariables"), TEXT("compactFields") };
+			TEXT("textFloor"), TEXT("simplifiedOverview"), TEXT("redVariables"), TEXT("compactFields"), TEXT("categoryColors") };
 		int32 Found = 0;
 		for (const TCHAR* Key : kKeys)
 		{

@@ -1,5 +1,11 @@
 # BF6 Unreal SDK version history
 
+## Unreleased
+
+- Right-click a block to customize its category with a hue wheel. Also available under More > Block colors. Preview before applying, reset one category or the complete palette, and retain choices after reloading the editor.
+- Toolbox colors, selected-block explanations and What things mean follow the personal palette. Existing red-variable preferences migrate automatically. Workspace and Portal exports retain the same program.
+- Fixed captured renderer color caches overriding the active theme. Color selection previews without repeatedly repainting large workspaces; changes apply once when confirmed.
+
 ## 0.8.2 (2026-09-10)
 
 Hotfix for experience blocks disappearing from an already-open panel and for preserving block edits across updates. **Updating from 0.8.1 or earlier: save/export unsaved Blocks edits before accepting the update.** The automatic checkpoint described below becomes available after this version is installed. Existing saved experience files stay in place.

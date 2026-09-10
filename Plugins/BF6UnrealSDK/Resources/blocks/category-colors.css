@@ -1,0 +1,16 @@
+.bf6-colors-backdrop { position:fixed; inset:0; z-index:2000010; background:#0009; display:flex; align-items:center; justify-content:center; }
+.bf6-colors-panel { width:400px; max-width:calc(100vw - 40px); max-height:calc(100vh - 40px); overflow:auto; padding:22px; background:#172024; color:#eef4f4; border:1px solid #536467; border-radius:12px; box-shadow:0 12px 60px #000b; }
+.bf6-colors-panel h2 { font-size:19px; margin:0 0 18px; }
+.bf6-colors-panel p { font-size:13px; line-height:1.5; color:#c8d6d8; }
+.bf6-colors-panel label { display:flex; gap:12px; align-items:center; }
+.bf6-colors-panel select, .bf6-colors-panel input { flex:1; min-width:0; }
+.bf6-hue-wheel { position:relative; width:190px; height:190px; margin:18px auto; border-radius:50%; background:conic-gradient(from 90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00); touch-action:none; cursor:crosshair; }
+.bf6-hue-wheel::after { content:''; position:absolute; inset:25%; border-radius:50%; background:#172024; pointer-events:none; }
+.bf6-hue-marker { position:absolute; width:16px; height:16px; border:3px solid white; box-shadow:0 0 0 2px #000; border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; }
+.bf6-color-preview { margin:16px 0; border:3px solid; border-radius:18px; padding:12px; font-weight:bold; text-align:center; color:white; }
+.bf6-color-buttons { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.bf6-colors-panel :focus-visible { outline:2px solid #c5f8ff; outline-offset:4px; }
+.bf6-family-swatch { display:inline-block; width:24px; height:16px; border:1px solid #a2b8bb; border-radius:5px; flex-shrink:0; margin-right:8px; vertical-align:middle; }
+.bf6-family-row { display:flex; align-items:center; margin:10px 0; }
+.bf6-family-row button { margin-left:auto; }
+.bf6-help-family { margin:8px 0; }
