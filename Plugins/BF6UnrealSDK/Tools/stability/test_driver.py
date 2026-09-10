@@ -79,5 +79,19 @@ class Driver(unittest.TestCase):
                 frame[0] = 104
                 with patch.object(module['time'], 'perf_counter', return_value=4): w.tick(0)
                 self.assertEqual(opened, [True])
+                # Unreal chooses UTF-16 for exports containing creator names
+                # outside ASCII. Both export encodings must reach reopen checks.
+                w.config.update(save='Night Ops', mode='high')
+                w.levels = NS(load_map=lambda _: True)
+                w.edit_save_reopen = lambda: None
+                finishes = []
+                w.finish = lambda: finishes.append(True)
+                for encoding in ('utf-8-sig', 'utf-16', 'utf-16-be'):
+                    document = json.dumps({'mapRotation': ['MP_Isolated'], 'name': 'Créateur'}, ensure_ascii=False)
+                    raw = document.encode(encoding)
+                    if encoding == 'utf-16-be': raw = b'\xfe\xff' + raw
+                    w.command = lambda _, payload=raw: Path(directory, 'experience-export.json').write_bytes(payload)
+                    module['Workflow'].finish_scene(w)
+                self.assertEqual(finishes, [True, True, True])
 
 if __name__ == '__main__': unittest.main(verbosity=2)

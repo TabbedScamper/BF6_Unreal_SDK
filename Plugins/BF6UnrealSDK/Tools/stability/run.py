@@ -148,6 +148,9 @@ def parse_args():
     parser.add_argument("--game-lods", choices=(0, 1), type=int, default=0)
     parser.add_argument("--water-async", choices=(0, 1), type=int, default=1)
     parser.add_argument("--compact-vertices", choices=(0, 1), type=int, default=1)
+    parser.add_argument("--release-hidden-context", choices=(0, 1), type=int, default=1)
+    parser.add_argument("--context-recovery", action="store_true", help="Verify Low Poly restoration twice on the populated map")
+    parser.add_argument("--generated-texture-backing", choices=(0, 1), type=int, default=1)
     parser.add_argument("--engine-workers", choices=("profile", "host"), default="profile",
                         help="Profile sizes Unreal worker pools to the CPU limit; host retains oversubscription for stress comparisons")
     parser.add_argument("--memory-report", action="store_true")

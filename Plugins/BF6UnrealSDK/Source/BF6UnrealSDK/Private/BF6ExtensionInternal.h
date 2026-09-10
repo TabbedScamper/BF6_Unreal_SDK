@@ -30,4 +30,5 @@ namespace BF6ExtInternal
 
 	void BroadcastMapOpened(const FString& Level, const FString& Save);
 	void BroadcastMapClosing(const FString& Level);
+	bool IsMapClosing();
 }

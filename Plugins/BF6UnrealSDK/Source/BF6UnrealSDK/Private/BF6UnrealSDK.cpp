@@ -219,13 +219,18 @@ static FString BF6_DiscoverGameInstall(TArray<FString>* OutTried = nullptr)
 
 	// 2. What the High Poly add-on already found and remembered, so the two
 	//    halves of the tool never disagree about which install is open.
-	const FString AddOnRecord = FPaths::Combine(FPaths::ProjectSavedDir(),
-		TEXT("BF6HighPoly"), TEXT("install.txt"));
-	FString FromAddOn;
-	if (FFileHelper::LoadFileToString(FromAddOn, *AddOnRecord))
+	const FString AddOnRecords[] = {
+		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6UnrealSDK/HighPoly/install.txt")),
+		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("BF6HighPoly/install.txt"))
+	};
+	for (const FString& AddOnRecord : AddOnRecords)
 	{
-		FromAddOn.TrimStartAndEndInline();
-		if (Try(FromAddOn)) { return FromAddOn; }
+		FString FromAddOn;
+		if (FFileHelper::LoadFileToString(FromAddOn, *AddOnRecord))
+		{
+			FromAddOn.TrimStartAndEndInline();
+			if (Try(FromAddOn)) { return FromAddOn; }
+		}
 	}
 
 	// 3. The usual places. EA App first: it is the ordinary way to own the
@@ -242,6 +247,7 @@ static FString BF6_DiscoverGameInstall(TArray<FString>* OutTried = nullptr)
 
 	// 4. Every fixed drive, for a library on a disk we did not guess.
 	static const TCHAR* kSuffixes[] = {
+		TEXT("Battlefield 6"),
 		TEXT("SteamLibrary/steamapps/common/Battlefield 6"),
 		TEXT("Program Files/EA Games/Battlefield 6"),
 		TEXT("EA Games/Battlefield 6"),
@@ -995,6 +1001,72 @@ static AActor* BF6_EnsureStaticParent(UWorld* W)
 	return A;
 }
 
+struct FBF6ContextBuffers
+{
+	FString Path;
+	bool bReleased = false;
+	double RetryAfter = 0;
+};
+static TMap<TWeakObjectPtr<UProceduralMeshComponent>, FBF6ContextBuffers> GContextBuffers;
+static FTSTicker::FDelegateHandle GContextBufferTick;
+static TAutoConsoleVariable<int32> CVarReleaseHiddenContext(TEXT("BF6.Context.ReleaseHidden"), 1,
+	TEXT("Release hidden SDK map drawing buffers while retaining placement rays. 0 keeps them resident for comparison."));
+
+static int64 BF6_ContextBufferBytes(const UProceduralMeshComponent* Mesh)
+{
+	int64 Bytes = 0;
+	for (int32 S = 0; S < Mesh->GetNumSections(); ++S)
+		if (const FProcMeshSection* Section = const_cast<UProceduralMeshComponent*>(Mesh)->GetProcMeshSection(S))
+			Bytes += Section->ProcVertexBuffer.GetAllocatedSize() + Section->ProcIndexBuffer.GetAllocatedSize();
+	return Bytes;
+}
+
+static bool BF6_RestoreContextBuffers(UProceduralMeshComponent* Mesh, FBF6ContextBuffers& Record)
+{
+	if (!Record.bReleased) return true;
+	const double Start = FPlatformTime::Seconds();
+	if (!FillProcFromBf6Mesh(Mesh, Record.Path, false))
+	{
+		Record.RetryAfter = FPlatformTime::Seconds() + 10.0;
+		UE_LOG(LogBF6, Warning, TEXT("Could not restore SDK context from %s; the placement index is retained."), *Record.Path);
+		return false;
+	}
+	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Record.bReleased = false;
+	Record.RetryAfter = 0;
+	UE_LOG(LogBF6, Display, TEXT("SDK context restored: %s, %.1f MiB in %.3f s"),
+		*Mesh->GetOwner()->GetActorLabel(), BF6_ContextBufferBytes(Mesh) / 1048576.0, FPlatformTime::Seconds() - Start);
+	return true;
+}
+
+static void BF6_ReleaseContextBuffers(UProceduralMeshComponent* Mesh, FBF6ContextBuffers& Record)
+{
+	if (Record.bReleased) return;
+	const int64 Bytes = BF6_ContextBufferBytes(Mesh);
+	Mesh->ClearAllMeshSections(); Record.bReleased = true;
+	UE_LOG(LogBF6, Display, TEXT("SDK context released: %s, %.1f MiB; placement rays retained"),
+		*Mesh->GetOwner()->GetActorLabel(), Bytes / 1048576.0);
+}
+
+static bool BF6_TickContextBuffers(float)
+{
+	if (BF6ExtInternal::IsMapClosing()) return true;
+	for (auto It = GContextBuffers.CreateIterator(); It; ++It)
+	{
+		UProceduralMeshComponent* Mesh = It.Key().Get();
+		AActor* Actor = Mesh ? Mesh->GetOwner() : nullptr;
+		if (!IsValid(Actor) || Actor->IsActorBeingDestroyed()) { It.RemoveCurrent(); continue; }
+		// Also honor a manual unhide in the scene tree. Only the two registered
+		// context meshes are inspected, never every actor in the map.
+		if (It.Value().bReleased && FPlatformTime::Seconds() >= It.Value().RetryAfter &&
+			(!Actor->IsHiddenEd() || CVarReleaseHiddenContext.GetValueOnGameThread() == 0))
+		{
+			if (!BF6_RestoreContextBuffers(Mesh, It.Value())) Actor->SetIsTemporarilyHiddenInEditor(true);
+		}
+	}
+	return true;
+}
+
 static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 {
 	if (!GEditor) return nullptr;
@@ -1024,6 +1096,7 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	if (!FillProcFromBf6Mesh(Mesh, FilePath, false)) { World->EditorDestroyActor(Actor, false); return nullptr; }
 	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	BF6_BuildRayIndex(Actor, Mesh);
+	GContextBuffers.Add(Mesh, {FilePath, false});
 	const double CtxDecode = GMeshDecodeSec - CtxD0, CtxBuild = GMeshBuildSec - CtxB0;
 	// The map context is scenery: never selectable, never movable.
 	Mesh->bSelectable = false;
@@ -6564,6 +6637,51 @@ static void BF6_SetPivotKeepingChildren(AActor* Pivot, const FTransform& Xf)
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBF6ContextBuffersTest, "BF6.Editor.ContextBufferRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FBF6ContextBuffersTest::RunTest(const FString&)
+{
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!TestNotNull(TEXT("Editor world"), World)) return false;
+	TArray<uint8> Bytes;
+	auto Put = [&](auto Value) { Bytes.Append(reinterpret_cast<const uint8*>(&Value), sizeof(Value)); };
+	Put(uint32(0x42463653)); Put(uint32(1)); Put(uint32(1)); Put(uint32(3)); Put(uint32(3));
+	for (float V : {0.f,0.f,0.f, 1.f,0.f,0.f, 0.f,0.f,1.f}) Put(V);
+	Put(uint8(0)); Put(uint8(0)); Put(int32(0)); Put(int32(1)); Put(int32(2));
+	const FString Path = FPaths::CreateTempFilename(*FPaths::ProjectSavedDir(), TEXT("context-test-"), TEXT(".bf6mesh"));
+	if (!TestTrue(TEXT("Write independent SDK fixture"), FFileHelper::SaveArrayToFile(Bytes, *Path))) return false;
+	AActor* Actor = World->SpawnActor<AActor>();
+	if (!TestNotNull(TEXT("Test actor"), Actor)) { IFileManager::Get().Delete(*Path); return false; }
+	const int32 PreviousIndexes = GRayIndexes.Num();
+	const int64 PreviousCacheBytes = GMeshCacheBytes;
+	ON_SCOPE_EXIT {
+		GRayIndexes.SetNum(PreviousIndexes); GMeshCache.Remove(Path); GMeshCacheBytes = PreviousCacheBytes;
+		World->EditorDestroyActor(Actor, false); IFileManager::Get().Delete(*Path);
+	};
+	UProceduralMeshComponent* Mesh = MakeProcMesh(Actor, TEXT("ContextTest"));
+	Actor->SetActorLocation(FVector(1000, 2000, 3000));
+	if (!TestTrue(TEXT("Load drawing buffers"), FillProcFromBf6Mesh(Mesh, Path, false))) return false;
+	BF6_BuildRayIndex(Actor, Mesh);
+	if (!TestEqual(TEXT("One placement index built"), GRayIndexes.Num(), PreviousIndexes + 1)) return false;
+	FBF6ContextBuffers Record{Path, false};
+	const int64 OriginalBytes = BF6_ContextBufferBytes(Mesh);
+	FVector Before; double BeforeU = 0;
+	const FVector From(1025,2025,3100), To(1025,2025,2900);
+	TestTrue(TEXT("Original placement ray hits"), GRayIndexes.Last()->Trace(From, To, BeforeU, Before));
+	for (int32 Cycle = 0; Cycle < 3; ++Cycle)
+	{
+		BF6_ReleaseContextBuffers(Mesh, Record);
+		TestEqual(TEXT("Drawing buffers released"), BF6_ContextBufferBytes(Mesh), int64(0));
+		FVector HiddenHit; double HiddenU = 0;
+		TestTrue(TEXT("Hidden representation retains placement"), GRayIndexes.Last()->Trace(From, To, HiddenU, HiddenHit));
+		TestTrue(TEXT("Placement location unchanged"), HiddenHit.Equals(Before, .001));
+		TestTrue(TEXT("Restore drawing buffers"), BF6_RestoreContextBuffers(Mesh, Record));
+		TestEqual(TEXT("Complete original buffer size restored"), BF6_ContextBufferBytes(Mesh), OriginalBytes);
+		TestEqual(TEXT("Restoring does not duplicate ray geometry"), GRayIndexes.Num(), PreviousIndexes + 1);
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBF6SessionTransformTest, "BF6.Editor.SessionTransformRoundTrip",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FBF6SessionTransformTest::RunTest(const FString&)
@@ -9366,9 +9484,8 @@ namespace BF6Api
 	}
 
 	FString  GameInstallDir() { return g_gameDir; }
-	// The low-poly map, out of the way. Hidden rather than destroyed: it is the
-	// tool's own preview of where you are, and an add-on drawing the real thing
-	// over it should be able to hand it straight back.
+	// Keep context actors and their placement indexes across representation
+	// switches. Drawing buffers can be rebuilt from the unchanged SDK source.
 	static bool g_contextHidden = false;
 
 	int32 SetContextHidden(bool bHidden)
@@ -9380,6 +9497,16 @@ namespace BF6Api
 		for (TActorIterator<AActor> It(W); It; ++It)
 		{
 			if (!It->Tags.Contains(kContextTag)) continue;
+			if (UProceduralMeshComponent* Mesh = Cast<UProceduralMeshComponent>(It->GetRootComponent()))
+				if (FBF6ContextBuffers* Record = GContextBuffers.Find(Mesh))
+				{
+					if (bHidden && !Record->bReleased && CVarReleaseHiddenContext.GetValueOnGameThread() != 0)
+					{
+						BF6_ReleaseContextBuffers(Mesh, *Record);
+					}
+					else if (!bHidden && !BF6ExtInternal::IsMapClosing() && !BF6_RestoreContextBuffers(Mesh, *Record))
+						continue;
+				}
 			It->SetIsTemporarilyHiddenInEditor(bHidden);
 			n++;
 		}
@@ -18719,6 +18846,7 @@ void FBF6UnrealSDKModule::StartupModule()
 			UE_LOG(LogBF6, Display, TEXT("temp backups kept per level: %d"), BF6Api::GetAutosaveMax());
 		}));
 
+	GContextBufferTick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateStatic(&BF6_TickContextBuffers), 0.25f);
 	// The crash offer, once the editor has a main frame to put a dialog on.
 	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
 	{
@@ -18729,6 +18857,8 @@ void FBF6UnrealSDKModule::StartupModule()
 
 void FBF6UnrealSDKModule::ShutdownModule()
 {
+	if (GContextBufferTick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(GContextBufferTick); GContextBufferTick.Reset(); }
+	GContextBuffers.Reset();
 	// FLOATING WINDOWS FIRST. One of these holds an add-on's widgets, and it
 	// outlives the tab it came from - so it has to be closed before anything it
 	// is showing is torn down, not after.

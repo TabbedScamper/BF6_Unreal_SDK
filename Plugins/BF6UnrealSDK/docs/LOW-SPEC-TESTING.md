@@ -93,6 +93,21 @@ Keep reports from a repeatable fixture before and after fixes. Real RX 5600 XT, 
 
 ## Maintain the tests
 
+For memory comparisons, the Python runner accepts `--release-hidden-context 0`
+and `--generated-texture-backing 0` to disable the respective memory reductions.
+Both default to `1`. Apply these before opening the map, and keep all other
+settings and the saved fixture identical between runs. Compare process-tree
+private bytes during the same flight interval as well as peak job commit.
+
+Add `--context-recovery` to a High Poly run to switch the populated map to Low
+Poly and back twice after measurement. It checks that both SDK context meshes
+regain drawing sections at their original locations and release those sections
+again in High Poly. Restoration time is recorded in `events.jsonl`. Placement
+ray preservation is covered separately by the native automation test
+`BF6.Editor.ContextBufferRecovery`. `BF6.HighPoly.Streaming.GeneratedExactBacking`
+checks exact texture bytes, including GPU readback when run with a real RHI.
+Experience-export checks accept Unreal's UTF-8 and UTF-16 JSON output.
+
 Run `Tools/stability/test_stability.py` with Unreal's bundled Python. It verifies real descendant job membership, physical-core affinity, allocation failure under a commit ceiling, worker teardown, CPU quota installation, and strict report verdicts. Rebuild both plugins after changing their test-state console commands.
 
 Run folders include a `project/Plugins` junction to your installation. Remove that junction itself before recursively deleting the remaining disposable project. The harness deliberately performs no automatic recursive cleanup.

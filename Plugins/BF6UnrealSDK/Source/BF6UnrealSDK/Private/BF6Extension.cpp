@@ -830,5 +830,11 @@ namespace BF6ExtInternal
 	}
 
 	void BroadcastMapOpened(const FString& Level, const FString& Save) { GMapOpened.Broadcast(Level, Save); }
-	void BroadcastMapClosing(const FString& Level)                     { GMapClosing.Broadcast(Level); }
+	static bool bMapClosing = false;
+	bool IsMapClosing() { return bMapClosing; }
+	void BroadcastMapClosing(const FString& Level)
+	{
+		TGuardValue<bool> Closing(bMapClosing, true);
+		GMapClosing.Broadcast(Level);
+	}
 }

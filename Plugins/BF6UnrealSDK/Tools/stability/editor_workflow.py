@@ -170,16 +170,42 @@ class Workflow:
         self.check("saved probe survives reopen", len(matches) == 1 and (matches[0].get_actor_location() - before).length() < .01)
 
     def finish_scene(self):
+        if self.config.get("context_recovery") and self.config["mode"] == "high":
+            self.check_context_recovery()
         if self.config.get("save"):
             exported = self.out / "experience-export.json"
             self.command('BF6.Project.Export "' + str(exported) + '"')
             self.check("experience export exists", exported.is_file())
-            document = json.loads(exported.read_text(encoding="utf-8-sig"))
+            # Older Unreal exports choose UTF-16 when a creator uses non-ASCII names.
+            raw = exported.read_bytes()
+            document = json.loads(raw.decode("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"))
             self.check("experience export has maps", bool(document.get("mapRotation")))
         # Do not serialize thousands of transient game meshes as a smoke-test map.
         self.levels.load_map("/Engine/Maps/Entry")
         self.edit_save_reopen()
         self.finish()
+
+    def check_context_recovery(self):
+        """Exercise the actual detail control on the populated map before unloading."""
+        names = {self.config["level"] + suffix for suffix in ("_Terrain", "_Assets")}
+        # EditorActorSubsystem intentionally omits transient context actors.
+        world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+        contexts = [(a, a.get_component_by_class(unreal.ProceduralMeshComponent))
+                    for a in unreal.GameplayStatics.get_all_actors_of_class(world, unreal.Actor)
+                    if a.get_actor_label() in names]
+        self.check("both SDK context meshes exist", len(contexts) == 2 and all(m for _, m in contexts))
+        locations = [a.get_actor_location() for a, _ in contexts]
+        for cycle in range(2):
+            started = time.perf_counter()
+            self.command("BF6.HighPoly.Detail low")
+            self.check("low poly geometry restored", all(m.get_num_sections() > 0 for _, m in contexts))
+            self.check("context location preserved", all((a.get_actor_location() - p).length() < .01
+                       for (a, _), p in zip(contexts, locations)))
+            self.event("context_restored", restore_cycle=cycle + 1, seconds=time.perf_counter() - started,
+                       sections=[m.get_num_sections() for _, m in contexts])
+            self.command("BF6.HighPoly.Detail textured")
+            if self.config.get("release_hidden_context", 1):
+                self.check("high poly releases SDK drawing buffers", all(m.get_num_sections() == 0 for _, m in contexts))
 
     def tick(self, dt):
         # Slow-task dialogs can pump Slate recursively while a command is active.
@@ -198,6 +224,7 @@ class Workflow:
                 self.command("Slate.bAllowThrottling 0")
                 self.command("t.IdleWhenNotForeground 0")
                 self.command("r.TextureStreaming 1")
+                self.command("BF6.Context.ReleaseHidden " + str(self.config.get("release_hidden_context", 1)))
                 self.command("r.Streaming.PoolSize " + str(self.config["texture_pool_mb"]))
                 if self.config["has_highpoly"]:
                     self.command("BF6.HighPoly.TextureStreaming " + str(self.config.get("texture_streaming", 1)))
@@ -206,6 +233,7 @@ class Workflow:
                     self.command("BF6.HighPoly.GameLODs " + str(self.config.get("game_lods", 0)))
                     self.command("BF6.HighPoly.WaterAsync " + str(self.config.get("water_async", 1)))
                     self.command("BF6.HighPoly.CompactVertices " + str(self.config.get("compact_vertices", 1)))
+                    self.command("BF6.HighPoly.GeneratedTextureBacking " + str(self.config.get("generated_texture_backing", 1)))
                     profile = self.config.get("render_profile", "current")
                     if profile != "current":
                         self.command("BF6.HighPoly.Quality " + profile)
