@@ -34,6 +34,7 @@ namespace
 	// Sorted by Order at registration, so the ring never has to sort.
 	TArray<BF6Ext::FPieEntry> GEntries;
 	TMap<FName,TFunction<bool()>> GObjectEditors;
+	TMap<FName,BF6Ext::FEquipmentPreviewProvider> GEquipmentPreviewProviders;
 
 	BF6Ext::FBF6MapOpened  GMapOpened;
 	BF6Ext::FBF6MapClosing GMapClosing;
@@ -64,7 +65,20 @@ namespace
 
 namespace BF6Ext
 {
-	int32 ApiVersion() { return 10; }  // 10: selection editors and loadout bindings
+	int32 ApiVersion() { return 11; }  // 11: asynchronous equipment artwork
+	void RegisterEquipmentPreviewProvider(FName Id, FEquipmentPreviewProvider Provider)
+	{
+		check(IsInGameThread());
+		if (!Id.IsNone() && Provider) GEquipmentPreviewProviders.Add(Id, MoveTemp(Provider));
+	}
+	void UnregisterEquipmentPreviewProvider(FName Id) { check(IsInGameThread()); GEquipmentPreviewProviders.Remove(Id); }
+	void RequestEquipmentPreview(const FString& RequestJson, FEquipmentPreviewReply Reply)
+	{
+		check(IsInGameThread());
+		if (!Reply) return;
+		for (auto& Pair : GEquipmentPreviewProviders) { Pair.Value(RequestJson, MoveTemp(Reply)); return; }
+		Reply(TEXT("{\"error\":\"Install and enable the High Poly add-on to preview game equipment artwork.\"}"));
+	}
 	void RegisterObjectEditor(FName Id, TFunction<bool()> Open) { if(!Id.IsNone() && Open) GObjectEditors.Add(Id,MoveTemp(Open)); }
 	void UnregisterObjectEditor(FName Id) { GObjectEditors.Remove(Id); }
 	bool OpenSelectedObjectEditor()

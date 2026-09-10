@@ -5,8 +5,63 @@
 #include "HAL/IConsoleManager.h"
 #include "BF6SDKExtension.h"
 #include "GameFramework/Actor.h"
+#include "Editor.h"
+#include "EngineUtils.h"
+#include "AssetCompilingManager.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
+#include "Misc/FileHelper.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogBF6Tool, Log, All);
+
+// On-demand only. The test driver records its own monotonic open-to-ready
+// interval, including synchronous map loading and high-poly finalization.
+static FAutoConsoleCommand GBF6TestStateCmd(
+	TEXT("BF6.Test.State"), TEXT("<output.json>: write editor state for a local stability test."),
+	FConsoleCommandWithArgsDelegate::CreateStatic([](const TArray<FString>& Args)
+	{
+		if (Args.Num() != 1 || !GEditor) return;
+		const TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+		J->SetStringField(TEXT("level"), BF6Ext::CurrentLevel());
+		J->SetStringField(TEXT("save"), BF6Ext::CurrentSave());
+		J->SetBoolField(TEXT("editing"), BF6Ext::IsEditing());
+		J->SetNumberField(TEXT("compiling"), FAssetCompilingManager::Get().GetNumRemainingAssets());
+		int32 Actors = 0, Placed = 0;
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
+			for (TActorIterator<AActor> It(World); It; ++It)
+			{
+				++Actors;
+				if (It->ActorHasTag(TEXT("BF6Placed"))) ++Placed;
+			}
+		J->SetNumberField(TEXT("actors"), Actors);
+		J->SetNumberField(TEXT("placed"), Placed);
+		FVector Location; FRotator Rotation;
+		const bool HasCamera = BF6Ext::GetBuildViewportCamera(Location, Rotation);
+		J->SetBoolField(TEXT("hasCamera"), HasCamera);
+		if (HasCamera)
+		{
+			J->SetArrayField(TEXT("cameraLocation"), {MakeShared<FJsonValueNumber>(Location.X), MakeShared<FJsonValueNumber>(Location.Y), MakeShared<FJsonValueNumber>(Location.Z)});
+			J->SetArrayField(TEXT("cameraRotation"), {MakeShared<FJsonValueNumber>(Rotation.Pitch), MakeShared<FJsonValueNumber>(Rotation.Yaw), MakeShared<FJsonValueNumber>(Rotation.Roll)});
+		}
+		TArray<FVector> Visible;
+		BF6Ext::GetBuildViewportLocations(Visible);
+		J->SetNumberField(TEXT("visiblePerspectiveViewports"), Visible.Num());
+		FString Text;
+		FJsonSerializer::Serialize(J, TJsonWriterFactory<>::Create(&Text));
+		if (!FFileHelper::SaveStringToFile(Text, *Args[0]))
+			UE_LOG(LogBF6Tool, Error, TEXT("Cannot write test state: %s"), *Args[0]);
+	}));
+
+static FAutoConsoleCommand GBF6TestCameraCmd(
+	TEXT("BF6.Test.Camera"), TEXT("<x y z pitch yaw roll>: drive the tool's build viewport in a local test; centimetres/degrees."),
+	FConsoleCommandWithArgsDelegate::CreateStatic([](const TArray<FString>& Args)
+	{
+		if (Args.Num() != 6) return;
+		double V[6];
+		for (int32 I = 0; I < 6; ++I)
+			if (!LexTryParseString(V[I], *Args[I]) || !FMath::IsFinite(V[I])) return;
+		BF6Ext::SetBuildViewportCamera(FVector(V[0], V[1], V[2]), FRotator(V[3], V[4], V[5]));
+	}));
 
 static FAutoConsoleCommand GBF6CreateCustomCmd(
 	TEXT("BF6.CreateCustom"),
@@ -26,12 +81,12 @@ static FAutoConsoleCommand GBF6CreateCustomCmd(
 
 static FAutoConsoleCommand GBF6OpenSaveCmd(
 	TEXT("BF6.OpenSave"),
-	TEXT("<level> <save>: open a level on one of its saves through the tool's own route."),
+	TEXT("<level> [save]: open a saved level, or its read-only base when no save is given."),
 	FConsoleCommandWithArgsDelegate::CreateStatic([](const TArray<FString>& Args)
 	{
-		if (Args.Num() < 2)
+		if (Args.Num() < 1)
 		{
-			UE_LOG(LogBF6Tool, Display, TEXT("usage: BF6.OpenSave <level> <save>"));
+			UE_LOG(LogBF6Tool, Display, TEXT("usage: BF6.OpenSave <level> [save]"));
 			return;
 		}
 		// SAVE NAMES HAVE SPACES IN THEM. Almost every real one does - "UNDEAD

@@ -2597,6 +2597,51 @@ void bf6__aam_icon(bf6_ctx* c, const bf6::Ebx& e, const bf6::EbxValue& root,
 
 }  // namespace
 
+int bf6_weapon_card_receiver(bf6_ctx* c, const char* weapon, bf6_card_receiver* out)
+{
+    if (!c || !weapon || !*weapon || !out) return -1;
+    *out = bf6_card_receiver{};
+    out->index = -1;
+    std::string err;
+    if (!ensure_types(c, err)) return -1;
+    std::string bare = bf6__aam_stem(weapon);
+    for (char& ch : bare) if (ch >= 'A' && ch <= 'Z') ch += 32;
+    const int n = bf6_list_ebx(c, "uiweaponabilitymetadata", nullptr, 0);
+    if (n <= 0) return 0;
+    std::vector<bf6_asset> assets((size_t)n);
+    const int got = bf6_list_ebx(c, "uiweaponabilitymetadata", assets.data(), n);
+    // Native list/name buffers belong to the context; retain paths before reads.
+    std::vector<std::string> paths;
+    for (int i = 0; i < got && i < n; ++i) if (assets[i].name) paths.emplace_back(assets[i].name);
+    bool found = false;
+    for (const std::string& path : paths)
+    {
+        std::vector<uint8_t> raw = c->src.get_ebx(path + ".ebx", err);
+        if (raw.empty()) raw = c->src.get_ebx(path, err);
+        bf6::Ebx e(*c->types);
+        e.set_guid_index(&c->src.armory_partition_index());
+        if (raw.empty() || !e.parse(std::move(raw), err)) continue;
+        for (size_t i = 0; i < e.instance_count(); ++i)
+        {
+            const bf6::EbxValue row = e.read_instance(i);
+            const bf6::EbxValue* hiao = row.field(0x3d5fd277u);
+            if (!hiao || hiao->kind != bf6::EbxValue::Kind::ImportRef ||
+                bf6__aam_stem(hiao->import_path) != "hiao_" + bare) continue;
+            bf6_card_receiver hit{};
+            bf6__aam_icon(c, e, row, 0xf0aecf83u, hit.atlas, sizeof(hit.atlas), hit.index);
+            std::string layout = hiao->import_path;
+            if (layout.size() > 4 && layout.compare(layout.size()-4, 4, ".ebx") == 0) layout.resize(layout.size()-4);
+            put_str(hit.layout, sizeof(hit.layout), layout);
+            if (!hit.atlas[0] || hit.index < 0 || layout.size() >= sizeof(hit.layout)) continue;
+            if (found && (std::strcmp(out->atlas, hit.atlas) || std::strcmp(out->layout, hit.layout) || out->index != hit.index))
+            { *out = bf6_card_receiver{}; out->index = -1; return -1; }
+            *out = hit;
+            found = true;
+        }
+    }
+    return found ? 1 : 0;
+}
+
 int bf6_weapon_attachment_catalogue(bf6_ctx* c, const char* weapon,
                                     bf6_attachment_catalogue_row* out, int out_max)
 {

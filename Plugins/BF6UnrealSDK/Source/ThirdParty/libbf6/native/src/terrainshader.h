@@ -37,6 +37,10 @@ struct TerrainShaderBindingRecord {
     std::vector<TerrainShaderDecl> declarations;
 };
 
+// Common and variant binding schemas for one identified raster program.
+bool load_raster_bindings(Source& src, uint64_t permutation,
+    std::vector<TerrainShaderBindingRecord>& records, std::string& err);
+
 struct TerrainShaderProgram {
     uint64_t permutation_id = 0;
     uint64_t shared_data_id = 0;

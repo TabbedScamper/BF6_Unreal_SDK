@@ -6,6 +6,9 @@ public class BF6UnrealSDK : ModuleRules
 	public BF6UnrealSDK(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+		// Feature files intentionally own same-named private helpers. Combining
+		// their anonymous namespaces makes clean builds fail with redefinitions.
+		bUseUnity = false;
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{

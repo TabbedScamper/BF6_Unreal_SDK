@@ -75,6 +75,8 @@ public:
     // cost; the result is cached on this Source. First name wins, so the result
     // is stable across runs rather than dependent on iteration order.
     const std::map<std::string, std::string>& partition_index();
+    // Generation-scoped name/leaf aliases for repeated fixture traversals.
+    const std::unordered_map<std::string, std::string>& light_name_index();
 
     // The armory follows imports only into authored hardware, gameplay and UI
     // families.  Building this runtime index reads that bounded name space
@@ -183,6 +185,8 @@ private:
     std::map<std::string, std::string>        depot_by_bundle_; // bundle -> depot res
     std::map<std::string, std::string>        pidx_;      // partition guid -> name.ebx
     bool                                      pidx_built_ = false;
+    std::unordered_map<std::string, std::string> light_names_;
+    bool                                      light_names_built_ = false;
     std::map<std::string, std::string>        armory_pidx_;
     std::map<std::string, std::vector<std::string>> armory_pidx_candidates_;
     bool                                      armory_pidx_built_ = false;

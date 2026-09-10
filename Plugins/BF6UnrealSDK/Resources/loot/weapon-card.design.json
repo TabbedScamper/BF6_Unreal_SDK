@@ -8,17 +8,24 @@
   },
   "widgets": [{
     "type": "Container", "id": "$LOOT_KEY", "name": "$LOOT_KEY",
-    "anchor": "BottomRight", "size": [360, 144],
+    "anchor": "Center", "position": [0, 0], "size": [360, 280],
+    "bgFill": "Solid", "bgColor": [0.025, 0.04, 0.045], "bgAlpha": 0.95,
     "children": [{
       "type": "Text", "id": "$LOOT_KEY_title", "name": "$LOOT_KEY_title",
-      "anchor": "TopCenter", "size": [336, 64],
-      "textAnchor": "CenterLeft", "textSize": 24
+      "anchor": "TopCenter", "position": [0, 12], "size": [336, 48],
+      "textAnchor": "CenterLeft", "textSize": 24, "textBgBlur": true
+    }, {
+      "type": "WeaponImage", "id": "$LOOT_KEY_weapon", "name": "$LOOT_KEY_weapon",
+      "anchor": "Center", "position": [0, -4], "size": [336, 120],
+      "weapon": "Carbine_M4A1", "attachments": []
     }, {
       "type": "Button", "id": "$LOOT_KEY_action", "name": "$LOOT_KEY_action",
-      "anchor": "BottomCenter", "size": [336, 48],
+      "anchor": "BottomCenter", "position": [0, 12], "size": [336, 48],
+      "bgColor": [0.07, 0.22, 0.19], "buttonColorBase": [0.07, 0.22, 0.19],
+      "buttonColorHover": [0.1, 0.32, 0.27], "buttonColorFocused": [0.1, 0.32, 0.27],
       "children": [{
         "type": "Text", "id": "$LOOT_KEY_action_label", "name": "$LOOT_KEY_action_label",
-        "anchor": "Center", "size": [320, 40], "textSize": 20
+        "anchor": "Center", "size": [320, 40], "textSize": 20, "textBgBlur": true
       }]
     }]
   }]

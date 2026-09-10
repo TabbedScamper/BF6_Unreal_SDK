@@ -103,6 +103,15 @@ namespace BF6Ext
 		TFunction<const FSlateBrush*(const FString& /*Type*/)> Provider);
 	BF6UNREALSDK_API void UnregisterThumbnailProvider(FName Id);
 
+	// Equipment artwork for the UI designer. Both request and completion run on
+	// the game thread; providers queue archive/texture work off-thread. The reply
+	// is a JSON object with png (base64), detail and/or error, never scene objects.
+	using FEquipmentPreviewReply = TFunction<void(FString)>;
+	using FEquipmentPreviewProvider = TFunction<void(const FString&, FEquipmentPreviewReply)>;
+	BF6UNREALSDK_API void RegisterEquipmentPreviewProvider(FName Id, FEquipmentPreviewProvider Provider);
+	BF6UNREALSDK_API void UnregisterEquipmentPreviewProvider(FName Id);
+	BF6UNREALSDK_API void RequestEquipmentPreview(const FString& RequestJson, FEquipmentPreviewReply Reply);
+
 	// WHAT THAT PICTURE IS, in the add-on's own words: two or three lowercase
 	// words the library prints on the card ("high poly", "clay", "low poly").
 	// A picture that could be either detail level and says nothing about which

@@ -37,7 +37,7 @@
      * The surface
      * ==================================================================== */
 
-    var TYPES = ['Container', 'Text', 'Image', 'Button', 'WeaponImage'];
+    var TYPES = ['Container', 'Text', 'Image', 'Button', 'WeaponImage', 'GadgetImage'];
 
     // The nine anchors, in the order a 3x3 picker reads them.
     var ANCHORS = [
@@ -192,6 +192,7 @@
             children: []
         };
         if (type === 'WeaponImage') { d.weapon = 'Carbine_M4A1'; d.attachments = []; }
+        if (type === 'GadgetImage') { d.gadget = 'C4'; }
         if (type === 'Text') {
             d.textLabel = '';
             d.textArgs = [];
@@ -689,6 +690,10 @@
             // Their UIParams has no depth field at all, so a widget that has
             // to be under the game HUD loses that on the way out.
             if (depths[n.id] === 'BelowGameUI') dropped.push(n.name + '.depth');
+            if (n.type === 'WeaponImage' || n.type === 'GadgetImage') {
+                p.type = 'Container';
+                dropped.push(n.name + '.' + n.type + ' art (exported as an empty container)');
+            }
             if (n.type === 'Text') {
                 p.textLabel = d.strings[n.name] !== undefined ? d.strings[n.name] : (n.textLabel || '');
                 p.textColor = (n.textColor || [1, 1, 1]).slice();
@@ -873,6 +878,7 @@
             push('weapon', fmtEnum('Weapons', node.weapon));
             push('attachments', '[' + (node.attachments || []).map(function (a) { return fmtEnum('WeaponAttachments', a); }).join(', ') + ']');
         }
+        if (node.type === 'GadgetImage') push('gadget', fmtEnum('Gadgets', node.gadget));
         if (node.type === 'Text') {
             push('textLabel', textLabelExpr(node, strings));
             push('textColor', fmtArr(node.textColor));
@@ -924,7 +930,7 @@
             '',
             'type UiSpec = {',
             '    name: string;',
-            '    type: "Container" | "Text" | "Image" | "Button" | "WeaponImage";',
+            '    type: "Container" | "Text" | "Image" | "Button" | "WeaponImage" | "GadgetImage";',
             '    position: UiPoint;',
             '    size: UiPoint;',
             '    anchor: mod.UIAnchor;',
@@ -940,6 +946,7 @@
             '    textSize?: number;',
             '    textAnchor?: mod.UIAnchor;',
             '    weapon?: mod.Weapons;',
+            '    gadget?: mod.Gadgets;',
             '    attachments?: mod.WeaponAttachments[];',
             '    imageType?: mod.UIImageType;',
             '    imageColor?: UiColor;',
@@ -988,11 +995,20 @@
             'function uiAddChild(spec: UiSpec, parent: mod.UIWidget): void {',
             '    const position = uiPoint(spec.position);',
             '    const size = uiPoint(spec.size);',
-            '    if (spec.type === "WeaponImage") {',
-            '        const pkg = mod.CreateNewWeaponPackage();',
-            '        for (const attachment of spec.attachments ?? []) mod.AddAttachmentToWeaponPackage(attachment, pkg);',
-            '        mod.AddUIWeaponImage(spec.name, position, size, spec.anchor, spec.weapon ?? mod.Weapons.Carbine_M4A1, parent, pkg);',
+            '    if (spec.type === "WeaponImage" || spec.type === "GadgetImage") {',
+            '        if (spec.type === "WeaponImage") {',
+            '            const pkg = mod.CreateNewWeaponPackage();',
+            '            for (const attachment of spec.attachments ?? []) mod.AddAttachmentToWeaponPackage(attachment, pkg);',
+            '            mod.AddUIWeaponImage(spec.name, position, size, spec.anchor, spec.weapon ?? mod.Weapons.Carbine_M4A1, parent, pkg);',
+            '        } else {',
+            '            if (spec.gadget === undefined) throw new Error("Choose a gadget for " + spec.name);',
+            '            mod.AddUIGadgetImage(spec.name, position, size, spec.anchor, spec.gadget, parent);',
+            '        }',
             '        const image = mod.FindUIWidgetWithName(spec.name);',
+            '        mod.SetUIWidgetPadding(image, spec.padding);',
+            '        mod.SetUIWidgetBgColor(image, uiColor(spec.bgColor));',
+            '        mod.SetUIWidgetBgAlpha(image, spec.bgAlpha);',
+            '        mod.SetUIWidgetBgFill(image, spec.bgFill);',
             '        mod.SetUIWidgetDepth(image, spec.depth);',
             '        mod.SetUIWidgetVisible(image, spec.visible);',
             '    } else if (spec.type === "Text") {',
@@ -1020,7 +1036,7 @@
             '}',
             '',
             'function uiAddRoot(spec: UiSpec): mod.UIWidget {',
-            '    if (spec.type === "WeaponImage") {',
+            '    if (spec.type === "WeaponImage" || spec.type === "GadgetImage") {',
             '        uiAddChild(spec, mod.GetUIRoot());',
             '        return mod.FindUIWidgetWithName(spec.name);',
             '    }',
@@ -1346,7 +1362,7 @@
 
     function hasWeaponImage(d) {
         var found = false;
-        walk(d.widgets, function(n) { if (n.type === 'WeaponImage') found = true; });
+        walk(d.widgets, function(n) { if (n.type === 'WeaponImage' || n.type === 'GadgetImage') found = true; });
         return found;
     }
 
@@ -1524,8 +1540,9 @@
         put(3, bEnum('UIAnchor', node.anchor));
 
         var type = node.type;
-        if (type === 'WeaponImage') {
+        if (type === 'WeaponImage' || type === 'GadgetImage') {
             var packageName = 'weaponPackage_' + node.id;
+            if (type === 'WeaponImage') {
             stmts.push(bSetVar(packageName, {type:'CreateNewWeaponPackage'}));
             (node.attachments || []).forEach(function (a) {
                 stmts.push({type:'AddAttachmentToWeaponPackage', inputs:{
@@ -1535,6 +1552,15 @@
             put(5, parentName ? bFind(parentName) : {type:'GetUIRoot'});
             put(6, bGetVar(packageName));
             stmts.push({type:'AddUIWeaponImage', inputs:inputs});
+            } else {
+                put(4, bEnum('Gadgets', node.gadget));
+                put(5, parentName ? bFind(parentName) : {type:'GetUIRoot'});
+                stmts.push({type:'AddUIGadgetImage', inputs:inputs});
+            }
+            [['Padding', bNum(node.padding || 0)], ['BgColor', bVec(node.bgColor)],
+             ['BgAlpha', bNum(node.bgAlpha)], ['BgFill', bEnum('UIBgFill', node.bgFill)]].forEach(function (p) {
+                stmts.push({type:'SetUIWidget' + p[0], inputs:{'VALUE-0':{block:bFind(node.name)}, 'VALUE-1':{block:p[1]}}});
+            });
             stmts.push({type:'SetUIWidgetDepth', inputs:{'VALUE-0':{block:bFind(node.name)}, 'VALUE-1':{block:bEnum('UIDepth', depths[node.id] || 'AboveGameUI')}}});
             stmts.push({type:'SetUIWidgetVisible', inputs:{'VALUE-0':{block:bFind(node.name)}, 'VALUE-1':{block:bBool(node.visible !== false)}}});
             return stmts;

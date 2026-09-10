@@ -1,5 +1,61 @@
 # BF6 Unreal SDK version history
 
+## 0.8.1 (2026-09-10)
+
+0.8.1 focuses on building bigger modes with fewer interruptions: smoother block navigation, a checked single-script export for Portal, more useful weapon cards, and fixes for saves and editor stability. Update the optional High Poly add-on to the matching 0.8.1 release for the new artwork, rendering and performance features.
+
+**Large block projects and readable controls**
+
+- Large block workspaces now skip drawing off-screen block subtrees while retaining the complete editable program. Background navigation and warning updates do less repeated work, and the Unreal block browser now requests 60 frames per second.
+- Close-up zoom no longer repeatedly lays out the artwork of thousands of hidden blocks. Off-screen drawings are restored as they enter view or need editing; block coordinates, connections and native Portal styling are retained.
+- Added **More > Appearance > Text visibility distance**, including an always-visible setting. Labels remain visible to 15% zoom by default instead of 35%; hiding tiny text no longer removes block icons. Simplified distant overview is optional and respects the text setting.
+- Added **Compact spacing** for shorter text and variable fields without reducing the font size. Portal spacing remains available, and the selected spacing is remembered.
+- Restored bundled Portal icons and fonts on installations without a downloaded site mirror. The style pack no longer depends on font paths from the machine that packaged it.
+- Added an optional dark red variable theme. Changing appearance preserves variable identities and exported behavior.
+- Fixed stale or missing block text by keeping native text active, replacing workspaces without retaining previous blocks, and waiting for initialization to settle before enabling edits and Portal synchronization.
+- The experience map selector now opens a bounded, scrollable menu above the footer instead of expanding the MAPS and SCENE controls.
+- Added real-browser checks with 5,088 and 10,176 blocks, including text, icons, off-screen edits, undo/redo, panning, overview selection, import replacement, export preservation and workspace-load synchronization. Optional CPU throttling exercises slower-browser conditions.
+
+**Saving, stability and performance testing**
+
+- Fixed backup and named-save restoration losing group and combat-zone pivots. Saved hierarchy keys replace empty spawn tags, polygon coordinates are converted back to the restored actor's space, and restoring base parents preserves already-restored children. Base-object hierarchy edits now survive saving too.
+- The bundled game reader now preserves missing water extinction as unavailable, including raw-colour shader paths, so High Poly does not mistake missing optics for perfectly transparent water.
+- Extended performance tests with controlled rendering, streaming, Nanite, authored-LOD, ocean-worker and geometry comparisons, populated-scene memory reports, actual window measurements and optional local Unreal Insights traces.
+- Added a local stability test launcher with disposable projects, six-core and memory-pressure profiles, repeated map opening and camera movement, edit/undo/save/reopen checks, process-tree memory and GPU measurements, and separate load-time and responsiveness results. Tests retain their logs locally and do not upload reports.
+- Whole-map SDK context meshes no longer participate in undo serialization. This avoids copying reconstructible map geometry into large editor transactions.
+
+**One script to upload to Portal**
+
+- Blocks now offer **Export for Portal**, which checks the generated source and builds one `bundle.ts` plus its `bundle.strings.json`. The first export installs pinned build tools automatically when Node.js 24 or newer is available. Source-file export remains a separate advanced option.
+- Export preserves namespace imports, shared variables and module initialization order. The combined script is checked again, even when the bundler marks it `@ts-nocheck`. The Script editor also validates the final bundle before marking a build ready to send.
+- Shipped a minimal scripting starter with SDK 1.4.2 definitions, so creating a project no longer depends on finding a separate community template on the creator's machine. Template copy failures now identify incomplete projects.
+- File tabs and focused-rule editing now save and export the complete project. Added and deleted blocks, renamed variables, hidden files and following rules survive the snapshot. Switching views no longer treats hidden blocks as deleted edits to send to Portal.
+- Export and autosave wait for workspace loading to finish, and cannot publish a partially failed load. Opening a second workspace during loading is blocked to keep the two imports from mixing.
+- Native script imports stop when conversion would drop unsupported constructs or lose state across overlapping or recursive calls. The current workspace stays intact and the report directs the creator to keep that mode in TypeScript.
+- Corrected `WaitUntil` export to use a condition callback and a generated runtime helper. It no longer calls an unavailable `mod.WaitUntil`, and fractional timeouts do not round up to a full polling interval.
+- Script folder imports skip dependency declarations and build output, enforce bounded input sizes, and stop if a source file cannot be read. Source export now reports partial write failures.
+- Portal exports reject conflicting string keys, recover interrupted build-tool installations, and publish each completed build into its own folder. Failed builds do not replace earlier successful exports.
+
+**Weapon cards, gadgets and the UI designer**
+
+- Fixed loot-spawner card and binding writes reporting failure after successfully replacing a file. Opening a weapon card now brings its linked design into the UI editor.
+- Corrected attachment tag parsing so the selected attachments reach generated weapon cards and binding data.
+- New weapon cards start with a centred, readable layout, a weapon-image area and styled action button. Existing custom layouts remain intact when refreshing their weapon configuration.
+- The UI designer now requests weapon and gadget artwork from the installed game through the High Poly add-on. Weapon assemblies stay centered and fit inside their image area as attachments change.
+- Weapon images now export background and padding properties consistently to TypeScript and blocks. The UI designer can edit their item and attachment lists directly.
+- Added Portal gadget-image widgets and gadget cards generated from loot spawners. Existing card layout edits survive switching between weapon and gadget presets.
+- Weapon artwork uses authored receiver and attachment atlas references, layout offsets and barrel-to-muzzle anchors. Missing or conflicting artwork bindings report an error instead of substituting another part. Styling and framing have not yet been compared pixel-for-pixel with Portal.
+- Attachment choices in the UI designer are filtered against the installed weapon catalogue. Selecting another attachment in the same resolved slot replaces the previous choice. Combined attachment restrictions still require validation in Portal.
+- Artwork loads in the background, supports retry, and cannot overwrite a different weapon after a late response. Preview images remain local and are not embedded in exported modes.
+- Updated the native reader to retain per-vertex prop palette colours, use the same material scopes for variation detection and rendering, and compose equipped-part corrections with the weapon's authored bone pose.
+- Disabled unity compilation for the editor modules to prevent unrelated file-local helpers colliding during clean builds.
+
+**Installation and current limits**
+
+- The map selector's Install High Poly button and the shared Update button continue to install the matching optional add-on. Fixed NEW FEATURES omitting High Poly from its default view and tool-history tab; both now include the installed add-on's notes, with readable section headings.
+- Windows and Unreal Engine 5.8 are required. Portal TypeScript builds need Node.js 24 or newer; the pinned bundler and compiler are installed on first export.
+- Full-detail views with thousands of simultaneously visible blocks still have a rendering cost. No universal 60 FPS or ten-second cold-load guarantee is claimed. Native block imports deliberately reject TypeScript they cannot preserve, and card appearance and combined attachment restrictions still need broader checks against Portal.
+
 ## 0.8.0 (2026-09-09)
 
 0.8.0 brings mode creation into the map editor: build the scene, edit Portal blocks or TypeScript, design the HUD, configure the experience, and preview it with the matching High Poly add-on.

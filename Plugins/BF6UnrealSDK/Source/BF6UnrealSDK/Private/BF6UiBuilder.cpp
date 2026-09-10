@@ -54,6 +54,7 @@ namespace
 	TArray<IConsoleObject*> GCmds;
 
 	bool    GPageReady = false;
+	uint64  GPageGeneration = 0;
 	int32   GIn = 0;
 	int32   GOut = 0;
 	FString GLastError;
@@ -485,11 +486,22 @@ void BF6UiBuilder::HandleMessage(const FString& Json)
 
 	if (Op == TEXT("ready"))
 	{
+		++GPageGeneration;
 		GPageReady = true;
 		FString V;
 		M->TryGetStringField(TEXT("v"), V);
 		SendPalette();
 		SendPrefs();
+		{
+			TSharedRef<FJsonObject> Catalogue = MakeShared<FJsonObject>();
+			Catalogue->SetStringField(TEXT("op"), TEXT("equipmentCatalogue"));
+			TArray<TSharedPtr<FJsonValue>> Items, Attachments;
+			for (const FString& Item : BF6Ext::LootItems()) Items.Add(MakeShared<FJsonValueString>(Item));
+			for (const FString& Attachment : BF6Ext::WeaponAttachmentItems()) Attachments.Add(MakeShared<FJsonValueString>(Attachment));
+			Catalogue->SetArrayField(TEXT("items"), Items);
+			Catalogue->SetArrayField(TEXT("attachments"), Attachments);
+			ToPage(Catalogue);
+		}
 		if (!GPendingDesignMessage.IsEmpty()) { ToPageRaw(GPendingDesignMessage); GPendingDesignMessage.Reset(); }
 		UE_LOG(LogBF6UiBuilder, Display, TEXT("UI builder page ready (core %s)."), *V);
 
@@ -522,6 +534,24 @@ void BF6UiBuilder::HandleMessage(const FString& Json)
 
 	// One panel state, remembered. The key list is closed, so a page that sends
 	// something unexpected is ignored rather than given a new line in the ini.
+	if (Op == TEXT("equipmentPreview"))
+	{
+		FString RequestId;
+		if (!M->TryGetStringField(TEXT("requestId"), RequestId) || RequestId.Len() > 128) return;
+		const uint64 Generation = GPageGeneration;
+		const TWeakPtr<SWebBrowser> Browser = GBrowser;
+		BF6Ext::RequestEquipmentPreview(Json, [Generation, Browser, RequestId](FString Result)
+		{
+			check(IsInGameThread());
+			if (Generation != GPageGeneration || !Browser.IsValid() || Browser.Pin() != GBrowser) return;
+			TSharedPtr<FJsonObject> Reply = Parse(Result);
+			if (!Reply) { Reply = MakeShared<FJsonObject>(); Reply->SetStringField(TEXT("error"), TEXT("Equipment preview returned an invalid response.")); }
+			Reply->SetStringField(TEXT("op"), TEXT("equipmentPreview"));
+			Reply->SetStringField(TEXT("requestId"), RequestId);
+			ToPage(Reply.ToSharedRef());
+		});
+		return;
+	}
 	if (Op == TEXT("pref"))
 	{
 		FString Name, Value;

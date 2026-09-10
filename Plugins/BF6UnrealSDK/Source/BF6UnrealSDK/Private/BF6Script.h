@@ -85,6 +85,8 @@ namespace BF6Script
 	// not installed and [BF6UnrealSDK] ScriptTemplateDir names nothing. Call it
 	// on the game thread: it reads GConfig.
 	FString TemplateDir();
+	// Refresh discovery so installing Node while the editor is open needs no restart.
+	FString NodeExecutable();
 
 	// Copy the template into Dir and apply the non-interactive equivalent of
 	// its own scripts/init.js, exactly as NEW PROJECT does. This is the ONE

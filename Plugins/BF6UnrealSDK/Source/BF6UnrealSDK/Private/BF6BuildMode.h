@@ -759,6 +759,8 @@ namespace BF6Api
 	FString ToolHistoryText();             // the full changelog
 	FString SdkHistoryText();              // every SDK release, newest first
 	FString LatestToolNotes();             // just the newest version's section
+	FString HighPolyHistoryText();         // empty when the optional add-on is absent
+	FString LatestHighPolyNotes();
 	FString LatestSdkNotes();              // just the newest SDK change
 	bool    HistoryHasNews();              // the orange unlock dot
 	void    MarkHistorySeen();

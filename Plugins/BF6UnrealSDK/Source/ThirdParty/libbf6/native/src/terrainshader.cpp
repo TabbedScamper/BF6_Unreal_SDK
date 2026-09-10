@@ -81,6 +81,23 @@ bool bindings(Source& src, uint64_t id,
 
 } // namespace
 
+bool load_raster_bindings(Source& src, uint64_t permutation,
+    std::vector<TerrainShaderBindingRecord>& records, std::string& err)
+{
+    records.clear();
+    const auto pr = src.get_res("expressionshader/permutation" + std::to_string(permutation), err);
+    if (pr.size() != 68) { err = "raster permutation is absent or has no pixel stage"; return false; }
+    const auto shared = src.get_res("expressionshader/permutationshareddata/" +
+        std::to_string(rd<uint64_t>(pr, 0)), err);
+    if (shared.size() < 0x48) return false;
+    for (size_t at : {size_t(0x18), size_t(0x20)}) {
+        std::vector<TerrainShaderBindingRecord> batch;
+        if (!bindings(src, rd<uint64_t>(shared, at), batch, err)) return false;
+        records.insert(records.end(), batch.begin(), batch.end());
+    }
+    return true;
+}
+
 uint32_t TerrainShaderProgram::layer_row_stride() const
 {
     uint32_t best = 0;

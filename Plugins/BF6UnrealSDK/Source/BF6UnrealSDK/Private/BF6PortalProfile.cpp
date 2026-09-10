@@ -53,6 +53,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
@@ -3659,6 +3660,7 @@ public:
 
 private:
 	TSharedPtr<SBox> Host;
+	TSharedPtr<SComboButton> MapMenu;
 	uint32 Sig = 0;
 
 	void Rebuild()
@@ -3690,20 +3692,25 @@ private:
 			const FString Label = FString::Printf(TEXT("%d.  %s%s"), Idx + 1, *R.Map,
 				R.SaveName.IsEmpty() ? TEXT("   not imported yet") : (Idx == Here ? TEXT("   open") : TEXT("")));
 			Menu->AddSlot().AutoHeight().Padding(0, 0, 0, 2)
-			[ Btn(Label, [ExpId, Idx]{ BF6PortalProfile::SwitchToMap(ExpId, Idx); }) ];
+			[ Btn(Label, [this, ExpId, Idx]{ MapMenu->SetIsOpen(false); BF6PortalProfile::SwitchToMap(ExpId, Idx); }) ];
 		}
 		Menu->AddSlot().AutoHeight().Padding(0, 4, 0, 0)
-		[ Btn(TEXT("Add or reorder maps on site"), [Id]{ BF6PortalProfile::OpenOnSite(Id); },
+		[ Btn(TEXT("Add or reorder maps on site"), [this, Id]{ MapMenu->SetIsOpen(false); BF6PortalProfile::OpenOnSite(Id); },
 			TEXT("Opens the experience's map rotation on the Portal site in the tool's panel.")) ];
 
 		Host->SetContent(
-			SNew(SBorder).BorderImage(InkBrush()).Padding(FMargin(8, 5))
+			SAssignNew(MapMenu, SComboButton)
+			.MenuPlacement(MenuPlacement_AboveAnchor)
+			.ContentPadding(FMargin(8, 5))
+			.ButtonContent()
 			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight()
-				[ Line(FString::Printf(TEXT("MAP  %s  %d OF %d"),
-					Rot.IsValidIndex(Here) ? *Rot[Here].Map : *Level, Here + 1, Rot.Num()), 10, BF6Theme::Accent, true) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)[ Menu ]
+				Line(FString::Printf(TEXT("MAP  %s  %d OF %d"),
+					Rot.IsValidIndex(Here) ? *Rot[Here].Map : *Level, Here + 1, Rot.Num()), 10, BF6Theme::Accent, true)
+			]
+			.MenuContent()
+			[
+				SNew(SBox).WidthOverride(360).MaxDesiredHeight(400)
+				[ SNew(SScrollBox) + SScrollBox::Slot().Padding(6)[ Menu ] ]
 			]);
 	}
 };

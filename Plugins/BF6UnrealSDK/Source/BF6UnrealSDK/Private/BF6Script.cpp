@@ -472,6 +472,13 @@ static void FindNode()
 
 	TArray<FString> Tries;
 	if (!Configured.IsEmpty()) Tries.Add(Configured);
+	TArray<FString> PathDirs;
+	FPlatformMisc::GetEnvironmentVariable(TEXT("PATH")).ParseIntoArray(PathDirs,TEXT(";"),true);
+	for (FString PathDir : PathDirs)
+	{
+		PathDir.TrimStartAndEndInline(); PathDir.RemoveFromStart(TEXT("\"")); PathDir.RemoveFromEnd(TEXT("\""));
+		if (!PathDir.IsEmpty()) Tries.Add(FPaths::Combine(PathDir,TEXT("node.exe")));
+	}
 	Tries.Add(TEXT("C:/Program Files/nodejs/node.exe"));
 	Tries.Add(TEXT("C:/Program Files (x86)/nodejs/node.exe"));
 	const FString AppData = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
@@ -508,7 +515,7 @@ static void FindTemplate()
 
 	FString Configured;
 	GConfig->GetString(TEXT("BF6UnrealSDK"), TEXT("ScriptTemplateDir"), Configured, GEngineIni);
-	if (!Configured.IsEmpty() && FPaths::DirectoryExists(Configured))
+	if (!Configured.IsEmpty() && FPaths::FileExists(Configured/TEXT("package.json")))
 	{
 		GTemplateDir = Configured;
 		return;
@@ -542,6 +549,11 @@ static void FindTemplate()
 	}
 
 	GTemplateDir = Best;
+	if (GTemplateDir.IsEmpty())
+	{
+		const FString Shipped=ScriptRes()/TEXT("template");
+		if (FPaths::FileExists(Shipped/TEXT("package.json"))) GTemplateDir=Shipped;
+	}
 	if (GTemplateDir.IsEmpty())
 	{
 		UE_LOG(LogBF6Script, Warning,
@@ -941,7 +953,8 @@ static bool ApplyInit(const FString& Dir, const FString& ExperienceName,
 	const FString EnvExample = FPaths::Combine(Dir, TEXT(".env.example"));
 	if (!FPaths::FileExists(Env) && FPaths::FileExists(EnvExample))
 	{
-		FM.Copy(*Env, *EnvExample);
+		if (FM.Copy(*Env, *EnvExample) != COPY_OK)
+		{ OutWhy = TEXT("Could not create the project's .env file."); return false; }
 	}
 	// The mod id is not a secret and the deploy path is not ours, but writing
 	// it means a user who later runs npm run deploy from a terminal does not
@@ -953,14 +966,15 @@ static bool ApplyInit(const FString& Dir, const FString& ExperienceName,
 	const FString BoilerTs = FPaths::Combine(Dir, TEXT("src"), TEXT("boilerplate.ts"));
 	if (Boilerplate == TEXT("example"))
 	{
-		if (FPaths::FileExists(BoilerTs)) FM.Delete(*BoilerTs);
+		if (FPaths::FileExists(BoilerTs) && !FM.Delete(*BoilerTs))
+		{ OutWhy = TEXT("Could not remove the unused boilerplate.ts file."); return false; }
 	}
 	else
 	{
 		if (FPaths::FileExists(BoilerTs))
 		{
-			if (FPaths::FileExists(IndexTs)) FM.Delete(*IndexTs);
-			FM.Move(*IndexTs, *BoilerTs);
+			if (!FM.Move(*IndexTs, *BoilerTs, true))
+			{ OutWhy = TEXT("Could not initialize src/index.ts from boilerplate.ts."); return false; }
 		}
 	}
 
@@ -1026,6 +1040,7 @@ static bool CopyTemplate(const FString& Dest, FString& OutWhy)
 		const FString Dst = FPaths::Combine(Dest, Rel);
 		FM.MakeDirectory(*FPaths::GetPath(Dst), true);
 		if (FM.Copy(*Dst, *Src) == COPY_OK) ++Copied;
+		else { OutWhy = FString::Printf(TEXT("Could not copy template file %s. The project is incomplete; check folder access and available disk space."), *Rel); return false; }
 	}
 
 	if (Copied == 0)
@@ -1046,6 +1061,12 @@ FString BF6Script::TemplateDir()
 {
 	if (GTemplateDir.IsEmpty()) FindTemplate();
 	return GTemplateDir;
+}
+
+FString BF6Script::NodeExecutable()
+{
+	FindNode();
+	return GNodeExe;
 }
 
 bool BF6Script::ScaffoldProject(const FString& Dir, const FString& ExperienceName,
@@ -1838,7 +1859,10 @@ static bool StartCheckedBuild(int32 ReqId, FString& OutWhy)
 
 	// --pretty false keeps the terminal colour codes out of the log and the page.
 	const FString CheckArgs = FString::Printf(TEXT("\"%s\" --noEmit --pretty false -p \"%s\""), *Tsc, *TsConfig);
-	const FString BundleArgs = FString::Printf(TEXT("\"%s\" run build"), *GNpmCli);
+	const FString CheckedBuild = FPaths::ConvertRelativePathToFull(ScriptRes() / TEXT("checked-build.cjs"));
+	if (!FPaths::FileExists(CheckedBuild))
+	{ OutWhy = TEXT("The combined-script validator is missing. Reinstall the SDK update."); return false; }
+	const FString BundleArgs = FString::Printf(TEXT("\"%s\" \"%s\" \"%s\""), *CheckedBuild, *GProjectDir, *GNpmCli);
 	if (!StartRun(GNodeExe, CheckArgs, GProjectDir, TEXT("typecheck"), ReqId, OutWhy,
 		TEXT("build"), BundleArgs))
 	{

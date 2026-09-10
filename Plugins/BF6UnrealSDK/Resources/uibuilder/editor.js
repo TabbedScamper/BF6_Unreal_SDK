@@ -55,6 +55,59 @@ function say(text) { el.status.textContent = text; }
  * ===================================================================== */
 
 var bridge = (window.ue && window.ue.bf6uibuilder) ? window.ue.bf6uibuilder : null;
+var equipmentCatalogue = { items: [], attachments: [] };
+var equipmentArt = new Map();
+var equipmentRequests = new Map();
+var equipmentSequence = 0;
+var installedEquipmentChoices = new Map();
+function foldEquipment(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function correlateEquipmentChoices(rows) {
+    return equipmentCatalogue.attachments.map(function (value) {
+        var split = value.indexOf('_'), prefix = value.slice(0, split), name = foldEquipment(value.slice(split + 1));
+        var matches = rows.filter(function (r) { return r.prefix === prefix && foldEquipment(r.label) === name; });
+        return matches.length === 1 ? { value: value, slot: matches[0].slot, label: matches[0].label } : null;
+    }).filter(Boolean);
+}
+
+function equipmentSpec(node, r) {
+    var pad = Math.max(0, Number(node.padding) || 0);
+    var width = Math.max(1, r.width - pad * 2), height = Math.max(1, r.height - pad * 2);
+    var resolutionScale = Math.min(1, 1024 / width, 512 / height);
+    return { kind: node.type, item: node.type === 'WeaponImage' ? (node.weapon || 'Carbine_M4A1') : (node.gadget || 'C4'),
+        attachments: node.type === 'WeaponImage' ? (node.attachments || []).slice().sort() : [],
+        width: Math.max(1, Math.round(width * resolutionScale)),
+        height: Math.max(1, Math.round(height * resolutionScale)) };
+}
+function showEquipmentArt(holder, art) {
+    holder.replaceChildren();
+    if (art && art.png) {
+        var image = document.createElement('img');
+        image.src = 'data:image/png;base64,' + art.png;
+        image.style.cssText = 'width:100%;height:100%;object-fit:contain;pointer-events:none';
+        image.draggable = false;
+        holder.appendChild(image);
+        holder.title = art.detail || '';
+    } else {
+        holder.textContent = art && art.error ? art.error : 'Loading game artwork...';
+        holder.title = holder.textContent;
+    }
+}
+function requestEquipmentArt(node, r, holder) {
+    var spec = equipmentSpec(node, r), key = JSON.stringify(spec);
+    holder.dataset.equipmentKey = key;
+    var art = equipmentArt.get(key);
+    if (!art) {
+        art = bridge ? {} : { error: 'Open this design in Unreal with the High Poly add-on to preview equipment.' };
+        equipmentArt.set(key, art);
+        if (bridge) {
+            spec.op = 'equipmentPreview';
+            spec.requestId = 'equipment-' + (++equipmentSequence);
+            equipmentRequests.set(spec.requestId, key);
+            send(spec);
+        }
+    }
+    showEquipmentArt(holder, art);
+}
 
 function send(msg) {
     if (!bridge) { say('Not running inside the tool: ' + msg.op + ' has nowhere to go.'); return; }
@@ -91,6 +144,33 @@ window.BF6UiBuilder = {
             // How the creator left the window last time: which handle was open,
             // and whether they had pinned it.
             applyShelfPrefs(m.prefs || {});
+        } else if (m.op === 'equipmentCatalogue') {
+            equipmentCatalogue.items = Array.isArray(m.items) ? m.items : [];
+            equipmentCatalogue.attachments = Array.isArray(m.attachments) ? m.attachments : [];
+            drawProps();
+        } else if (m.op === 'equipmentPreview') {
+            var key = equipmentRequests.get(m.requestId);
+            if (!key) return;
+            equipmentRequests.delete(m.requestId);
+            equipmentArt.set(key, m);
+            if (m.item && Array.isArray(m.attachmentChoices)) {
+                installedEquipmentChoices.set(m.item, correlateEquipmentChoices(m.attachmentChoices));
+                var active = document.activeElement;
+                if (!active || !/^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) drawProps();
+            }
+            // A reply for an earlier weapon/size may populate its cache entry,
+            // but can only paint holders that still request that exact entry.
+            document.querySelectorAll('[data-equipment-key]').forEach(function (holder) {
+                if (holder.dataset.equipmentKey === key) showEquipmentArt(holder, m);
+            });
+            while (equipmentArt.size > 48) {
+                var evict = Array.from(equipmentArt.keys()).find(function (k) {
+                    return !Array.from(equipmentRequests.values()).includes(k);
+                });
+                if (evict === undefined) break;
+                equipmentArt.delete(evict);
+            }
+            say(m.error || m.detail || 'Game artwork loaded.');
         } else if (m.op === 'status') {
             say(m.text || '');
         }
@@ -350,13 +430,14 @@ function makeWidgetEl(node, r, ox) {
         d.appendChild(t);
     }
 
-    if (node.type === 'WeaponImage') {
+    if (node.type === 'WeaponImage' || node.type === 'GadgetImage') {
         var weapon = document.createElement('div');
         weapon.className = 'lbl';
-        weapon.style.fontSize = '14px';
+        weapon.style.fontSize = (18 * S.zoom) + 'px';
         weapon.style.whiteSpace = 'pre-line';
-        weapon.textContent = (node.weapon || 'Carbine_M4A1').replace(/_/g, ' ') + '\n' +
-            (node.attachments || []).length + ' custom attachments\nWeapon image renders in Portal';
+        weapon.style.padding = (Math.max(0, Number(node.padding) || 0) * S.zoom) + 'px';
+        weapon.style.boxSizing = 'border-box';
+        requestEquipmentArt(node, r, weapon);
         d.appendChild(weapon);
     }
     if (node.type === 'Image') {
@@ -852,11 +933,63 @@ function drawProps() {
     }
 
     // ---- image ----
-    if (n.type === 'WeaponImage') {
+    if (n.type === 'WeaponImage' || n.type === 'GadgetImage') {
         var weaponInfo = document.createElement('div');
         weaponInfo.className = 'sect';
-        weaponInfo.textContent = 'Weapon: ' + n.weapon + '. Attachments: ' + ((n.attachments || []).join(', ') || 'Factory') + '. Change the preset in the spawner Loadout menu, then generate its card again. Layout edits are preserved.';
+        weaponInfo.textContent = n.type === 'WeaponImage' ? 'Weapon image' : 'Gadget image';
         el.props.appendChild(weaponInfo);
+        var kind = n.type === 'WeaponImage' ? 'Weapons.' : 'Gadgets.';
+        var field = n.type === 'WeaponImage' ? 'weapon' : 'gadget';
+        var itemPick = document.createElement('select');
+        var items = equipmentCatalogue.items.filter(function (x) { return x.indexOf(kind) === 0; }).map(function (x) { return x.slice(kind.length); });
+        if (items.indexOf(n[field]) < 0) items.unshift(n[field]);
+        items.forEach(function (item) {
+            var option = document.createElement('option'); option.value = item; option.textContent = item.replace(/_/g, ' '); itemPick.appendChild(option);
+        });
+        itemPick.value = n[field];
+        itemPick.onchange = function () {
+            applyAll(function (x) { if (x.type === n.type) { x[field] = itemPick.value; if (field === 'weapon') x.attachments = []; } });
+        };
+        el.props.appendChild(rowEl('Item', itemPick));
+        if (n.type === 'WeaponImage') {
+            (n.attachments || []).forEach(function (attachment) {
+                var remove = document.createElement('button'); remove.textContent = 'Remove';
+                remove.onclick = function () { applyAll(function (x) { if (x.type === 'WeaponImage') x.attachments = (x.attachments || []).filter(function (a) { return a !== attachment; }); }); };
+                el.props.appendChild(rowEl(attachment.replace(/_/g, ' '), remove));
+            });
+            var fit = document.createElement('select');
+            var empty = document.createElement('option'); empty.value = ''; empty.textContent = 'Add attachment'; fit.appendChild(empty);
+            var installed = installedEquipmentChoices.get(n.weapon);
+            var available = installed ? installed.map(function (c) { return c.value; }) : [];
+            empty.textContent = installed ? 'Add installed attachment' : 'Load weapon artwork to read attachments';
+            fit.disabled = !installed;
+            available.forEach(function (a) {
+                if ((n.attachments || []).indexOf(a) >= 0) return;
+                var option = document.createElement('option'); option.value = a; option.textContent = a.replace(/_/g, ' '); fit.appendChild(option);
+            });
+            fit.onchange = function () {
+                if (!fit.value) return;
+                var value = fit.value;
+                applyAll(function (x) {
+                    if (x.type !== 'WeaponImage' || x.weapon !== n.weapon) return;
+                    var chosen = installed.find(function (c) { return c.value === value; });
+                    x.attachments = (x.attachments || []).filter(function (a) {
+                        var previous = installed.find(function (c) { return c.value === a; });
+                        return !previous || !chosen || previous.slot !== chosen.slot;
+                    });
+                    if (x.attachments.indexOf(value) < 0) x.attachments.push(value);
+                });
+            };
+            el.props.appendChild(rowEl('Attachment', fit));
+        }
+        var cardHint = document.createElement('div'); cardHint.className = 'hint';
+        cardHint.textContent = 'Game artwork preview. Installed attachment choices replace the previous choice in that slot. Combined attachment restrictions, styling and framing still need verification in Portal. Regenerating a linked spawner card uses the spawner preset.';
+        el.props.appendChild(cardHint);
+        var retryArt = document.createElement('button'); retryArt.textContent = 'Reload game artwork';
+        retryArt.onclick = function () {
+            equipmentArt.clear(); equipmentRequests.clear(); installedEquipmentChoices.clear(); redrawAll();
+        };
+        el.props.appendChild(retryArt);
     }
     if (n.type === 'Image') {
         var ih = document.createElement('div');

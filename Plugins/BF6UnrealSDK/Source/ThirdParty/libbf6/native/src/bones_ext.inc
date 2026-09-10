@@ -251,15 +251,17 @@ bool bf6__weapon_pose(bf6_ctx* c, const char* md_partition,
         }
     }
 
-    /* Equipped part records carry mutually-exclusive transform-slot writes.
-     * They use the same quaternion/TransAndScale/BoneIndex row as the md root
-     * and replace that bone's parent-local pose before hierarchy composition.
-     * They are later than the md defaults; applying them before those defaults
-     * silently lets the default overwrite the selected barrel/optic variant. */
+    /* Equipped records carry offsets from the weapon's authored local pose.
+     * The row layout is the same as the md defaults, but replacing a local
+     * pose with this delta moves attachments back toward Wep_Align. Preserve
+     * the per-weapon baseline and compose the selected correction once.
+     * Multiple records writing a bone select the last authored correction;
+     * they must not accumulate that baseline or each other's alternatives. */
+    const std::vector<BfMat34> weapon_local = local;
     if (configured_writes)
         for (const BfBoneWrite& w : *configured_writes)
             if (w.bone >= 0 && w.bone < nb)
-                local[(size_t)w.bone] = w.transform;
+                local[(size_t)w.bone] = bf6__mat_mul(w.transform, weapon_local[(size_t)w.bone]);
 
     world.resize((size_t)nb);
     for (int b = 0; b < nb; ++b)
@@ -591,10 +593,9 @@ static int bf6__fit_score(const std::string& token, const std::string& bundle,
                           const std::string& unlock)
 {
     std::string t = bf6__alnum_lower(token);
-    // Audited from the older previewer's verified design-name -> art-name
-    // join. These are genuine renamed identities, not fuzzy guesses. Keeping
-    // the tiny mapping beside the live graph walk lets new ordinary names
-    // continue to resolve directly, while an unknown token still scores zero.
+    // Legacy previewer name aliases. These remain a compatibility heuristic,
+    // not proof of an authored gameplay-to-art reference. Exact card consumers
+    // must use the attachment description's atlas/index and layout metadata.
     static const std::pair<const char*, const char*> aliases[] = {
         { "uglmount", "m320base" }, { "kacverticalgrip", "kabroomstick" },
         { "zenitcork1", "rk1" }, { "trijiconrco", "trijiconm150" },
@@ -1685,10 +1686,10 @@ int bf6_weapon_part_variation(bf6_ctx* c, const char* mesh_res,
  * for the m4a1, each a sprite NAME HASH (matching the atlas entry's 0x8C964305)
  * and a fractional Offset that can be negative. That is the composition.
  */
-int bf6_card_layers(bf6_ctx* c, const char* hiao_partition,
-                    bf6_card_layer* out, int out_max)
+int bf6_card_layout(bf6_ctx* c, const char* hiao_partition,
+                   bf6_card_layout_entry* out, int out_max)
 {
-    if (!c || !hiao_partition) return -1;
+    if (!c || !hiao_partition || out_max < 0) return -1;
     std::string terr;
     if (!ensure_types(c, terr)) return -1;
 
@@ -1700,25 +1701,77 @@ int bf6_card_layers(bf6_ctx* c, const char* hiao_partition,
     bf6::Ebx e(*c->types);
     if (!e.parse(std::move(d), err)) return -1;
 
-    int n = 0;
+    std::vector<int32_t> indices;
+    bool found_root = false;
     for (size_t i = 0; i < e.instance_count(); i++)
     {
-        bf6::EbxValue v = e.read_instance(i);
+        const bf6::EbxValue v = e.read_instance(i);
+        const auto* entries = v.field(716273198u);
+        if (!entries) continue;
+        if (found_root || entries->kind != bf6::EbxValue::Kind::Array) return -1;
+        found_root = true;
+        for (const auto& entry : entries->items) {
+            if (entry.kind != bf6::EbxValue::Kind::InstanceRef || entry.instance < 0 ||
+                entry.instance >= (int32_t)e.instance_count()) return -1;
+            indices.push_back(entry.instance);
+        }
+    }
+    if (!found_root) return -1;
+    std::vector<bf6_card_layout_entry> result;
+    std::map<uint32_t, size_t> seen;
+    for (int32_t index : indices)
+    {
+        const bf6::EbxValue v = e.read_instance((size_t)index);
         const bf6::EbxValue* off = bf6__by_hash(v, kFieldOffset);
-        if (!off) continue;
+        if (!off) return -1;
         uint32_t hash = 0;
         for (const auto& kv : v.fields)
             if (kv.first == 0x35CA44BAu)
                 hash = (uint32_t)(kv.second.kind == bf6::EbxValue::Kind::Int
                                   ? (uint64_t)kv.second.i : kv.second.u);
-        if (!hash) continue;
-        if (out && n < out_max)
-        {
-            out[n] = bf6_card_layer{};
-            out[n].sprite_hash = hash;
-            bf6__vec_xy(off, out[n].offset[0], out[n].offset[1]);
+        if (!hash) return -1;
+        bf6_card_layout_entry row{};
+        row.sprite_hash = hash;
+        const auto previous = seen.find(hash);
+        if (previous != seen.end()) {
+            row.flags |= 4;
+            result[previous->second].flags |= 4;
+        } else seen.emplace(hash, result.size());
+        row.kind = -1;
+        const std::string type = bf6::TypeDb::guid_str(e.instance_type((size_t)index));
+        if (type == "8d0311c1-ba8b-deb8-315b-0d5a500259bf") row.kind = 0;
+        else if (type == "5a899feb-c7c2-0ee4-299a-827f645a1ca7") row.kind = 1;
+        else if (type == "0ba014be-cc87-9fa5-b63c-a24b74858c82") row.kind = 2;
+        else if (type == "ea65c149-1bdd-38d6-fbe7-bb0e50846bb3") row.kind = 3;
+        else if (type == "55733e05-c18c-419c-826b-843d3bd54d9f") row.kind = 4;
+        bf6__vec_xy(off, row.offset[0], row.offset[1]);
+        const auto* secondary = row.kind == 2 ? v.field(1019493190u) :
+                                row.kind == 4 ? v.field(3928739934u) : nullptr;
+        if (secondary) {
+            row.flags |= 1;
+            bf6__vec_xy(secondary, row.secondary_anchor[0], row.secondary_anchor[1]);
         }
-        n++;
+        if (row.kind == 3) {
+            const auto* mounted = v.field(2297383137u);
+            if (mounted && mounted->kind == bf6::EbxValue::Kind::Bool && mounted->b) row.flags |= 2;
+        }
+        result.push_back(row);
     }
-    return n;
+    if (out && out_max) std::copy_n(result.begin(), std::min((size_t)out_max, result.size()), out);
+    return (int)result.size();
+}
+
+int bf6_card_layers(bf6_ctx* c, const char* hiao_partition,
+                    bf6_card_layer* out, int out_max)
+{
+    if (out_max < 0) return -1;
+    const int count = bf6_card_layout(c, hiao_partition, nullptr, 0);
+    if (count <= 0 || !out || !out_max) return count;
+    std::vector<bf6_card_layout_entry> entries((size_t)count);
+    if (bf6_card_layout(c, hiao_partition, entries.data(), count) != count) return -1;
+    for (int i = 0; i < std::min(count, out_max); ++i) {
+        out[i].sprite_hash = entries[(size_t)i].sprite_hash;
+        std::copy_n(entries[(size_t)i].offset, 2, out[i].offset);
+    }
+    return count;
 }

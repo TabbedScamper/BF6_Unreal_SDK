@@ -3,6 +3,7 @@
 #include "BF6Blocks.h"
 #include "BF6Script.h"
 #include "BF6UiBuilder.h"
+#include "BF6EditorOverlay.h"
 #include "BF6Project.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
@@ -13,6 +14,8 @@
 #include "Editor.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Misc/AutomationTest.h"
+#include "Misc/Guid.h"
 
 namespace BF6LootBindingDetail
 {
@@ -22,7 +25,7 @@ namespace BF6LootBindingDetail
   IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path),true);
   const FString Temp=Path+TEXT(".pending");
   if (!FFileHelper::SaveStringToFile(Text,*Temp,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
-   || IFileManager::Get().Move(*Path,*Temp,true,true)!=COPY_OK) { Why=TEXT("Could not save the loot binding: ")+Path; return false; }
+   || !IFileManager::Get().Move(*Path,*Temp,true,true)) { Why=TEXT("Could not save the loot binding: ")+Path; return false; }
   return true;
  }
 }
@@ -97,7 +100,7 @@ bool BF6Ext::OpenLootBinding(const FString& Id,const FString& Action,FString& Ou
   if(S.StartsWith(TEXT("preview:highpoly.item="))) Preview=S.Mid(22);
   if(S.StartsWith(TEXT("preview:highpoly.attachment_")))
   {
-   FString Slot,Value; if(S.Mid(27).Split(TEXT("="),&Slot,&Value)&&!Value.IsEmpty()) Fits.Add(Slot,Value);
+   FString Slot,Value; if(S.Mid(FString(TEXT("preview:highpoly.attachment_")).Len()).Split(TEXT("="),&Slot,&Value)&&!Value.IsEmpty()) Fits.Add(Slot,Value);
   }
  }
  if(Item.IsEmpty()&&Preview==TEXT("carbine/m4a1")) Item=TEXT("Weapons.Carbine_M4A1");
@@ -214,12 +217,12 @@ bool BF6Ext::OpenLootBinding(const FString& Id,const FString& Action,FString& Ou
    if(WidgetId==ImageId) { Image=O; break; }
    const TArray<TSharedPtr<FJsonValue>>* Children=nullptr; if(O->TryGetArrayField(TEXT("children"),Children)) Pending.Append(*Children);
   }
-  if(Kind==TEXT("Weapons"))
+  if(Kind==TEXT("Weapons")||Kind==TEXT("Gadgets"))
   {
    if(Image)
    {
     FString Type; Image->TryGetStringField(TEXT("type"),Type);
-    if(Type!=TEXT("WeaponImage")) { OutWhy=TEXT("The bound weapon image was replaced with another widget type. Rename that widget to generate a new image."); return false; }
+    if(Type!=TEXT("WeaponImage")&&Type!=TEXT("GadgetImage")) { OutWhy=TEXT("The bound equipment image was replaced with another widget type. Rename that widget to generate a new image."); return false; }
    }
    else
    {
@@ -235,13 +238,57 @@ bool BF6Ext::OpenLootBinding(const FString& Id,const FString& Action,FString& Ou
     if(Root->TryGetArrayField(TEXT("size"),Size)&&Size->Num()==2&&(*Size)[0]->AsNumber()==360&&(*Size)[1]->AsNumber()==144)
      Root->SetArrayField(TEXT("size"),{MakeShared<FJsonValueNumber>(360),MakeShared<FJsonValueNumber>(280)});
    }
-   Image->SetStringField(TEXT("weapon"),Member); Image->SetArrayField(TEXT("attachments"),Attachments);
+   Image->SetStringField(TEXT("type"),Kind==TEXT("Weapons")?TEXT("WeaponImage"):TEXT("GadgetImage"));
+   bool HiddenByBinding=false;
+   if(Image->TryGetBoolField(TEXT("hiddenByLootBinding"),HiddenByBinding)&&HiddenByBinding)
+    Image->SetBoolField(TEXT("visible"),true);
+   Image->RemoveField(TEXT("hiddenByLootBinding"));
+   if(Kind==TEXT("Weapons"))
+   {
+    Image->SetStringField(TEXT("weapon"),Member); Image->SetArrayField(TEXT("attachments"),Attachments);
+    Image->RemoveField(TEXT("gadget"));
+   }
+   else
+   {
+    Image->SetStringField(TEXT("gadget"),Member);
+    Image->RemoveField(TEXT("weapon")); Image->RemoveField(TEXT("attachments"));
+   }
   }
-  else if(Image) Image->SetBoolField(TEXT("visible"),false);
+  else if(Image)
+  {
+   bool Visible=true; Image->TryGetBoolField(TEXT("visible"),Visible);
+   if(Visible) Image->SetBoolField(TEXT("hiddenByLootBinding"),true);
+   Image->SetBoolField(TEXT("visible"),false);
+  }
   if(!Write(Path,Json(Card.ToSharedRef()),OutWhy)||!Write(BindingPath,Json(Binding),OutWhy)) return false;
   BF6Project::NoteArtefactWritten(Save,TEXT("unreal/ui/")+Stem+TEXT(".design.json"),TEXT("user"));
   if(!BF6UiBuilder::LoadFile(Path)) { OutWhy=TEXT("The card could not be opened."); return false; }
+  BF6EditorOverlay::Show(BF6EditorOverlay::EEditor::Ui);
   OutWhy=TEXT("Reusable weapon card opened. Edit or remove its action button for your mode; connect display and interaction through the exported blocks or TypeScript."); return true;
  }
  OutWhy=TEXT("Unknown loot binding action."); return false;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBF6LootBindingWriteTest, "BF6.Loot.BindingFileWrite",
+ EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FBF6LootBindingWriteTest::RunTest(const FString&)
+{
+ const FString Path=FPaths::Combine(FPaths::ProjectSavedDir(),TEXT("Automation"),FGuid::NewGuid().ToString()+TEXT(".loot.json"));
+ FString Why,Actual;
+ TestTrue(TEXT("Creating a binding reports success"),BF6LootBindingDetail::Write(Path,TEXT("{\"item\":1}"),Why));
+ TestTrue(TEXT("Created binding is readable"),FFileHelper::LoadFileToString(Actual,*Path));
+ TestEqual(TEXT("Created contents"),Actual,FString(TEXT("{\"item\":1}")));
+ TestTrue(TEXT("Updating a binding reports success"),BF6LootBindingDetail::Write(Path,TEXT("{\"item\":2}"),Why));
+ FFileHelper::LoadFileToString(Actual,*Path);
+ TestEqual(TEXT("Updated contents"),Actual,FString(TEXT("{\"item\":2}")));
+ TestFalse(TEXT("Atomic write leaves no pending file"),IFileManager::Get().FileExists(*(Path+TEXT(".pending"))));
+ // A child of a regular file cannot be created. Failure must not claim that
+ // the card opened, or alter the existing binding.
+ TestFalse(TEXT("Unwritable destination reports failure"),BF6LootBindingDetail::Write(Path/TEXT("child.json"),TEXT("{}"),Why));
+ FFileHelper::LoadFileToString(Actual,*Path);
+ TestEqual(TEXT("Failure preserves existing contents"),Actual,FString(TEXT("{\"item\":2}")));
+ IFileManager::Get().Delete(*Path); IFileManager::Get().Delete(*(Path+TEXT(".pending")));
+ return true;
+}
+#endif

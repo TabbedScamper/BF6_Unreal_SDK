@@ -629,6 +629,7 @@ static void ApplyObjectWhite(UProceduralMeshComponent* Mesh);
 // ---- low-poly map context: load an extracted .bf6mesh into a proc-mesh actor ----
 static void ClearActorsWithTag(FName Tag);   // defined below
 static int32 BF6_RebuildTreeFromTags();      // authored tree, hooked up as attachment
+static void BF6_SetPivotKeepingChildren(AActor* Pivot, const FTransform& Xf);
 static AActor* BF6_SpawnTreeNode(UWorld* W, const FString& Key, const FString& ParentKey,
 	const FTransform& Xf, int32 Order = MAX_int32);   // an empty Godot node, as an actor
 namespace BF6Api { static bool BF6_IsLinkProp(const FString& TypeName, const FString& PropName); }
@@ -1006,6 +1007,10 @@ static AActor* SpawnContextMesh(const FString& FilePath, const FString& Label)
 	Actor->Tags.Add(kContextTag);
 	Actor->SetFlags(RF_Transient);          // never saved into the level
 	UProceduralMeshComponent* Mesh = MakeProcMesh(Actor, TEXT("ContextMesh"));
+	// Whole-map vertex buffers are reconstructed from the SDK. They must not
+	// enter the editor's undo archive when an outliner operation touches them.
+	Actor->ClearFlags(RF_Transactional);
+	Mesh->ClearFlags(RF_Transactional);
 	Mesh->SetReceivesDecals(true);   // the map-image decal lands on the context
 	// Collision ON: the space-bar placement ray traces this surface so objects
 	// land where the crosshair points (not on a flat z=0 plane under the map).
@@ -2460,6 +2465,14 @@ static TSharedPtr<FJsonObject> BF6_BuildSessionRoot(const FString& Level, const 
 		FString Nm = It->GetActorLabel();
 		Nm.RemoveFromStart(TEXT("BF6_"));
 		B->SetStringField(TEXT("name"), Nm);
+		TArray<TSharedPtr<FJsonValue>> TreeTags;
+		for (const FName& Tag : It->Tags)
+		{
+			const FString S = Tag.ToString();
+			if (S.StartsWith(TEXT("gpath:")) || S.StartsWith(TEXT("gtree:")) || S.StartsWith(TEXT("gord:")))
+				TreeTags.Add(MakeShared<FJsonValueString>(S));
+		}
+		B->SetArrayField(TEXT("tags"), TreeTags);
 		const FTransform Xf = It->GetActorTransform();
 		const FVector L = Xf.GetLocation(); const FRotator R = Xf.Rotator(); const FVector Sc = Xf.GetScale3D();
 		B->SetNumberField(TEXT("x"), L.X); B->SetNumberField(TEXT("y"), L.Y); B->SetNumberField(TEXT("z"), L.Z);
@@ -2656,6 +2669,26 @@ static bool SaveSession(const FString& Level, const FString& Name)
 // Load a session document from an EXACT path, so a temp backup loads through
 // the same code a named save does - one loader, one set of rules about links,
 // groups, the tree and deleted base objects.
+static void BF6_RestoreSessionTags(AActor* A, const TArray<TSharedPtr<FJsonValue>>& Tags)
+{
+	// SpawnTreeNode seeds an empty gpath. Leaving it before the saved key
+	// makes TagValue return empty and reconstructs an identity pivot instead
+	// of the saved parent. Older backups may themselves contain that empty tag.
+	for (int32 I = A->Tags.Num() - 1; I >= 0; --I)
+	{
+		const FString S = A->Tags[I].ToString();
+		if (S.StartsWith(TEXT("gpath:")) || S.StartsWith(TEXT("gtree:")) || S.StartsWith(TEXT("gord:")))
+			A->Tags.RemoveAt(I);
+	}
+	for (const auto& V : Tags)
+	{
+		FString S;
+		if (!V.IsValid() || !V->TryGetString(S) || S.IsEmpty()) continue;
+		if (S == TEXT("gpath:") || S == TEXT("gtree:") || S == TEXT("gord:")) continue;
+		A->Tags.AddUnique(FName(*S));
+	}
+}
+
 static void BF6_LoadSessionFile(const FString& Level, const FString& Path)
 {
 	const double LoadT0 = FPlatformTime::Seconds();
@@ -2717,7 +2750,10 @@ static void BF6_LoadSessionFile(const FString& Level, const FString& Path)
 					A->Tags.Add(kPlacedTag);
 					A->Tags.Add(FName(*(FString(TEXT("label:")) + Lb)));
 					MakeProcMesh(A, TEXT("Volume"));
-					GVolumeLoops.Add(A, Loop);
+					A->SetActorTransform(FTransform(Rot, L, Sc));
+					// Session polygons are world-space; the editable loop registry
+					// is actor-local. Restore the pivot as well as the visible shape.
+					GVolumeLoops.Add(A, BF6_LoopToLocal(A, Loop));
 					BF6_WriteLoopTags(A);
 					BF6_FileActor(A);
 				}
@@ -2764,11 +2800,7 @@ static void BF6_LoadSessionFile(const FString& Level, const FString& Path)
 			else LoadedActors.Add(A);
 			const TArray<TSharedPtr<FJsonValue>>* RawTags = nullptr;
 			if (O->TryGetArrayField(TEXT("tags"), RawTags))
-				for (const auto& TV : *RawTags)
-				{
-					FString TS;
-					if (TV->TryGetString(TS) && !TS.IsEmpty()) A->Tags.Add(FName(*TS));
-				}
+				BF6_RestoreSessionTags(A, *RawTags);
 			double G = -1.0;
 			if (O->TryGetNumberField(TEXT("grp"), G)) PendingGroups.FindOrAdd((int32)G).Add(A);
 			BF6_FileActor(A);   // block tags may change its outliner folder
@@ -2883,23 +2915,28 @@ static void BF6_LoadSessionFile(const FString& Level, const FString& Path)
 			if (!B.IsValid()) continue;
 			AActor* A = ByName.FindRef(B->GetStringField(TEXT("name")));
 			if (!A) continue;
-			// zone loops rebuild the walls; point objects take the transform
+			// Every saved transform is world-space, including volume pivots.
+			// Restoring a parent must not move children whose world transforms
+			// have already been restored earlier in the document.
+			if (B->HasField(TEXT("x")))
+			{
+				const FVector L(B->GetNumberField(TEXT("x")), B->GetNumberField(TEXT("y")), B->GetNumberField(TEXT("z")));
+				const FRotator Rt(B->GetNumberField(TEXT("pitch")), B->GetNumberField(TEXT("yaw")), B->GetNumberField(TEXT("roll")));
+				const FVector Sc(B->GetNumberField(TEXT("sx")), B->GetNumberField(TEXT("sy")), B->GetNumberField(TEXT("sz")));
+				BF6_SetPivotKeepingChildren(A, FTransform(Rt, L, Sc));
+			}
+			const TArray<TSharedPtr<FJsonValue>>* TreeTags = nullptr;
+			if (B->TryGetArrayField(TEXT("tags"), TreeTags)) BF6_RestoreSessionTags(A, *TreeTags);
 			const TArray<TSharedPtr<FJsonValue>>* LArr = nullptr;
 			if (B->TryGetArrayField(TEXT("loop"), LArr) && LArr->Num() >= 9)
 			{
 				TArray<FVector> Loop;
 				for (int32 i = 0; i + 2 < LArr->Num(); i += 3)
 					Loop.Add(FVector((*LArr)[i]->AsNumber(), (*LArr)[i+1]->AsNumber(), (*LArr)[i+2]->AsNumber()));
+				Loop = BF6_LoopToLocal(A, Loop);
 				GVolumeLoops.Add(A, Loop);
 				BF6_WriteLoopTags(A);
 				RebuildVolumeWalls(A, Loop);
-			}
-			else if (B->HasField(TEXT("x")))
-			{
-				const FVector L(B->GetNumberField(TEXT("x")), B->GetNumberField(TEXT("y")), B->GetNumberField(TEXT("z")));
-				const FRotator Rt(B->GetNumberField(TEXT("pitch")), B->GetNumberField(TEXT("yaw")), B->GetNumberField(TEXT("roll")));
-				const FVector Sc(B->GetNumberField(TEXT("sx")), B->GetNumberField(TEXT("sy")), B->GetNumberField(TEXT("sz")));
-				A->SetActorTransform(FTransform(Rt, L, Sc));
 			}
 			const TArray<TSharedPtr<FJsonValue>>* PTags = nullptr;
 			if (B->TryGetArrayField(TEXT("props"), PTags))
@@ -6527,6 +6564,116 @@ static void BF6_SetPivotKeepingChildren(AActor* Pivot, const FTransform& Xf)
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBF6SessionTransformTest, "BF6.Editor.SessionTransformRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FBF6SessionTransformTest::RunTest(const FString&)
+{
+	// This integration test replaces session actors. Only an explicitly
+	// designated disposable editor may run it, never a creator's live map.
+	if (!FParse::Param(FCommandLine::Get(), TEXT("bf6-session-tests")))
+	{
+		AddError(TEXT("SessionTransformRoundTrip requires -bf6-session-tests in a disposable project."));
+		return false;
+	}
+	UWorld* W = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!TestNotNull(TEXT("Editor world"), W)) return false;
+	ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag); ClearActorsWithTag(kGroupTag);
+	const bool OldTree = BF6_KeepGodotTree();
+	BF6_SetKeepGodotTree(true);
+	ON_SCOPE_EXIT
+	{
+		ClearActorsWithTag(kPlacedTag); ClearActorsWithTag(kBaseTag); ClearActorsWithTag(kGroupTag);
+		BF6_SetKeepGodotTree(OldTree);
+	};
+	auto Make = [&](const TCHAR* Key, FName Kind, const FTransform& Xf, bool bZone)
+	{
+		AActor* A = W->SpawnActor<AActor>();
+		MakeProcMesh(A, TEXT("Volume"));
+		A->SetActorTransform(Xf);
+		A->SetActorLabel(Key);
+		A->Tags.Add(Kind);
+		A->Tags.Add(FName(*(FString(TEXT("gpath:")) + Key)));
+		A->Tags.Add(FName(bZone ? TEXT("label:PolygonVolume") : TEXT("label:CombatArea")));
+		if (bZone)
+		{
+			const TArray<FVector> Loop{FVector(0,0,0), FVector(1000,0,0), FVector(200,700,0)};
+			GVolumeLoops.Add(A, Loop); BF6_WriteLoopTags(A); RebuildVolumeWalls(A, Loop);
+		}
+		return A;
+	};
+	// Child appears BEFORE its parent in the base edit array. Restoring the
+	// parent later must not apply its 90-degree rotation to that child twice.
+	AActor* BaseZone = Make(TEXT("RoundTripBaseZone"), kBaseTag,
+		FTransform(FRotator(0,90,0), FVector(51000,-73000,300), FVector(1.3)), true);
+	AActor* BaseParent = Make(TEXT("RoundTripBaseParent"), kBaseTag,
+		FTransform(FRotator(0,90,0), FVector(50000,-70000,200)), false);
+	BaseZone->AttachToActor(BaseParent, FAttachmentTransformRules::KeepWorldTransform);
+	AActor* Root = BF6_SpawnTreeNode(W, TEXT("RoundTripRoot"), TEXT(""),
+		FTransform(FRotator(0,90,0), FVector(-400000,600000,1500), FVector(.8)));
+	Root->SetActorLabel(TEXT("RoundTripRoot"));
+	AActor* Nested = BF6_SpawnTreeNode(W, TEXT("RoundTripRoot/Nested"), TEXT("RoundTripRoot"),
+		FTransform(FRotator(0,-35,0), FVector(52000,-72000,600)));
+	Nested->SetActorLabel(TEXT("RoundTripNested"));
+	Nested->AttachToActor(Root, FAttachmentTransformRules::KeepWorldTransform);
+	AActor* Prop = SpawnSdkModel(TEXT("FiringRange_Floor_01"), TEXT("RoundTripProp"),
+		FTransform(FRotator(10,25,5), FVector(51500,-71300,650), FVector(.7,2.4,1.2)));
+	if (!TestNotNull(TEXT("Installed SDK prop fixture"), Prop)) return false;
+	Prop->Tags.Add(FName(TEXT("gpath:RoundTripRoot/Nested/Prop")));
+	Prop->AttachToActor(Nested, FAttachmentTransformRules::KeepWorldTransform);
+	AActor* Zone = Make(TEXT("RoundTripZone"), kPlacedTag,
+		FTransform(FRotator(0,90,0), FVector(53000,-71000,400), FVector(1.2)), true);
+	Zone->AttachToActor(Root, FAttachmentTransformRules::KeepWorldTransform);
+	TMap<FString,FTransform> Expected;
+	TMap<FString,TArray<FVector>> ExpectedLoops;
+	for (AActor* A : {BaseZone, BaseParent, Root, Nested, Prop, Zone})
+	{
+		const FString Key = TagValue(A, TEXT("gpath:"));
+		Expected.Add(Key,A->GetActorTransform());
+		if (const auto* Loop = GVolumeLoops.Find(A)) ExpectedLoops.Add(Key, BF6_LoopToWorld(A,*Loop));
+	}
+	const FString File = FPaths::ProjectSavedDir() / TEXT("SessionTransformRoundTrip.json");
+	for (int32 Cycle = 0; Cycle < 3; ++Cycle)
+	{
+		int32 Count = 0;
+		TSharedPtr<FJsonObject> Doc = BF6_BuildSessionRoot(TEXT("MP_Dumbo"), FString(), Count);
+		FString Json;
+		FJsonSerializer::Serialize(Doc.ToSharedRef(), TJsonWriterFactory<>::Create(&Json));
+		if (!TestTrue(TEXT("Snapshot written"), FFileHelper::SaveStringToFile(Json,*File))) return false;
+		BaseParent->SetActorTransform(FTransform::Identity);
+		BF6_LoadSessionFile(TEXT("MP_Dumbo"),File);
+		TMap<FString,AActor*> Loaded;
+		for (TActorIterator<AActor> It(W); It; ++It)
+		{
+			const FString Key = TagValue(*It,TEXT("gpath:"));
+			if (Expected.Contains(Key))
+			{
+				TestFalse(TEXT("No duplicate identity pivots"),Loaded.Contains(Key));
+				Loaded.Add(Key,*It);
+			}
+		}
+		for (const auto& Pair : Expected)
+		{
+			AActor* A = Loaded.FindRef(Pair.Key);
+			if (!TestNotNull(*Pair.Key,A)) continue;
+			TestTrue(*(Pair.Key+TEXT(" world transform and pivot survive")),A->GetActorTransform().Equals(Pair.Value,.001));
+			if (const auto* Want = ExpectedLoops.Find(Pair.Key))
+			{
+				const auto* Local = GVolumeLoops.Find(A);
+				if (!TestNotNull(TEXT("Restored polygon"),Local)) continue;
+				const auto World = BF6_LoopToWorld(A,*Local);
+				TestEqual(TEXT("Polygon point count"),World.Num(),Want->Num());
+				for (int32 I=0; I<FMath::Min(World.Num(),Want->Num()); ++I)
+					TestTrue(TEXT("World polygon does not rotate or drift"),World[I].Equals((*Want)[I],.001));
+			}
+		}
+		if (AActor* A = Loaded.FindRef(TEXT("RoundTripRoot/Nested/Prop")))
+			TestTrue(TEXT("Prop retains its saved parent"), A->GetAttachParentActor()==Loaded.FindRef(TEXT("RoundTripRoot/Nested")));
+		if (AActor* A = Loaded.FindRef(TEXT("RoundTripRoot/Nested")))
+			TestTrue(TEXT("Nested pivot retains its saved parent"), A->GetAttachParentActor()==Loaded.FindRef(TEXT("RoundTripRoot")));
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBF6AdoptPivotTest, "BF6.Editor.AdoptPivotPreservesObjects",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -8746,6 +8893,15 @@ namespace BF6Api
 
 	FString LatestToolNotes() { return BF6_FirstSection(ToolHistoryText()); }
 	FString LatestSdkNotes()  { return BF6_FirstSection(SdkHistoryText()); }
+	FString HighPolyHistoryText()
+	{
+		FString Version, Text;
+		const EBF6AddOnState State = BF6_HighPolyState(Version);
+		if (State == EBF6AddOnState::Present || State == EBF6AddOnState::Loaded)
+			FFileHelper::LoadFileToString(Text, *(BF6_HighPolyDir() / TEXT("Resources/CHANGELOG.md")));
+		return Text;
+	}
+	FString LatestHighPolyNotes() { return BF6_FirstSection(HighPolyHistoryText()); }
 
 	// The unlock dot. Battlefield marks new unlocks with an orange dot on the
 	// button's corner; ours means "this version has notes you have not read".

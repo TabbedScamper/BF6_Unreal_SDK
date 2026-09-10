@@ -3407,6 +3407,43 @@
   }
   API.assignConstants = assignConstants;
 
+  function fieldSpacingConstants(cp, compact) {
+    var keys = ['FIELD_BORDER_RECT_HEIGHT', 'FIELD_DROPDOWN_BORDER_RECT_HEIGHT', 'FIELD_BORDER_RECT_Y_PADDING', 'DUMMY_INPUT_MIN_HEIGHT'];
+    if (!cp.bf6FieldSpacingBase) {
+      cp.bf6FieldSpacingBase = {};
+      keys.forEach(function (k) { cp.bf6FieldSpacingBase[k] = cp[k]; });
+    }
+    var base = cp.bf6FieldSpacingBase;
+    keys.forEach(function (k) { cp[k] = base[k]; });
+    if (!compact) return;
+    // Keep the captured font and text metrics. Only remove excess vertical
+    // padding, with room around the text even for a different site capture.
+    ['FIELD_BORDER_RECT_HEIGHT', 'FIELD_DROPDOWN_BORDER_RECT_HEIGHT'].forEach(function (k) {
+      if (typeof base[k] === 'number') cp[k] = Math.min(base[k], Math.max(cp.FIELD_TEXT_HEIGHT + 7, base[k] - 6));
+    });
+    cp.FIELD_BORDER_RECT_Y_PADDING = Math.max(0, (cp.FIELD_BORDER_RECT_HEIGHT - cp.FIELD_TEXT_HEIGHT) / 2);
+    if (typeof base.DUMMY_INPUT_MIN_HEIGHT === 'number')
+      cp.DUMMY_INPUT_MIN_HEIGHT = Math.min(base.DUMMY_INPUT_MIN_HEIGHT, cp.FIELD_BORDER_RECT_HEIGHT);
+  }
+  API.applyFieldSpacing = function (ws, compact) {
+    var spaces = [ws], flyout = ws.getFlyout && ws.getFlyout();
+    if (flyout && flyout.getWorkspace()) spaces.push(flyout.getWorkspace());
+    spaces.forEach(function (space) {
+      fieldSpacingConstants(space.getRenderer().getConstants(), compact);
+      space.getAllBlocks(false).forEach(function (block) {
+        block.inputList.forEach(function (input) {
+          input.fieldRow.forEach(function (field) {
+            if (field.EDITABLE && field.forceRerender) {
+              // A theme change can replace the renderer's provider while a
+              // field still holds its previous provider. Refresh that cache.
+              field.markDirty(); field.forceRerender();
+            }
+          });
+        });
+      });
+    });
+  };
+
   // A real subclass, so instanceof still holds and anything the base provider
   // does in its constructor still happens. Reflect.construct rather than
   // CP.call: Blockly 10 ships its classes as real ES6 classes, and one of those
@@ -3423,6 +3460,7 @@
       assignConstants(this, captured, false);
       if (CP.prototype.init) CP.prototype.init.call(this);
       assignConstants(this, captured, true);
+      fieldSpacingConstants(this, state.prefs && state.prefs.compactFields === true);
     };
 
     // THE SHAPE OF A SOCKET IS A METHOD, AND METHODS DO NOT CROSS.

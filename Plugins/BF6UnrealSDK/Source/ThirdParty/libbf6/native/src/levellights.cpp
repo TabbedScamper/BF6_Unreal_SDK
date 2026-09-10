@@ -301,12 +301,13 @@ private:
     void collect(Ebx& e, size_t idx, const Mat34& parent, const std::string& ref, int kind);
     bool type_matters(Ebx& e, size_t i);
     int  light_kind(const TypeGuid& g) const;
-    std::string resolve_name(const std::string& n) const;
+    std::string resolve_name(const std::string& n);
     void build_catalog();
 
     Source& src_;
     TypeDb& types_;
     std::unordered_map<std::string, std::string> by_name_;
+    const std::unordered_map<std::string, std::string>* names_ = &by_name_;
     // Borrow Source's generation-stable partition index. The light walker is
     // short-lived, but duplicating the complete map dominated exact rig reads.
     const std::map<std::string, std::string>*    gi_ = nullptr;
@@ -316,21 +317,17 @@ private:
     TypeGuid                                     comp_guid_{};
     std::set<std::string>                        destruction_;
     bool                                         bounded_frontend_ = false;
+    bool                                         name_catalog_built_ = false;
 };
 
 void LightWalk::build_catalog()
 {
     by_name_.clear();
+    names_ = &by_name_;
     // Asset-light callers supply a full front-end path. Resolve it and all
     // full BundleName references against Source's existing EBX table instead
     // of allocating a duplicate all-name/leaf-name catalogue.
-    if (!bounded_frontend_)
-        for (const auto& kv : src_.ebx()) {
-            const std::string low = lower(kv.first);
-            const std::string ref = kv.first + ".ebx";
-            by_name_.emplace(low, ref);
-            by_name_.emplace(leaf_of(low), ref);
-        }
+    name_catalog_built_ = false;
     gi_ = bounded_frontend_ ? &src_.armory_partition_index()
                             : &src_.partition_index();
     for (const KindEntry& k : kLightTypes) kinds_[raw_guid(k.guid)] = k.kind;
@@ -338,19 +335,27 @@ void LightWalk::build_catalog()
     for (const char* d : kDestructionBranch) destruction_.insert(d);
 }
 
-std::string LightWalk::resolve_name(const std::string& name) const
+std::string LightWalk::resolve_name(const std::string& name)
 {
     if (name.empty()) return std::string();
     std::string n = lower(name);
     if (ends_with(n, ".ebx")) n.resize(n.size() - 4);
     const auto exact = src_.ebx().find(n);
     if (exact != src_.ebx().end()) return exact->first + ".ebx";
-    auto it = by_name_.find(n);
-    if (it != by_name_.end()) return it->second;
-    it = by_name_.find(leaf_of(n));
-    if (it != by_name_.end()) return it->second;
-    it = by_name_.find(n + ".ebx");
-    if (it != by_name_.end()) return it->second;
+    // Placed fixtures normally supply exact, fully qualified names. Building
+    // an all-partition alias table for each one costs far more than the light
+    // traversal, including the common case of a prop with no lights. Preserve
+    // the legacy alias fallback, but construct it only if an exact lookup fails.
+    if (!bounded_frontend_ && !name_catalog_built_) {
+        name_catalog_built_ = true;
+        names_ = &src_.light_name_index();
+    }
+    auto it = names_->find(n);
+    if (it != names_->end()) return it->second;
+    it = names_->find(leaf_of(n));
+    if (it != names_->end()) return it->second;
+    it = names_->find(n + ".ebx");
+    if (it != names_->end()) return it->second;
     return std::string();
 }
 
@@ -632,7 +637,15 @@ bool LightWalk::run(const std::string& level_rel, std::string& err)
     while (!rel.empty() && rel.back() == '/') rel.pop_back();
     const std::string leaf = leaf_of(rel);
 
-    std::string start = resolve_name(rel + "/" + leaf);
+    // Prefer the exact level root, then the exact asset. Calling the alias
+    // resolver on the speculative doubled asset path rebuilt the whole name
+    // catalogue before we even tried the fully qualified prefab we were given.
+    std::string start;
+    const auto root = src_.ebx().find(rel + "/" + leaf);
+    const auto asset = src_.ebx().find(strip_ebx(rel));
+    if (root != src_.ebx().end()) start = root->first + ".ebx";
+    else if (asset != src_.ebx().end()) start = asset->first + ".ebx";
+    else start = resolve_name(rel + "/" + leaf);
     if (start.empty()) start = resolve_name(rel);
     if (start.empty()) start = resolve_name(leaf);
     if (start.empty() && rel.find('/') == std::string::npos) {
@@ -644,11 +657,11 @@ bool LightWalk::run(const std::string& level_rel, std::string& err)
             tails.push_back("/levels/mp_" + leaf + "/mp_" + leaf);
         for (const std::string& tail : tails) {
             std::vector<std::string> hits;
-            for (const auto& kv : by_name_)
+            for (const auto& kv : *names_)
                 if (ends_with(kv.first, tail)) hits.push_back(kv.first);
             if (hits.empty()) continue;
             std::sort(hits.begin(), hits.end());
-            start = by_name_[hits[0]];
+            start = names_->at(hits[0]);
             break;
         }
     }

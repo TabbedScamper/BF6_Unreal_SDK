@@ -427,6 +427,7 @@ int bf6_level_water_render(bf6_ctx* c, const char* level,
         /* Absent is NOT zero anywhere in this struct: zero is authored. */
         w.base_colour[0] = w.deep_colour[0] = -1.f;
         w.surface_colour[0] = -1.f;
+        w.extinction[0] = w.extinction[1] = w.extinction[2] = -1.f;
         w.absorption_distance_m = -1.f;
         w.depth_ramp_m = -1.f;
         w.detail_normal = w.foam_normal = w.foam_rgb = w.noise = w.perlin =
@@ -727,7 +728,9 @@ int bf6_level_water_render(bf6_ctx* c, const char* level,
                 } else {
                     const float s = w.base_colour[k];
                     w.surface_colour[k] = s < 0.f ? 0.f : (s > 1.f ? 1.f : s);
-                    w.extinction[k] = 0.f;
+                    /* Raw colour bypass supplies no volumetric extinction.
+                     * Keep the absent sentinel, including when distance was
+                     * not decoded. Zero would falsely mean lossless water. */
                 }
             }
         } else if (w.variant == 0 && w.base_colour[0] >= 0.f) {

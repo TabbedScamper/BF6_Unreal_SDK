@@ -24,6 +24,8 @@
 #include "Layout/WidgetPath.h"
 #include "LevelEditor.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
@@ -531,6 +533,11 @@ namespace
 
 	bool EnsureWindow()
 	{
+		if (FParse::Param(FCommandLine::Get(), TEXT("bf6-offline")))
+		{
+			SetStatus(TEXT("Portal is disabled for this editor session (-bf6-offline). Local editors remain available."));
+			return false;
+		}
 		if (GWindow.IsValid() && GWindow->IsValid() && !GWindow->IsClosing()) return true;
 		GWindow.Reset();
 		if (!WebAvailable())

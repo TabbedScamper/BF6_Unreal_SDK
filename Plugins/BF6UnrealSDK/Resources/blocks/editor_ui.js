@@ -548,34 +548,26 @@
   // So each one goes on alone, by name, and BF6.Blocks.Perf reads the result.
   // Anything that does not earn its place comes straight back off.
   // =========================================================================
-  // TEXT NOBODY CAN READ IS NOT DRAWN
-  //
-  // Measured on the real 5,088 block project, panning: the frame costs 57ms,
-  // and with the text hidden it costs 31.9. Text is 44% of it, and nothing
-  // else came close - hiding all 5,140 images saved nothing at all, and both
-  // of the usual css hints (shape-rendering and text-rendering optimizeSpeed)
-  // and a compositor layer all made it WORSE, the layer by 63%.
-  //
-  // So the only lever is not drawing text. Doing that always would be a
-  // different editor; doing it when the text is too small to read costs the
-  // creator nothing. Block text is 16px at scale 1, so below about a third it
-  // is five pixels tall and already unreadable - which is exactly the zoomed
-  // out view where the most blocks are on screen and the frame is slowest.
-  //
-  // One class on one element, so the cost of the check is one comparison per
-  // zoom change and nothing at all per block.
-  var TEXT_FLOOR = 0.35;
+  // Creators choose how far out labels remain visible. The default keeps
+  // them to 15% zoom; zero means always visible. This hides text only, never
+  // the site's block badges or socket icons. Viewport pruning independently
+  // avoids painting off-screen blocks without changing the program.
+  var TEXT_FLOOR = 0.15;
   var TEXT_HIDDEN_CLASS = 'bf6-text-too-small';
+
+  function textFloor() {
+    var value = BF6.state.prefs && BF6.state.prefs.textFloor;
+    var floor = value === undefined ? TEXT_FLOOR : Number(value);
+    return Number.isFinite(floor) ? Math.max(0, Math.min(.5, floor)) : TEXT_FLOOR;
+  }
+  UI.textFloor = textFloor;
 
   function updateTextFloor() {
     try {
       var div = UI.ws && UI.ws.getInjectionDiv && UI.ws.getInjectionDiv();
       if (!div) return;
-      var floor = (BF6.state.prefs && BF6.state.prefs.textFloor !== undefined)
-        ? Number(BF6.state.prefs.textFloor) : TEXT_FLOOR;
-      if (!(floor > 0)) { div.classList.remove(TEXT_HIDDEN_CLASS); return; }
-      var small = UI.ws.getScale() < floor;
-      if (small === UI.textHidden) return;      // nothing changed, touch nothing
+      var small = UI.ws.getScale() < textFloor();
+      if (small === UI.textHidden && div.classList.contains(TEXT_HIDDEN_CLASS) === small) return;
       UI.textHidden = small;
       div.classList.toggle(TEXT_HIDDEN_CLASS, small);
       // Coming back INTO readable range: the text is drawn again, so it wants
@@ -737,7 +729,9 @@
 
   function wantTextPictures() {
     var p = BF6.state.prefs || {};
-    return p.textPictures === undefined ? true : !!p.textPictures;
+    // Ordinary text stays editable and follows font/field changes immediately.
+    // Viewport pruning removes the off-screen paint cost that motivated PNGs.
+    return p.textPictures === undefined ? false : !!p.textPictures;
   }
 
   // One sweep over whatever is not pictured yet. Cheap to call often: a block
@@ -954,6 +948,7 @@
   }
 
   function cullFarImages() {
+    if (UI.ws && UI.ws.bf6Viewport) { UI.ws.bf6Viewport.update(); return 0; }
     if (!UI.ws || !wantFarCull()) return 0;
 
     // ASK BLOCKLY WHERE THE VIEW IS. DO NOT WORK IT OUT.
@@ -1448,6 +1443,12 @@
         startHats: !!t.startHats
       };
     }
+    if (UI.redVariables) {
+      spec.blockStyles = Object.assign({}, spec.blockStyles);
+      spec.blockStyles['variable-block-style'] = Object.assign({}, spec.blockStyles['variable-block-style'], {
+        colourPrimary: '#6e0000', colourSecondary: '#870000', colourTertiary: '#460000'
+      });
+    }
     try {
       return Blockly.Theme.defineTheme('bf6portal_' + (++themeSeq), {
         base: Blockly.Themes.Classic,
@@ -1540,7 +1541,8 @@
      * PERF_EXPERIMENTS above still holds nofilter, nohover and noblur for
      * measuring what these cost. That is where an experiment belongs. */
 
-    parts.push('.' + TEXT_HIDDEN_CLASS + ' .blocklyBlockCanvas text { display: none; }');
+    parts.push('.' + TEXT_HIDDEN_CLASS + ' .blocklyBlockCanvas text, .' +
+      TEXT_HIDDEN_CLASS + ' .blocklyBlockCanvas image.' + PIC_CLASS + ' { display: none; }');
     parts.push('.' + FAR_CLASS + ' image { display: none; }');
 
     /* A STACK THAT IS OFF SCREEN SHOULD NOT BE PAINTED AT ALL.
@@ -1989,7 +1991,7 @@
      * just stack another copy of every handler on top of the last. */
     if (host.__bf6PanInstalled) { return; }
     host.__bf6PanInstalled = true;
-    send({ op: 'log', level: 'display', text: 'pan: middle drag and space drag installed on #canvas' });
+    send({ op: 'log', level: 'display', text: 'pan: middle drag and Alt drag installed on #canvas' });
     var sawDown = false;
     var panning = false, spaceDown = false;
     var fromX = 0, fromY = 0, atX = 0, atY = 0;
@@ -2033,7 +2035,9 @@
       host.style.cursor = spaceDown ? 'grab' : '';
     }
 
-    host.addEventListener('mousedown', function (e) {
+    // Blockly consumes pointerdown and can suppress the compatibility mouse
+    // event. Claim the pan modifier before its gesture handler runs.
+    host.addEventListener('pointerdown', function (e) {
       /* Once only: says which buttons actually reach the page, which is the
        * thing in doubt when a gesture does nothing. */
       /* Once only: says which buttons actually reach the page, which is the
@@ -2064,14 +2068,15 @@
       if (start(e)) { e.preventDefault(); e.stopPropagation(); }
     }, true);
 
-    window.addEventListener('mousemove', function (e) {
+    window.addEventListener('pointermove', function (e) {
       if (!panning) { return; }
       try { UI.ws.scroll(atX + (e.clientX - fromX), atY + (e.clientY - fromY)); }
       catch (err) { stop(); return; }
       e.preventDefault();
     }, true);
 
-    window.addEventListener('mouseup', function () { stop(); }, true);
+    window.addEventListener('pointerup', function () { stop(); }, true);
+    window.addEventListener('pointercancel', function () { stop(); }, true);
     window.addEventListener('blur', function () { spaceDown = false; stop(); });
 
     // Space is a modifier here, not a character: it must not scroll the page or
@@ -2183,10 +2188,17 @@
     } catch (e) { UI.reportFault('putting the site scope classes on', e); }
   }
 
-  function rebuildWorkspace() {
-    var wsJson = UI.ws ? BF6.saveWorkspace(UI.ws) : null;
-    if (UI.ws) { UI.ws.dispose(); UI.ws = null; }
+  function rebuildWorkspace(preserve) {
+    var wsJson = UI.ws && preserve !== false ? BF6.saveWorkspace(UI.ws) : null;
+    if (UI.glyphTimer) clearInterval(UI.glyphTimer);
+    if (UI.sideObserver) UI.sideObserver.disconnect();
+    UI.staleById = {};
+    if (UI.ws) {
+      if (UI.ws.bf6Viewport) UI.ws.bf6Viewport.dispose();
+      UI.ws.dispose(); UI.ws = null;
+    }
     UI.ws = Blockly.inject('canvas', workspaceOptions());
+    if (window.BF6Viewport) window.BF6Viewport.install(Blockly, UI.ws);
     enableDragPan();
     /* OFF, and kept. The trail wraps eighteen Blockly entry points and narrates
      * each one to the log, which is how the toolbox freeze was finally cornered
@@ -2299,7 +2311,7 @@
      * listener causes and says so once a second while there is any, which
      * turns "it locked up when I clicked" into a number. Silent when idle, so
      * it costs nothing and does not fill the log. */
-    setInterval(function () {
+    UI.glyphTimer = setInterval(function () {
       if (!UI.glyphSeen && !UI.glyphRan) { return; }
       send({ op: 'log', level: 'display', text:
         'glyph listener: ' + UI.glyphSeen + ' event(s) in the last second, ' +
@@ -2322,8 +2334,8 @@
     try {
       var sideEl = $('side');
       if (sideEl && window.MutationObserver) {
-        new MutationObserver(positionRegionTabs)
-          .observe(sideEl, { attributes: true, attributeFilter: ['class'] });
+        UI.sideObserver = new MutationObserver(positionRegionTabs);
+        UI.sideObserver.observe(sideEl, { attributes: true, attributeFilter: ['class'] });
       }
     } catch (e) {}
     /* CULL WHILE THE VIEW MOVES, NOT ONLY WHEN IT SETTLES.
@@ -2719,7 +2731,7 @@
      * as the site tried to apply a workspace nobody asked it to take. Opening a
      * file on this machine must not write to a live experience, so nothing goes
      * out until the load has settled. */
-    if (UI.loadingDoc) { return; }
+    if (UI.loadingDoc || UI.applying || BF6.state.loading) { return; }
     var msgs = BF6.diffUnits(UI.ws);
     var vars = JSON.stringify(BF6.variableList(UI.ws));
     if (vars !== UI.lastVars) {
@@ -2727,6 +2739,7 @@
       msgs.push({ op: 'variables', list: JSON.parse(vars) });
     }
     msgs.forEach(function (m) {
+      if (UI.ruleMode && m.id === UI.ruleMode.id && m.op === 'replaceTop') m.anchor = UI.ruleMode.anchor;
       m.seq = ++UI.seq;
       // Every unit stays in the journal until the site says it applied it. A
       // sign-out mid-edit then costs nothing: the journal is what gets replayed.
@@ -2778,7 +2791,9 @@
     UI.autosaveTimer = setTimeout(function () {
       UI.autosaveTimer = null;
       if (!UI.ws) return;
-      var json = BF6.saveWorkspace(UI.ws);
+      if (UI.loadFailed) return;
+      if (UI.loadingDoc || UI.applying || BF6.state.loading) { scheduleAutosave(); return; }
+      var json = projectDocument();
       var counts = BF6.countWorkspace(json);
       send({
         op: 'autosave', json: json,
@@ -2813,7 +2828,13 @@
   // while we were cut off wins; anything we never touched comes back from the
   // site, because another tab or another person may have moved it.
   function reconcileWithSite(siteJson) {
-    var local = BF6.saveWorkspace(UI.ws);
+    var local = projectSnapshot();
+    if (UI.region || UI.ruleMode) {
+      UI.region = null; UI.ruleMode = null; UI.ruleModeStash = null;
+      $('rulemode').classList.remove('on');
+      UI.applying++;
+      try { BF6.loadWorkspace(UI.ws,local); UI.doc = local; } finally { UI.applying--; }
+    }
     var r = BF6.reconcile(local, siteJson, journalIds());
     UI.applying++;
     try {
@@ -2858,7 +2879,11 @@
     var b = el('button', null, 'USE SITE  ' + sc.blocks + ' blocks, ' + sc.rules + ' rules');
     a.onclick = function () {
       bar.className = 'restore';
+      UI.region = null; UI.ruleMode = null; UI.ruleModeStash = null;
+      $('rulemode').classList.remove('on');
+      readExtendedSidecar(local.json);
       BF6.loadWorkspace(UI.ws, local.json);
+      UI.doc = BF6.unwrap(local.json);
       UI.lastVars = JSON.stringify(BF6.variableList(UI.ws));
       // Everything that differs from the site goes back out.
       var r = BF6.reconcile(BF6.saveWorkspace(UI.ws), siteJson,
@@ -2873,7 +2898,11 @@
     };
     b.onclick = function () {
       bar.className = 'restore';
+      UI.region = null; UI.ruleMode = null; UI.ruleModeStash = null;
+      $('rulemode').classList.remove('on');
+      readExtendedSidecar(siteJson);
       BF6.loadWorkspace(UI.ws, siteJson);
+      UI.doc = BF6.unwrap(siteJson);
       UI.lastVars = JSON.stringify(BF6.variableList(UI.ws));
       UI.journal = {};
       after();
@@ -3005,6 +3034,9 @@
       case 'defs': applyCapture(msg); break;
       case 'style': applyStyle(msg); break;
       case 'workspace': {
+        if (UI.loadingDoc || UI.applying || BF6.state.loading) {
+          status('Wait for the current workspace to finish opening.', true); break;
+        }
         // WHY THIS RUNS AGAIN FOR A FALLBACK.
         //
         // Offline definitions are built by OBSERVING a workspace: a field the
@@ -3040,12 +3072,14 @@
          * on Unreal's thread, so that froze the entire editor: a 2,000 block
          * slice held it for over a hundred seconds and 52,427 blocks never
          * returned. The rest of this case now runs when the batches finish. */
+        UI.loadingDoc = true; UI.loadFailed = false;
+        if (UI.debounce) { clearTimeout(UI.debounce); UI.debounce = null; }
         UI.applying++;
         loadWorkspaceIncremental(msg.json,
           function (n, t) { showLoadProgress(n, t, 'the workspace'); },
           function () { UI.applying--; hideLoadProgress(); afterWorkspaceMessage(msg); },
           function (stepName, e) {
-            UI.applying--; hideLoadProgress();
+            UI.applying--; UI.loadingDoc = false; UI.loadFailed = true; hideLoadProgress();
             UI.reportFault(stepName, e);
             status('could not load that workspace while ' + stepName + ': ' +
               ((e && e.message) || e), true);
@@ -3061,32 +3095,12 @@
    * batched load reports itself finished, which is later than the message that
    * started it. */
   function afterWorkspaceMessage(msg) {
-        var loaded;
         BF6.syncAllSocketGlyphs(UI.ws);
-        UI.lastVars = JSON.stringify(BF6.variableList(UI.ws));
-        // Both ways a project can arrive lower the floor. Only one of them
-        // doing it is how a limit comes back on the path nobody tested.
-        refreshZoomFloor();
-        scheduleTextPictures();
-        refreshNavigator(); drawMinimap(); refreshStale();
-        loaded = UI.ws.getAllBlocks(false).length;
-        // Turn the heavy paint off and the rendering hints on once a canvas
-        // is big enough for them to matter. Small ones keep the site's exact
-        // look, blur and all.
-        try { document.body.classList.toggle('perf-heavy', loaded > 1500); } catch (e) {}
-        // Blockly builds and draws every block whether or not it is on screen,
-        // and that cost is Blockly's, not something this editor can tune away:
-        // measured on a 5,088 block project, everything this tool adds came to
-        // 1% of the load. What DOES help is not having them all open at once,
-        // so a big mod is told about the mode that does that.
-        if (loaded > 1500) {
-          status('workspace loaded: ' + loaded + ' blocks. This many is slow to draw: ' +
-            'use "Work on one rule at a time" under More to open just the rule you are editing.');
-        } else {
-          status('workspace loaded: ' + loaded + ' blocks');
-        }
-        // Local work newer than what the site returned: the user chooses.
-        if (msg.local && msg.local.json) offerRestore(msg.json, msg.local);
+        // Use the same load boundary as file imports: deferred rendering and
+        // annotation events must not be published as creator edits.
+        finishWorkspaceDoc(msg.json, 'workspace loaded', function () {
+          if (msg.local && msg.local.json) offerRestore(msg.json, msg.local);
+        });
   }
 
   /* Every other message. Split out only so the workspace case above could
@@ -3357,14 +3371,14 @@
     }
     if (!UI.ws) { return []; }
     UI.ws.getTopBlocks(true).forEach(function (top) {
-      var f = (top.type === 'modBlock') ? ' rules' : (fileOfBlock(top) || '(no file)');
+      var f = (top.type === 'modBlock') ? ' rules' : (fileOfBlock(top) || '(no file)');
       var r = bucket(f);
       r.tops.push(top.id);
       try { r.blocks += top.getDescendants(false).length; } catch (e) {}
     });
     return order.map(function (f) {
       var r = byFile[f];
-      r.label = (f === ' rules') ? 'RULES' : shortFile(f);
+      r.label = (f === ' rules') ? 'RULES' : shortFile(f);
       return r;
     });
   }
@@ -3450,29 +3464,35 @@
    * serialised, which is hundreds of blocks rather than tens of thousands. */
   function writeRegionBack() {
     if (!UI.region || !UI.doc) { return; }
-    var tops = docTops();
-    var byId = {};
-    try {
-      UI.ws.getTopBlocks(false).forEach(function (b) {
-        try { byId[b.id] = BF6.saveUnit(b); } catch (e) {}
-      });
-    } catch (e) { return; }
-    for (var i = 0; i < tops.length; i++) {
-      var u = byId[tops[i].id];
-      if (u) {
-        /* Keep the position and provenance the layout gave it; only the block
-         * content is the reader's. */
-        u.x = tops[i].x; u.y = tops[i].y;
-        if (tops[i].data !== undefined) { u.data = tops[i].data; }
-        tops[i] = u;
-      }
-    }
-    if (UI.doc.blocks) { UI.doc.blocks.blocks = tops; }
+    UI.doc = projectSnapshot();
+    var live = canvasSnapshot();
+    UI.region.topIds = ((live.blocks && live.blocks.blocks) || []).map(function(b){return b.id;});
+  }
+
+  function canvasSnapshot() {
+    var live = BF6.saveWorkspace(UI.ws);
+    return UI.ruleMode ? window.BF6ProjectState.mergeFocus(UI.ruleModeStash,live,UI.ruleMode.id) : live;
+  }
+
+  function projectSnapshot() {
+    if (UI.loadFailed) throw new Error('This workspace did not finish loading. Reopen a complete workspace before saving or exporting.');
+    if (UI.loadingDoc || UI.applying || BF6.state.loading) throw new Error('Wait for the workspace to finish opening before saving or exporting.');
+    var live = canvasSnapshot();
+    if (!UI.region || !UI.doc) return live;
+    var ids = UI.region.topIds || docTops().filter(function(b){return fileOfDocTop(b)===UI.region.file;}).map(function(b){return b.id;});
+    return window.BF6ProjectState.mergeRegion(UI.doc,live,ids,UI.region.file);
+  }
+
+  function projectDocument() {
+    var doc = BF6.writeWorkspaceDoc(projectSnapshot());
+    attachExtendedSidecar(doc);
+    return doc;
   }
 
   function showRegion(file, label) {
     var wanted = docTops().filter(function (t) { return fileOfDocTop(t) === file; });
     if (!wanted.length) { status('nothing in that file', true); return; }
+    if (UI.region) UI.region.topIds = wanted.map(function(b){return b.id;});
 
     UI.applying++;
     BF6.state.loading++;
@@ -3517,6 +3537,9 @@
       UI.applying--;
       hideLoadProgress();
 
+      BF6.snapshotUnits(UI.ws);
+      UI.lastVars = JSON.stringify(BF6.variableList(UI.ws));
+
       var n = 0;
       try { n = UI.ws.getAllBlocks(false).length; } catch (e) {}
       status(label + ': ' + wanted.length + ' item(s), ' + n + ' blocks.');
@@ -3528,8 +3551,11 @@
   }
 
   function enterRegion(file) {
+    if (UI.loadingDoc || UI.applying || BF6.state.loading) { status('Wait for the current tab to finish opening.', true); return; }
     if (!UI.ws || !UI.doc) { return; }
+    if (UI.debounce) { clearTimeout(UI.debounce); flush(); }
     if (UI.ruleMode) { exitRuleMode(); }
+    if (!UI.region) UI.doc = canvasSnapshot();
     writeRegionBack();
     UI.region = { file: file };
     showRegion(file, shortFile(file === ' rules' ? 'RULES' : file));
@@ -3538,7 +3564,10 @@
   /* ALL FILES. Honest about the cost: this is the whole project on one canvas,
    * which is what the per file view exists to avoid. */
   function exitRegion() {
+    if (UI.loadingDoc || UI.applying || BF6.state.loading) { status('Wait for the current tab to finish opening.', true); return; }
     if (!UI.ws || !UI.doc) { return; }
+    if (UI.ruleMode) exitRuleMode();
+    if (UI.debounce) { clearTimeout(UI.debounce); flush(); }
     writeRegionBack();
     UI.region = null;
 
@@ -3579,6 +3608,8 @@
       Blockly.Events.enable(); BF6.state.loading--; UI.applying--;
       hideLoadProgress();
       status('all files');
+      BF6.snapshotUnits(UI.ws);
+      UI.lastVars = JSON.stringify(BF6.variableList(UI.ws));
       refreshRegionTabs(); refreshNavigator(); drawMinimap();
       try { cullFarImages(); } catch (e) {}
     }
@@ -3786,7 +3817,7 @@
     regions.forEach(function (r, i) {
       var t = el('div', 'rtab' + (UI.region && UI.region.file === r.file ? ' on' : ''),
                  r.label);
-      t.title = (r.file === ' rules' ? 'The mod rules' : r.file) +
+      t.title = (r.file === ' rules' ? 'The mod rules' : r.file) +
                 '  -  ' + r.tops.length + ' item(s), ' + r.blocks + ' blocks';
       /* The spine colour, the same hue this file gets on the minimap, so a band
        * on the map and a bookmark on the edge read as the same thing. */
@@ -4439,7 +4470,7 @@
     var I = window.BF6ExtendedIntegration;
     if (!I || !I.requireNative || !I.snapshot) { return true; }
     try {
-      I.requireNative(I.snapshot(Blockly, UI.ws, (UI.project && UI.project.strings) || {}));
+      I.requireNative(projectDocument());
       return true;
     } catch (e) {
       status((e && e.message) || 'This project cannot go out as native blocks.', true);
@@ -4457,7 +4488,7 @@
     var Convert = window.BF6Convert;
     if (!Convert || !Convert.packForPortal) { return null; }
     var doc;
-    try { doc = BF6.writeWorkspaceDoc(BF6.saveWorkspace(UI.ws)); }
+    try { doc = projectDocument(); }
     catch (e) { return null; }
     try { return Convert.packForPortal(doc, {}); }
     catch (e) { return null; }
@@ -4481,7 +4512,7 @@
     }
     status('Too big for blocks on Portal: ' + parts.join(', ') +
            ' after packing. Portal would refuse this upload. Use ' +
-           '"Save as a script project" and build it from TypeScript instead.', true);
+           '"Export for Portal" to build one uploadable TypeScript script instead.', true);
 
     /* Point at the button that does it rather than describing it. */
     var b = $('btn-exportscript');
@@ -4755,6 +4786,8 @@
   function refreshNavigator() {
     if (!UI.ws) return;
     refreshRegionTabs(); refreshBreadcrumb(); refreshBudget();
+    var panel = $('pane-rules');
+    if (panel && !panel.classList.contains('on')) return;
     var rules = [], subs = [], orphans = [];
     var counts = {};
     UI.ws.getTopBlocks(false).forEach(function (top) {
@@ -5069,13 +5102,18 @@
     if (!UI.ws) return;
     var stale = BF6.staleRefs(UI.ws);
     var seen = {};
-    UI.ws.getAllBlocks(false).forEach(function (b) {
-      try { b.setWarningText && b.setWarningText(null, 'bf6stale'); } catch (e) {}
+    var before = UI.staleById || {}, current = {};
+    stale.forEach(function (r) { current[r.blockId] = r.kind + ':' + r.objId; });
+    Object.keys(before).forEach(function (id) {
+      if (current[id] !== undefined) return;
+      var b = UI.ws.getBlockById(id);
+      try { if (b) b.setWarningText(null, 'bf6stale'); } catch (e) {}
     });
     stale.forEach(function (r) {
       var b = UI.ws.getBlockById(r.blockId);
       if (!b) return;
       seen[r.objId] = 1;
+      if (before[r.blockId] === current[r.blockId]) return;
       try {
         b.setWarningText('ObjId ' + r.objId + ' is not on any placed ' + r.kind + ' in this level.',
           'bf6stale');
@@ -5102,6 +5140,7 @@
       lbl.className = n ? 'pill warnpill' : 'pill hidden';
     }
     UI.staleList = stale;
+    UI.staleById = current;
   }
 
   function highlightScene(objIds) {
@@ -5173,6 +5212,8 @@
 
   // ---- rule at a time -----------------------------------------------------
   function enterRuleMode(id) {
+    if (UI.applying || BF6.state.loading) return;
+    if (UI.debounce) { clearTimeout(UI.debounce); flush(); }
     if (UI.ruleMode) exitRuleMode();
     var b = UI.ws.getBlockById(id);
     if (!b) return;
@@ -5186,31 +5227,30 @@
       Blockly.Events.disable();
       try {
         UI.ws.clear();
+        restoreVariables(UI.ruleModeStash.variables || []);
         var nb = Blockly.serialization.blocks.append(unit, UI.ws);
         nb.moveBy(40, 40);
       } finally { Blockly.Events.enable(); BF6.state.loading--; }
     } finally { UI.applying--; }
     $('rulemode').classList.add('on');
+    BF6.snapshotUnits(UI.ws);
+    UI.lastVars = JSON.stringify(BF6.variableList(UI.ws));
     status('rule at a time: editing one block. EXIT writes it back.');
     drawMinimap();
   }
 
   function exitRuleMode() {
     if (!UI.ruleMode) return;
-    var id = UI.ruleMode.id, anchor = UI.ruleMode.anchor;
-    var b = UI.ws.getBlockById(id);
-    var unit = b ? BF6.saveUnit(b) : null;
-    var stash = UI.ruleModeStash;
+    if (UI.debounce) { clearTimeout(UI.debounce); flush(); }
+    var stash = canvasSnapshot();
     UI.ruleMode = null; UI.ruleModeStash = null;
     UI.applying++;
     try {
       BF6.loadWorkspace(UI.ws, stash);
-      if (unit) BF6.applyReplace(UI.ws, { id: id, json: unit, anchor: anchor });
     } finally { UI.applying--; }
     $('rulemode').classList.remove('on');
     // Push the edited rule out for real, now that it is back in place.
-    var msgs = BF6.diffUnits(UI.ws);
-    msgs.forEach(function (m) { m.seq = ++UI.seq; send(m); });
+    UI.lastVars = JSON.stringify(BF6.variableList(UI.ws));
     after();
     status('rule written back');
   }
@@ -5814,6 +5854,8 @@
   function drawMinimap() {
     var c = $('minimap');
     if (!c || !UI.ws) return;
+    if (!c.clientWidth || !c.clientHeight || UI.loadingDoc || UI.applying ||
+        (UI.ws.isDragging && UI.ws.isDragging())) return;
     var ctx = c.getContext('2d');
     var w = c.width = c.clientWidth, h = c.height = c.clientHeight;
     ctx.clearRect(0, 0, w, h);
@@ -6153,6 +6195,8 @@
   }
 
   function showLoadProgress(n, total, what) {
+    var canvas = $('canvas');
+    if (canvas) { canvas.inert = true; canvas.style.pointerEvents = 'none'; }
     var el = loadProgressEl();
     el.style.display = '';
     var pct = total ? Math.round((n / total) * 100) : 0;
@@ -6165,6 +6209,8 @@
   }
 
   function hideLoadProgress() {
+    var canvas = $('canvas');
+    if (canvas) { canvas.inert = false; canvas.style.pointerEvents = ''; }
     var el = document.getElementById('bf6-load-progress');
     if (el) { el.style.display = 'none'; }
   }
@@ -6374,6 +6420,11 @@
     try { UI.ws.setResizesEnabled(false); } catch (e) {}
     try { B.Events.disable(); } catch (e) {}
 
+    // A workspace message replaces the previous document. Appending left old
+    // blocks and variables behind, especially on a second import.
+    try { UI.ws.clear(); }
+    catch (e) { finish(e, 'clearing the previous workspace'); return; }
+
     /* THE VARIABLES FIRST, BY THE ONE CALL THAT EXISTS IN THIS BUILD.
      *
      * This used to call Blockly.serialization.variables.load. That object is
@@ -6504,7 +6555,7 @@
     var X = window.BF6Extended, I = window.BF6ExtendedIntegration;
     if (!doc || !X || !I || !X.canExportNative) { return doc; }
     try {
-      if (X.canExportNative(I.snapshot(Blockly, UI.ws, {}))) { return doc; }
+      if (X.canExportNative(doc)) { return doc; }
       doc.bf6x = { version: 1, strings: (UI.project && UI.project.strings) || {} };
     } catch (e) { /* never lose a save over the sidecar */ }
     return doc;
@@ -6512,8 +6563,10 @@
 
   function readExtendedSidecar(doc) {
     var side = doc && doc.bf6x;
-    if (!side) { return; }
     if (!UI.project) { UI.project = {}; }
+    UI.project.strings = {};
+    UI.project.extended = false;
+    if (!side) { return; }
     UI.project.strings = side.strings || {};
     UI.project.extended = true;
     trace('extended project: restored ' +
@@ -6521,6 +6574,12 @@
   }
 
   function loadWorkspaceDoc(doc, what) {
+    if (UI.loadingDoc || UI.applying || BF6.state.loading) { status('Wait for the current workspace to finish opening before importing another.', true); return false; }
+    UI.loadFailed = false;
+    UI.openRegionAfterLoad = null;
+    if (UI.settleTimer) { clearTimeout(UI.settleTimer); UI.settleTimer = null; }
+    UI.region = null; UI.ruleMode = null; UI.ruleModeStash = null;
+    if ($('rulemode')) $('rulemode').classList.remove('on');
     UI.loadingDoc = true;
     var step = 'reading the file';
     try {
@@ -6530,12 +6589,13 @@
       step = 'growing the block definitions for this workspace';
       growDefinitions(BF6.unwrap(doc));
       step = 'rebuilding the canvas';
-      rebuildWorkspace();
+      rebuildWorkspace(false);
     } catch (e) {
       UI.reportFault(step, e);
       status('could not load that workspace while ' + step + ': ' +
         ((e && e.message) || e), true);
       UI.loadingDoc = false;
+      UI.loadFailed = true;
       return;
     }
 
@@ -6554,12 +6614,14 @@
         status('could not load that workspace while ' + stepName + ': ' +
           ((e && e.message) || e), true);
         UI.loadingDoc = false;
+        UI.loadFailed = true;
       });
   }
 
   /* Everything that used to follow the blocking load, now that it finishes
    * later than the call that started it. */
-  function finishWorkspaceDoc(doc, what) {
+  function finishWorkspaceDoc(doc, what, onSettled) {
+    showLoadProgress(1, 1, 'finishing block layout');
     UI.lastVars = JSON.stringify(BF6.variableList(UI.ws));
 
     /* A BIG PROJECT DOES NOT OPEN WHOLE. IT OPENS ON ITS FIRST FILE.
@@ -6577,12 +6639,15 @@
     try {
       var count = UI.ws.getAllBlocks(false).length;
       if (!UI.region && count > 6000) {
-        var regions = buildRegions().filter(function (r) { return r.file !== ' rules'; });
+        var files = new Set(docTops().map(fileOfDocTop).filter(function (f) {
+          return f && f !== ' rules' && f !== '(no file)';
+        }));
+        var regions = buildRegions().filter(function (r) { return files.has(r.file); });
         regions.sort(function (a, b) { return b.blocks - a.blocks; });
         if (regions.length > 1) {
           trace('load: ' + count + ' blocks is too many to draw at once, opening ' +
                 regions[0].label + ' (' + regions[0].blocks + ' blocks). ALL FILES shows everything.');
-          setTimeout(function () { enterRegion(regions[0].file); }, 0);
+          UI.openRegionAfterLoad = regions[0].file;
         }
       }
     } catch (e) { UI.reportFault('choosing a file to open on', e); }
@@ -6742,7 +6807,12 @@
         UI.journal = {};
         paintPending();
       } catch (e) { UI.reportFault('settling after a load', e); }
-      finally { UI.loadingDoc = false; }
+      finally { UI.loadingDoc = false; hideLoadProgress(); }
+      if (onSettled) onSettled();
+      if (UI.openRegionAfterLoad) {
+        var file = UI.openRegionAfterLoad; UI.openRegionAfterLoad = null;
+        enterRegion(file);
+      }
     }, 2500);
 
     var loaded = UI.ws.getAllBlocks(false).length;
@@ -6810,6 +6880,7 @@
       var res = null;
       try { res = Convert.tsToBlocks(sources, {}); }
       catch (e) { status('the converter refused that script: ' + (e.message || e), true); return; }
+      if (!acceptNativeImport(res, name)) return;
       loadWorkspaceDoc(res.workspace, 'imported ' + (name || 'a script export'));
       showConvertReport(res.report, name);
     });
@@ -6840,6 +6911,7 @@
       var res = null;
       try { res = Convert.tsToBlocks(files, {}); }
       catch (e) { status('the converter refused that project: ' + (e.message || e), true); return; }
+      if (!acceptNativeImport(res, dir)) return;
       /* WHAT THE CONVERTER ACTUALLY PRODUCED, EVERY TIME.
        *
        * Packing folds many variables into pack0/pack1 and makes a project
@@ -6930,6 +7002,9 @@
   function onMapChanged(mapName) {
     var n = 0;
     try { n = UI.ws.getAllBlocks(false).length; } catch (e) {}
+    UI.doc = null; UI.region = null; UI.ruleMode = null; UI.ruleModeStash = null;
+    if (UI.project) { UI.project.strings = {}; UI.project.extended = false; }
+    if ($('rulemode')) $('rulemode').classList.remove('on');
     if (!n) { return; }
     try { UI.ws.clear(); } catch (e) { return; }
     try { drawMinimap(); } catch (e) {}
@@ -6991,15 +7066,25 @@
 
   // Nothing is dropped in silence: whatever the converter could not represent
   // is listed, with what it suggests instead.
-  function showConvertReport(report, name) {
+  function acceptNativeImport(result, name) {
+    var problems = window.BF6Convert.nativeImportProblems(result && result.report);
+    if (!problems.length) return true;
+    showConvertReport(result.report || {}, name, true);
+    status('Conversion stopped. ' + problems.join(' ') + ' Keep this project in the TypeScript editor. Your current blocks were preserved.', true);
+    return false;
+  }
+
+  function showConvertReport(report, name, stopped) {
     var box = $('portal');
     if (!box) return;
     box.innerHTML = '';
     var bad = (report.unconvertible || []).length;
-    box.className = bad ? 'portal on' : 'portal on good';
-    box.appendChild(el('div', 'portal-head', bad
+    var problems = window.BF6Convert.nativeImportProblems(report);
+    box.className = bad || problems.length ? 'portal on' : 'portal on good';
+    box.appendChild(el('div', 'portal-head', stopped ? 'CONVERSION STOPPED: KEEP THIS PROJECT IN TYPESCRIPT' : bad
       ? 'IMPORTED, WITH ' + bad + ' THING' + (bad === 1 ? '' : 'S') + ' THE BLOCKS CANNOT SAY'
       : 'IMPORTED: EVERYTHING IN THAT SCRIPT BECAME BLOCKS'));
+    problems.forEach(function (problem) { box.appendChild(el('div', 'portal-text', problem)); });
     if (name) box.appendChild(el('div', 'portal-msg', name));
     (report.unconvertible || []).forEach(function (u) {
       var row = el('div', 'portal-row');
@@ -7143,9 +7228,7 @@
   }
 
   function buildExport(format, forSite) {
-    var saved = BF6.saveWorkspace(UI.ws);
-    var doc = BF6.writeWorkspaceDoc(saved);
-    attachExtendedSidecar(doc);
+    var doc = projectDocument();
     var packNote = '';
     if (forSite && !nativeRouteAllowed('packing for Portal')) {
       throw new Error('extended blocks cannot be packed as native blocks');
@@ -7198,9 +7281,9 @@
    * One button, because from the author's side it is one intention: turn this
    * into a script project. Which compiler runs is ours to work out.
    */
-  function exportExtendedAsScript(dir) {
+  function exportExtendedAsScript(dir, sourceOnly) {
     var X = window.BF6Extended, I = window.BF6ExtendedIntegration;
-    var doc = I.snapshot(Blockly, UI.ws, (UI.project && UI.project.strings) || {});
+    var doc = projectDocument();
     var res;
     try {
       res = X.compile(doc, {
@@ -7240,7 +7323,7 @@
     if (!names.length) { status('the extended compiler produced no files', true); return; }
     status('writing ' + names.length + ' file(s): ' + names.join(', '));
     /* Nested paths now survive the bridge, so src/index.ts lands in src/. */
-    send({ op: 'exportScript', files: files, dir: dir || '' });
+    send({ op: sourceOnly ? 'exportScript' : 'exportPortalScript', files: files, dir: dir || '' });
   }
 
   /* Convert a file from the Script editor and paste it onto this canvas,
@@ -7257,6 +7340,7 @@
     files[file] = source;
     try { res = Convert.tsToBlocks(files, {}); }
     catch (e) { status('that file could not be shown as blocks: ' + (e.message || e), true); return; }
+    if (!acceptNativeImport(res, file)) return;
 
     var ws = res && (res.workspace || res.json);
     if (!ws) { status('that file produced no blocks', true); return; }
@@ -7338,7 +7422,10 @@
     }
   }
 
-  function exportAsScript(dir) {
+  function exportAsScript(dir, sourceOnly) {
+    if (UI.loadingDoc || UI.applying || BF6.state.loading) { status('Wait for the workspace to finish opening before exporting.', true); return; }
+    if (UI.loadFailed) { status('The workspace did not finish loading. Reopen it before exporting.', true); return; }
+    if (typeof dir !== 'string') dir = '';
     /* Extended first: a workspace holding extended blocks has exactly one
      * correct route and it is not the native one. */
     var X = window.BF6Extended, I = window.BF6ExtendedIntegration;
@@ -7346,9 +7433,9 @@
       var isExtended = false;
       try {
         isExtended = !X.canExportNative(
-          I.snapshot(Blockly, UI.ws, (UI.project && UI.project.strings) || {}));
-      } catch (e) { isExtended = false; }
-      if (isExtended) { return exportExtendedAsScript(dir); }
+          projectDocument());
+      } catch (e) { status('Cannot inspect this workspace: ' + (e.message || e), true); return; }
+      if (isExtended) { return exportExtendedAsScript(dir, sourceOnly); }
     }
 
     var Convert = window.BF6Convert;
@@ -7358,23 +7445,30 @@
     // The converter reads the SAVED document, the same shape the workspace
     // export writes and the same thing the command line feeds it - not a live
     // Blockly workspace, which it would find empty.
-    var doc = BF6.writeWorkspaceDoc(BF6.saveWorkspace(UI.ws));
+    var doc = projectDocument();
     var res = null;
     try { res = Convert.blocksToTs(doc, {}); }
     catch (e) { status('the converter could not write that script: ' + (e.message || e), true); return; }
+    if (res && res.report && res.report.unconvertible && res.report.unconvertible.length) {
+      showConvertReport(res.report, 'script export');
+      status('Export stopped: ' + res.report.unconvertible.length + ' block construct(s) could not be converted. Fix the reported blocks before exporting.', true);
+      return;
+    }
     var files = (res && res.files) || null;
     if (!files || !Object.keys(files).length) {
       status('the script export produced no files', true);
       return;
     }
     status('writing ' + Object.keys(files).length + ' file(s)');
-    send({ op: 'exportScript', files: files, dir: dir || '' });
+    send({ op: sourceOnly ? 'exportScript' : 'exportPortalScript', files: files, dir: dir || '' });
     if (res.report) showConvertReport(res.report, 'script export');
   }
   UI.exportAsScript = exportAsScript;
 
   function doExport(format, path) {
-    var out = buildExport(format);
+    var out;
+    try { out = buildExport(format); }
+    catch (e) { status('Export stopped: ' + (e.message || e), true); return; }
     send({ op: 'exportFile', format: format || 'workspace', path: path || '',
       suggested: out.suggested, json: out.json });
     if (out.summary) showExportSummary(out.summary);
@@ -7560,7 +7654,41 @@
   // not about how the window was left, so they never move a panel out from
   // under somebody.
   var prefsApplied = false;
+  function applyFieldSpacing(compact) {
+    BF6.state.prefs = BF6.state.prefs || {};
+    var changed = !!BF6.state.prefs.compactFields !== !!compact;
+    BF6.state.prefs.compactFields = !!compact;
+    var choice = $('field-spacing');
+    if (choice) choice.value = compact ? 'compact' : 'portal';
+    if (changed && UI.ws) BF6.applyFieldSpacing(UI.ws, !!compact);
+  }
+  function applyReadability(p) {
+    BF6.state.prefs = BF6.state.prefs || {};
+    if (p && p.textFloor !== undefined) BF6.state.prefs.textFloor = p.textFloor;
+    if (p && p.simplifiedOverview !== undefined)
+      BF6.state.prefs.simplifiedOverview = String(p.simplifiedOverview) === 'true';
+    var floor = textFloor(), slider = $('text-distance'), label = $('text-distance-value');
+    if (slider) slider.value = Math.round((.5 - floor) * 100);
+    if (label) label.textContent = floor === 0 ? 'Always visible' : 'Visible at ' + Math.round(floor * 100) + '% zoom and closer';
+    if (slider && label) slider.setAttribute('aria-valuetext', label.textContent);
+    var overview = $('simplified-overview');
+    if (overview) overview.checked = BF6.state.prefs.simplifiedOverview === true;
+    updateTextFloor();
+    if (UI.ws && UI.ws.bf6Viewport) UI.ws.bf6Viewport.update();
+  }
+  function applyVariableColor(on) {
+    UI.redVariables = !!on;
+    var button = $('btn-redvars');
+    if (button) {
+      button.textContent = 'Variable color: ' + (on ? 'Dark red' : 'Portal');
+      button.setAttribute('aria-pressed', String(!!on));
+    }
+    if (UI.ws) { var theme = themeFor(); if (theme) UI.ws.setTheme(theme); }
+  }
   function applyPrefs(p) {
+    if (p && p.compactFields !== undefined) applyFieldSpacing(String(p.compactFields) === 'true');
+    applyReadability(p);
+    if (p && p.redVariables !== undefined) applyVariableColor(String(p.redVariables) === 'true');
     if (prefsApplied) return;
     prefsApplied = true;
     var v = p || {};
@@ -7623,12 +7751,13 @@
       var r = $('btnMore').getBoundingClientRect();
       m.style.left = Math.round(r.left) + 'px';
       m.style.top = Math.round(r.bottom + 2) + 'px';
+      m.style.maxHeight = Math.max(80, window.innerHeight - r.bottom - 12) + 'px';
       m.hidden = false;
     };
     $('more').addEventListener('click', function (ev) {
       if (ev.target.tagName === 'BUTTON') closeMore();
     });
-    $('more').addEventListener('change', function () { closeMore(); });
+    $('more').addEventListener('change', function (ev) { if (ev.target.tagName === 'SELECT') closeMore(); });
     document.addEventListener('mousedown', function (ev) {
       if ($('more').hidden) return;
       if ($('more').contains(ev.target) || ev.target === $('btnMore')) return;
@@ -7685,7 +7814,7 @@
       }
       window.__bf6SiteArmed = false;
       if (!nativeRouteAllowed('push to the page')) { return; }
-      send({ op: 'pushWorkspace', json: BF6.saveWorkspace(UI.ws) });
+      send({ op: 'pushWorkspace', json: projectSnapshot() });
     };
     // ---- the five in the top right, as the site has them ------------------
     // Each one is the same action that already existed somewhere behind the
@@ -7713,7 +7842,8 @@
       status('choose the folder holding the script project');
       send({ op: 'openImportScript' });
     };
-    $('btn-exportscript').onclick = exportAsScript;
+    $('btn-exportscript').onclick = function () { exportAsScript('', false); };
+    $('btn-exportsource').onclick = function () { exportAsScript('', true); };
     $('btn-resetws').onclick = function () {
       var n = 0;
       try { n = UI.ws.getAllBlocks(false).length; } catch (e) {}
@@ -7777,6 +7907,23 @@
     $('btn-capstyle').onclick = function () {
       status('asking the site for its renderer, constants, theme and stylesheet');
       send({ op: 'captureStyle' });
+    };
+    $('btn-redvars').onclick = function () {
+      applyVariableColor(!UI.redVariables);
+      setPref('redVariables', UI.redVariables);
+    };
+    $('text-distance').oninput = function () {
+      applyReadability({ textFloor: (.5 - Number(this.value) / 100).toFixed(2) });
+    };
+    $('field-spacing').onchange = function () {
+      var compact = this.value === 'compact';
+      applyFieldSpacing(compact);
+      setPref('compactFields', compact);
+    };
+    $('text-distance').onchange = function () { setPref('textFloor', textFloor()); };
+    $('simplified-overview').onchange = function () {
+      applyReadability({ simplifiedOverview: this.checked });
+      setPref('simplifiedOverview', this.checked);
     };
     $('btn-slot').onclick = function () { UI.slotClickArmed = true; status('click an empty socket'); };
     $('btn-usesel').onclick = useSelectedObject;

@@ -1,0 +1,16 @@
+{
+  "name": "bf6-portal-project",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "check": "tsc --noEmit --pretty false",
+    "build": "bf6-portal-bundler --entrypoint ./src/index.ts --outDir ./dist"
+  },
+  "devDependencies": {
+    "bf6-portal-bundler": "1.4.1",
+    "bf6-portal-mod-types": "4.2.0",
+    "typescript": "5.9.3"
+  }
+}

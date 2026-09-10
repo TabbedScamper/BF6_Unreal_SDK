@@ -4678,6 +4678,7 @@ public:
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,8,0)
+					.VAlign(VAlign_Center)
 					[ MakeToolButton(TEXT("< Maps"), [this]
 						{
 							// leaving CLOSES the session - after the same warning the
@@ -4693,6 +4694,7 @@ public:
 					// TryInvokeTab focuses an open tab, so pressing this when the
 					// tree is already up simply brings it forward: never wrong.
 					+ SHorizontalBox::Slot().AutoWidth().Padding(0,0,8,0)
+					.VAlign(VAlign_Center)
 					[
 						SNew(SBox).ToolTip(BF6_MakeHint(TEXT("Scene tree"),
 							TEXT("Opens the Scene panel, or brings it forward if it is already open. The same panel comes back if you close it by its tab.")))
@@ -4860,6 +4862,9 @@ private:
 			else if (Ln.StartsWith(TEXT("## ")))
 				Body->AddSlot().AutoHeight().Padding(0, 10, 0, 2)
 				[ SNew(STextBlock).Font(FontBold(12)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Ln.Mid(3))) ];
+			else if (Ln.StartsWith(TEXT("**")) && Ln.EndsWith(TEXT("**")) && Ln.Len() > 4)
+				Body->AddSlot().AutoHeight().Padding(0, 10, 0, 3)
+				[ SNew(STextBlock).AutoWrapText(true).Font(FontBold(11)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Ln.Mid(2, Ln.Len() - 4))) ];
 			else if (Ln.StartsWith(TEXT("- ")))
 				Body->AddSlot().AutoHeight().Padding(10, 1, 0, 1)
 				[ SNew(STextBlock).AutoWrapText(true).Font(FontReg(10)).ColorAndOpacity(FSlateColor(BF6Theme::Text)).Text(FText::FromString(Ln.Mid(2))) ];
@@ -4876,10 +4881,14 @@ private:
 		FString Md;
 		switch (Tab)
 		{
-		case 1:  Md = BF6Api::ToolHistoryText(); break;
+		case 1:  Md = BF6Api::ToolHistoryText() + TEXT("\n") + BF6Api::HighPolyHistoryText(); break;
 		case 2:  Md = TEXT("# Portal SDK version history\n") + BF6Api::SdkHistoryText(); break;
-		default: Md = TEXT("# New in this tool\n") + BF6Api::LatestToolNotes()
-		            + TEXT("\n# Newest Portal SDK change\n") + BF6Api::LatestSdkNotes(); break;
+		default:
+			Md = TEXT("# New in this tool\n") + BF6Api::LatestToolNotes();
+			if (const FString HighPoly = BF6Api::LatestHighPolyNotes(); !HighPoly.IsEmpty())
+				Md += TEXT("\n# New in High Poly\n") + HighPoly;
+			Md += TEXT("\n# Newest Portal SDK change\n") + BF6Api::LatestSdkNotes();
+			break;
 		}
 		Host->SetContent(RenderMd(Md));
 	}

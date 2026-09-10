@@ -1,5 +1,5 @@
 <#
-    Assemble the 0.8.0 release pair.
+    Assemble the 0.8.1 release pair.
 
     WHY THIS EXISTS RATHER THAN RunUAT BuildPlugin
     ----------------------------------------------
@@ -23,11 +23,11 @@
     - Anything derived from the game install. Website data may ship; game assets
       may not.
 
-    Usage:  ./package-release.ps1 [-OutDir <path>] [-Version 0.8.0]
+    Usage:  ./package-release.ps1 [-OutDir <path>] [-Version 0.8.1]
 #>
 param(
-    [string] $OutDir  = "$env:USERPROFILE\Documents\BF6-Release-0.8.0",
-    [string] $Version = "0.8.0"
+    [string] $OutDir  = "$env:USERPROFILE\Documents\BF6-Release-0.8.1",
+    [string] $Version = "0.8.1"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +35,11 @@ $plugins = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) ''
 $sdkSrc  = Join-Path $plugins 'BF6UnrealSDK'
 $hpSrc   = Join-Path $plugins 'Add-Ons\BF6HighPoly'
 $projectSrc = Split-Path $plugins -Parent
+
+foreach ($descriptor in @((Join-Path $sdkSrc 'BF6UnrealSDK.uplugin'), (Join-Path $hpSrc 'BF6HighPoly.uplugin'))) {
+    $declared = (Get-Content -LiteralPath $descriptor -Raw | ConvertFrom-Json).VersionName
+    if ($declared -ne $Version) { throw "descriptor version $declared does not match release $Version`: $descriptor" }
+}
 
 function Copy-Tree($from, $to, $what) {
     if (-not (Test-Path $from)) { Write-Host "  (no $what)"; return }
@@ -169,8 +174,10 @@ New-Item -ItemType Directory -Force -Path $sdkOut | Out-Null
 Copy-Item (Join-Path $sdkSrc 'BF6UnrealSDK.uplugin') $sdkOut -Force
 foreach ($d in 'Resources', 'Content', 'Config') { Copy-Tree (Join-Path $sdkSrc $d) (Join-Path $sdkOut $d) $d }
 Copy-Tree (Join-Path $sdkSrc 'Tools\context') (Join-Path $sdkOut 'Tools\context') 'editor context tools'
+Copy-Tree (Join-Path $sdkSrc 'Tools\stability') (Join-Path $sdkOut 'Tools\stability') 'local stability tests'
+Copy-Item -LiteralPath (Join-Path $sdkSrc 'Tools\Test-LowSpec.ps1') -Destination (Join-Path $sdkOut 'Tools')
 New-Item -ItemType Directory -Force -Path (Join-Path $sdkOut 'docs') | Out-Null
-foreach ($doc in 'LOADOUTS.md','PROJECT-CONTRACT.md','ATTACHING-AN-AI.md') {
+foreach ($doc in 'LOADOUTS.md','PROJECT-CONTRACT.md','PORTAL-EXPORT.md','LOW-SPEC-TESTING.md','ATTACHING-AN-AI.md') {
     Copy-Item -LiteralPath (Join-Path $sdkSrc "docs\$doc") -Destination (Join-Path $sdkOut 'docs')
 }
 Copy-Binaries (Join-Path $sdkSrc 'Binaries\Win64') (Join-Path $sdkOut 'Binaries\Win64')
@@ -187,6 +194,8 @@ $hpOut = Join-Path $OutDir 'BF6HighPoly'
 New-Item -ItemType Directory -Force -Path $hpOut | Out-Null
 Copy-Item (Join-Path $hpSrc 'BF6HighPoly.uplugin') $hpOut -Force
 Copy-Item (Join-Path $hpSrc 'README.md') $hpOut -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $hpOut 'docs') | Out-Null
+Copy-Item -LiteralPath (Join-Path $hpSrc 'docs\PERFORMANCE.md') -Destination (Join-Path $hpOut 'docs')
 foreach ($d in 'Resources', 'Shaders', 'Config') { Copy-Tree (Join-Path $hpSrc $d) (Join-Path $hpOut $d) $d }
 Copy-Binaries (Join-Path $hpSrc 'Binaries\Win64') (Join-Path $hpOut 'Binaries\Win64')
 foreach ($module in 'BF6HighPoly','BF6HighPolyShaders') {

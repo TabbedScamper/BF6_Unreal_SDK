@@ -204,6 +204,7 @@
   #more {
     position: absolute; z-index: 60; background: var(--panel);
     border: 1px solid var(--accent); min-width: 260px; padding: 3px;
+    overflow-y: auto; max-width: calc(100vw - 16px);
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
   }
   #more button, #more select {
@@ -212,6 +213,7 @@
     font-weight: 400; padding: 6px 8px;
   }
   #more button:hover { background: var(--panel-light); color: #fff; }
+  #more input { accent-color: var(--accent); }
   #more button.on::after { content: "  on"; color: var(--accent); font-weight: 700; }
   #more .mh {
     padding: 8px 8px 3px; color: var(--text-dim); font-weight: 700; font-size: 9px;
@@ -494,7 +496,8 @@
   <span class="wstools" id="wstools">
     <input id="topsearch" type="search" placeholder="Search blocks"
            title="Find a block by name. The same search as the one over the toolbox.">
-    <button id="btn-exportscript" title="Write these blocks out as a TypeScript project, split by what each rule is about">Export to Script</button>
+    <button id="btn-exportscript" title="Check and bundle these blocks into one Portal script and its strings file. First use installs the build tools.">Export for Portal</button>
+    <button id="btn-exportsource" title="Advanced: export editable source modules. These files need a script project and a build before uploading.">Export source files</button>
     <button id="btn-importscript" title="Read a TypeScript project back in as blocks, laid out by family">Import Script</button>
     <button id="btn-importws" title="Open a workspace, a full experience or a single script file">Import Workspace</button>
     <button id="btn-exportws" title="Save these blocks as the same .json the site exports">Export Workspace</button>
@@ -524,6 +527,14 @@
   <button id="btn-push">Send what is here to the page</button>
   <button id="btn-tosite">Put it on the page by hand</button>
   <button id="btn-capstyle">Match the site's look</button>
+  <div class="mh">Appearance</div>
+  <label for="field-spacing" style="display:block;padding:8px 12px 0">Field spacing</label>
+  <select id="field-spacing" title="Compact reduces the height of text and variable fields while keeping the same font size."><option value="portal">Portal spacing</option><option value="compact">Compact spacing</option></select>
+  <label for="text-distance" style="display:block;padding:8px 12px 0">Text visibility distance</label>
+  <input id="text-distance" type="range" min="0" max="50" step="1" value="35" style="width:calc(100% - 24px);margin:8px 12px" aria-describedby="text-distance-value" title="Slide right to keep labels visible farther out. At the far right, labels always stay visible.">
+  <output id="text-distance-value" for="text-distance" style="display:block;padding:0 12px 8px">Visible at 15% zoom and closer</output>
+  <label style="display:block;padding:8px 12px"><input id="simplified-overview" type="checkbox"> Simplify distant blocks for faster panning</label>
+  <button id="btn-redvars" aria-pressed="false" title="Give variable references a dark red color so they stand out. Saved blocks and Portal exports keep their original meaning.">Variable color: Portal</button>
 </div>
 
 <div class="banner" id="banner"></div>
@@ -716,7 +727,7 @@
        blocks in a toolbox: a project has to opt in. */
     var ours = ["../convert/convert.js","measure.js","editor.js",
                 "extended/compiler.js","extended/blocks.js","extended/integration.js",
-                "../loot/binding.js","editor_ui.js"];
+                "../loot/binding.js","project-state.js","overview.js","viewport.js","editor_ui.js"];
     for (var i = 0; i < ours.length; i++) {
       document.write('<script src="' + ours[i] + '?v=' + v + '">' + '<\/script>');
     }

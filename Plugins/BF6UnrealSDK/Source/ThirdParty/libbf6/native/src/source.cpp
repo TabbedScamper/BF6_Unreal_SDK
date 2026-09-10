@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -243,6 +244,7 @@ bool Source::mount_toc(const std::string& toc_path, std::string& err) {
     }
     if (ebx_.size() != before) {
         pidx_built_ = false; pidx_.clear();
+        light_names_built_ = false; light_names_.clear();
         armory_pidx_built_ = false; armory_pidx_.clear(); armory_pidx_candidates_.clear();
     }
     mounted_toc_hashes_[mount_key(toc_path)] = content_id(raw.data(), raw.size());
@@ -286,6 +288,7 @@ bool Source::mount_ebx_owner(const std::string& toc_path,
                 ebx_[e.first] = ee;
                 ebx_bundle_[e.first] = b.name;
                 pidx_built_ = false; pidx_.clear();
+                light_names_built_ = false; light_names_.clear();
                 armory_pidx_built_ = false; armory_pidx_.clear(); armory_pidx_candidates_.clear();
                 mounted_toc_hashes_[mount_key(full)] = content_id(raw.data(), raw.size());
                 return true;
@@ -426,6 +429,21 @@ static std::string efix_guid(const std::vector<uint8_t>& raw)
         if (o % 2 == 1) o++;
     }
     return std::string();
+}
+
+const std::unordered_map<std::string, std::string>& Source::light_name_index()
+{
+    if (light_names_built_) return light_names_;
+    for (const auto& kv : ebx_) {
+        std::string low = kv.first;
+        std::transform(low.begin(), low.end(), low.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        const std::string ref = kv.first + ".ebx";
+        light_names_.emplace(low, ref);
+        const size_t slash = low.find_last_of('/');
+        light_names_.emplace(slash == std::string::npos ? low : low.substr(slash + 1), ref);
+    }
+    light_names_built_ = true;
+    return light_names_;
 }
 
 const std::map<std::string, std::string>& Source::partition_index()

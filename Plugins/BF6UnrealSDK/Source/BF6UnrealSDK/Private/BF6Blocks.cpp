@@ -1,4 +1,5 @@
 #include "BF6Blocks.h"
+#include "BF6BlocksExport.h"
 #include "BF6GameLog.h"   // the Portal log the game writes while a mod runs
 #include "BF6BlocksBridge.h"
 #include "BF6EditorOverlay.h"    // ---- BF6EditorOverlay ---- the full-screen host
@@ -633,7 +634,7 @@ namespace
 	// image existed. Adding the zoom sprite sheet changed nothing on screen for
 	// exactly that reason: the code was right and the answer came from a file
 	// written hours earlier.
-	static const int32 kMirrorPackVersion = 4;   // 4: no substitute faces at all
+	static const int32 kMirrorPackVersion = 5;   // 5: portable fonts and media
 
 	// Captured pack first, then the one baked in at release, so a fresh install
 	// draws the category and value icons instead of falling back to nothing.
@@ -788,13 +789,13 @@ namespace
 		return TEXT("truetype");
 	}
 
-	// The three block text faces are inlined as well as pointed at. A file page
+	// All captured faces are inlined. A file page
 	// is its own opaque origin and a font fetched across folders can be refused
 	// without a word; a src list falls through to the next source when one
 	// fails, so the inlined copy is the one that always lands.
 	bool ShouldInlineFace(const FString& File)
 	{
-		return File.StartsWith(TEXT("BFText-")) && File.EndsWith(TEXT(".woff2"));
+		return true;
 	}
 
 	FString BuildFontCss(const FString& MirrorDir, TArray<FString>& OutFamilies,
@@ -869,8 +870,6 @@ namespace
 							*Fmt, *FBase64::Encode(Bytes), *Fmt));
 					}
 				}
-				Sources.Add(FString::Printf(TEXT("url(\"%s\") format(\"%s\")"),
-					*ToFileUrl(Full), *Fmt));
 			}
 
 			Seen.Add(Family);
@@ -960,7 +959,7 @@ namespace
 		Pack->SetStringField(TEXT("buildId"), Build);
 		Pack->SetStringField(TEXT("mirrorDir"), MirrorDir);
 		Pack->SetStringField(TEXT("builtUtc"), FDateTime::UtcNow().ToIso8601());
-		Pack->SetStringField(TEXT("mediaPath"), ToFileUrl(BlocklyDir) + TEXT("/"));
+		// Images below are data URLs; keep the pack portable between installs.
 		Pack->SetObjectField(TEXT("categoryIcons"), Icons);
 		Pack->SetObjectField(TEXT("valueTypeIcons"), Types);
 		Pack->SetObjectField(TEXT("blockImages"), Images);
@@ -996,6 +995,26 @@ namespace
 
 		if (!FindMirror(GMirrorDir, GMirrorBuild))
 		{
+			// A fresh installation has no downloaded mirror. Its shipped pack
+			// is self-contained and must still supply the site's icons/fonts.
+			FString PackText;
+			if (FFileHelper::LoadFileToString(PackText,
+				*FPaths::Combine(OfflineDefsDir(), TEXT("mirror_icons.json"))))
+			{
+				TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(PackText);
+				TSharedPtr<FJsonObject> Pack;
+				double Version = 0;
+				if (FJsonSerializer::Deserialize(Reader, Pack) && Pack.IsValid() &&
+					Pack->TryGetNumberField(TEXT("v"), Version) && Version == kMirrorPackVersion &&
+					CountField(Pack, TEXT("categoryIcons")) > 0)
+				{
+					GMirrorPack = Pack;
+					GMirrorPack->RemoveField(TEXT("mediaPath"));
+					GFontSummary = TEXT("bundled Portal faces");
+					UE_LOG(LogBF6Blocks, Display, TEXT("Using bundled Portal icons and fonts (no local site mirror)."));
+					return GMirrorPack;
+				}
+			}
 			// Nothing is changed and nothing is guessed: the tool draws with
 			// what it already has until the mirror exists.
 			if (!GSaidNoMirror)
@@ -1514,6 +1533,17 @@ namespace
 				TEXT("typescript"), TEXT("lib"), TEXT("typescript.js"));
 			if (FPaths::FileExists(FromTemplate)) return FromTemplate;
 		}
+		// Export for Portal installs a compiler without requiring a separate
+		// community template. Reuse that completed installation for imports.
+		const FString Tools = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("BF6UnrealSDK/portal-build-tools"));
+		TArray<FString> Versions;
+		IFileManager::Get().FindFiles(Versions, *(Tools / TEXT("*")), false, true);
+		for (const FString& Version : Versions)
+		{
+			const FString Root = Tools / Version;
+			const FString Compiler = Root / TEXT("node_modules/typescript/lib/typescript.js");
+			if (FPaths::FileExists(Root / TEXT(".ready")) && FPaths::FileExists(Compiler)) return Compiler;
+		}
 		return FString();
 	}
 
@@ -1877,7 +1907,8 @@ namespace
 
 	bool IsKnownBlocksPref(const FString& Name)
 	{
-		return Name == TEXT("shelf") || Name == TEXT("shelfOpen") || Name == TEXT("shelfPinned");
+		return Name == TEXT("shelf") || Name == TEXT("shelfOpen") || Name == TEXT("shelfPinned") ||
+			Name == TEXT("textFloor") || Name == TEXT("simplifiedOverview") || Name == TEXT("redVariables") || Name == TEXT("compactFields");
 	}
 
 	FString BlocksPrefIniKey(const FString& Name) { return TEXT("BlocksUi_") + Name; }
@@ -2060,7 +2091,8 @@ namespace
 	void SendPrefs()
 	{
 		TSharedRef<FJsonObject> Values = MakeShared<FJsonObject>();
-		static const TCHAR* kKeys[] = { TEXT("shelf"), TEXT("shelfOpen"), TEXT("shelfPinned") };
+		static const TCHAR* kKeys[] = { TEXT("shelf"), TEXT("shelfOpen"), TEXT("shelfPinned"),
+			TEXT("textFloor"), TEXT("simplifiedOverview"), TEXT("redVariables"), TEXT("compactFields") };
 		int32 Found = 0;
 		for (const TCHAR* Key : kKeys)
 		{
@@ -2484,6 +2516,22 @@ namespace
 			return;
 		}
 
+		if (Op == TEXT("exportPortalScript"))
+		{
+			const TSharedPtr<FJsonObject>* Files=nullptr;
+			if (!M->TryGetObjectField(TEXT("files"),Files) || !Files || !Files->IsValid())
+			{ ToolNote(TEXT("status"),TEXT("text"),TEXT("The block compiler produced no source files.")); return; }
+			FString Dir; M->TryGetStringField(TEXT("dir"),Dir);
+			if (Dir.IsEmpty() && !PickFolder(TEXT("Choose where to put the Portal upload files"),Dir))
+			{ ToolNote(TEXT("status"),TEXT("text"),TEXT("Portal export cancelled.")); return; }
+			FString Why;
+			if (!BF6BlocksExport::Start(Files->ToSharedRef(),Dir,[](const FString& Text,bool Bad)
+			{
+				if (Bad) GLastError=Text;
+				ToolNote(TEXT("status"),TEXT("text"),Text);
+			},Why)) { GLastError=Why; ToolNote(TEXT("status"),TEXT("text"),Why); BF6Ext::Notify(Why); }
+			return;
+		}
 		if (Op == TEXT("exportScript"))
 		{
 			const TSharedPtr<FJsonObject>* Files = nullptr;
@@ -2698,8 +2746,9 @@ namespace
 			}
 			UE_LOG(LogBF6Blocks, Display, TEXT("Blocks exported as a script project: %d file(s) into %s%s"),
 				Wrote, *Dir, Failed.Num() ? *(TEXT(" - could not write ") + FString::Join(Failed, TEXT(", "))) : TEXT(""));
-			ToolNote(TEXT("status"), TEXT("text"),
-				FString::Printf(TEXT("wrote %d file(s) to %s"), Wrote, *Dir));
+			ToolNote(TEXT("status"), TEXT("text"), Failed.Num()
+				? FString::Printf(TEXT("Source export incomplete: wrote %d file(s); failed: %s. Check folder access and available disk space."), Wrote, *FString::Join(Failed, TEXT(", ")))
+				: FString::Printf(TEXT("Wrote %d source file(s) to %s. Use Export for Portal for the uploadable script."), Wrote, *Dir));
 			return;
 		}
 		// AND A WHOLE FOLDER BACK IN, because the export it reads is eleven
@@ -2713,7 +2762,40 @@ namespace
 				return;
 			}
 			TArray<FString> Found;
-			IFileManager::Get().FindFilesRecursive(Found, *Dir, TEXT("*.ts"), true, false);
+			// Prune dependency/build directories before walking them. A normal npm
+			// project contains thousands of declarations that are not mode logic.
+			TArray<FString> Pending { Dir };
+			int32 Visited = 0;
+			int64 TotalBytes = 0;
+			FString ImportError;
+			while (Pending.Num() && ImportError.IsEmpty())
+			{
+				const FString Folder = Pending.Pop();
+				if (++Visited > 4096) { ImportError = TEXT("Too many folders. Select the mode's src folder instead."); break; }
+				TArray<FString> Children;
+				IFileManager::Get().FindFiles(Children, *(Folder / TEXT("*")), false, true);
+				for (const FString& Child : Children)
+				{
+					const FString Name = Child.ToLower();
+					if (Name.StartsWith(TEXT(".")) || Name == TEXT("node_modules") || Name == TEXT("dist") ||
+						Name == TEXT("build") || Name == TEXT("coverage")) continue;
+					Pending.Add(Folder / Child);
+				}
+				TArray<FString> Scripts;
+				IFileManager::Get().FindFiles(Scripts, *(Folder / TEXT("*.ts")), true, false);
+				for (const FString& Script : Scripts)
+				{
+					if (Script.EndsWith(TEXT(".d.ts"))) continue;
+					const FString Full = Folder / Script;
+					const int64 Size = IFileManager::Get().FileSize(*Full);
+					TotalBytes += FMath::Max<int64>(0, Size);
+					if (Size < 0 || Found.Num() >= 512 || TotalBytes > 32 * 1024 * 1024)
+					{ ImportError = TEXT("The source project is unreadable or exceeds 512 files / 32 MB. Select the mode's src folder."); break; }
+					Found.Add(Full);
+				}
+			}
+			if (!ImportError.IsEmpty())
+			{ GLastError = ImportError; ToolNote(TEXT("status"), TEXT("text"), GLastError); return; }
 			if (Found.Num() == 0)
 			{
 				GLastError = FString::Printf(TEXT("no .ts files under %s"), *Dir);
@@ -2725,7 +2807,11 @@ namespace
 			for (const FString& F : Found)
 			{
 				FString Body;
-				if (!FFileHelper::LoadFileToString(Body, *F)) continue;
+				if (!FFileHelper::LoadFileToString(Body, *F))
+				{
+					GLastError = FString::Printf(TEXT("Could not read %s. Import stopped to avoid losing mode logic."), *F);
+					ToolNote(TEXT("status"), TEXT("text"), GLastError); return;
+				}
 				FString Rel = F;
 				FPaths::MakePathRelativeTo(Rel, *(Dir / TEXT("")));
 				Files->SetStringField(Rel.IsEmpty() ? FPaths::GetCleanFilename(F) : Rel, Body);
@@ -3573,6 +3659,7 @@ namespace
 		if (!WebAvailable()) return MakeUnavailableView();
 
 		GBrowser = SNew(SWebBrowser)
+			.BrowserFrameRate(60)
 			.InitialURL(EditorPageUrl())
 			.ShowControls(false)
 			.ShowAddressBar(false)
@@ -4068,7 +4155,7 @@ void BF6Blocks::Register()
 	// this the whole blocks-to-script path could only ever be tried by a person
 	// - and it is the half most worth having a machine check.
 	GCmds.Add(CM.RegisterConsoleCommand(TEXT("BF6.Blocks.ExportScript"),
-		TEXT("BF6.Blocks.ExportScript <folder>  Write the blocks out as a TypeScript project. ")
+		TEXT("BF6.Blocks.ExportScript <folder>  Build one Portal upload script and its strings file. ")
 		TEXT("No folder opens the picker, the same as the toolbar button."),
 		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 		{
@@ -4256,6 +4343,7 @@ void BF6Blocks::Register()
 
 void BF6Blocks::Unregister()
 {
+	BF6BlocksExport::Stop();
 	if (GTicker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(GTicker); GTicker.Reset(); }
 	if (GPageLoadedHandle.IsValid()) { BF6PortalWeb::OnPageLoaded().Remove(GPageLoadedHandle); GPageLoadedHandle.Reset(); }
 	if (GMapOpenedHandle.IsValid()) { BF6Ext::OnMapOpened().Remove(GMapOpenedHandle); GMapOpenedHandle.Reset(); }

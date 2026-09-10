@@ -92,6 +92,10 @@ struct MeshGeomSection {
     // than by declaration order: the old code kept "the first one declared",
     // which is not TC0 in general and gave no way to ask for TC3 at all.
     std::vector<float>    uv[5];
+    // SubMaterialIndex (usage 51), raw byte 0, not a normalized colour.
+    std::vector<uint8_t>  layer_lanes;
+    std::vector<float>    tangent_sign; // tangent xyz and binormal sign, usage 9
+    std::vector<float>    color0;       // authored normalized Color0, not a tint palette
     std::vector<uint32_t> indices;
     // ONE DESTRUCTION PART INDEX PER VERTEX, or empty.
     //

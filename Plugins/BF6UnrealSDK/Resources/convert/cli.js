@@ -341,6 +341,8 @@ function main(argv) {
         if (!target || !outFile) { fail('usage: node cli.js ts2blocks <srcDir | file.ts> <out.json>'); }
         var sources = collectTs(target);
         var res = BF6Convert.tsToBlocks(sources, {});
+        var problems = BF6Convert.nativeImportProblems(res.report);
+        if (problems.length) { printReport(res.report); fail('Native conversion stopped: ' + problems.join(' ') + ' Keep this project as TypeScript.'); }
         ensureDir(path.dirname(path.resolve(outFile)));
         fs.writeFileSync(outFile, JSON.stringify(res.workspace, null, 2) + '\n', 'utf8');
         process.stdout.write('wrote ' + outFile + '\n');

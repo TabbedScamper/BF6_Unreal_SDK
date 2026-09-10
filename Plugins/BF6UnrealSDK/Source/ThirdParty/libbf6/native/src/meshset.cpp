@@ -297,9 +297,9 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
          * them so a diagnostic can see the full section list of a mesh. */
         static const bool keep_all = [](){ const char* e = std::getenv("BF6_MESH_KEEP_ALL");
                                            return e && *e && *e != '0'; }();
-        if (!keep_all &&
-            (low.find("shadow") != std::string::npos || low.find("zonly") != std::string::npos ||
-             low.find("depth") != std::string::npos)) continue;
+        // Names are labels, not pass membership: the Limestone facade's
+        // visible opaque section is literally named M_Shadow.
+        if (!keep_all && !(s.category_flags & 7) && (s.category_flags & 24)) continue;
 
         int voff = s.vertex_offset;
         std::vector<float> pos, nrm;
@@ -342,6 +342,22 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
         MeshGeomSection g;
         g.material = s.material; g.state_key = s.state_key; g.material_id = s.material_id;
         g.category_flags = s.category_flags;
+        for (const auto& el : s.decl.elements) {
+            if (el[0] != 9 && el[0] != 30) continue;
+            auto values = read_attr(chunk, clen, voff, vcount, el, s.decl.streams);
+            if (values.second != 4 || values.first.size() != (size_t)vcount * 4) continue;
+            if (el[0] == 9) g.tangent_sign = std::move(values.first);
+            else g.color0 = std::move(values.first);
+        }
+        for (const auto& el : s.decl.elements) {
+            if (el[0] != 51 || el[1] != 12) continue; // SubMaterialIndex / UByte4
+            auto lane = read_attr(chunk, clen, voff, vcount, el, s.decl.streams);
+            if (lane.second != 4 || lane.first.size() != (size_t)vcount * 4) continue;
+            g.layer_lanes.resize((size_t)vcount);
+            for (int v = 0; v < vcount; ++v)
+                g.layer_lanes[v] = (uint8_t)lane.first[(size_t)v * 4];
+            break;
+        }
         g.positions.resize((size_t)vcount * 3);
         for (int i = 0; i < vcount; i++) {
             int o = i * pos_comps;

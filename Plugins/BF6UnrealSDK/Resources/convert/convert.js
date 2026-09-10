@@ -840,6 +840,12 @@
 
     function emitCall(e, st) {
         var fn = e.fn;
+        if (fn === 'WaitUntil') {
+            st.usedRuntime[fn] = 1;
+            var condition = e.args[1];
+            if (condition && condition.k === 'lambda') condition = condition.body;
+            return 'rt.WaitUntil(' + emitExpr(e.args[0], st) + ', () => ' + emitExpr(condition, st) + ')';
+        }
         /* Portal's And / Or take exactly two operands. Fold longer chains so
          * the generated TypeScript type checks. */
         if ((fn === 'And' || fn === 'Or') && e.args && e.args.length > 2) {
@@ -976,6 +982,7 @@
         var L = [];
         L.push('// Variables converted from the Portal block workspace.');
         L.push('// Global variables address mod.GlobalVariable slots.');
+        if (!program.variables.length) L.push('export {}; // Keep an empty variable table importable.');
         L.push('// Player and Team variables address mod.ObjectVariable slots on the owning object,');
         L.push('// so the exported constant is the slot index, used as mod.ObjectVariable(object, slot).');
         L.push('');
@@ -1012,6 +1019,17 @@
     var RUNTIME_SOURCE = [
         '// Runtime helpers for a converted Portal block workspace.',
         '// Everything here mirrors behaviour the block editor provides implicitly.',
+        '',
+        '// Like the SDK modlib helper, re-evaluate the condition between waits.',
+        '// The last interval is shortened so a fractional timeout is preserved.',
+        'export async function WaitUntil(delay: number, condition: () => boolean): Promise<void> {',
+        '    if (!Number.isFinite(delay) || delay < 0) throw new Error("WaitUntil needs a finite, nonnegative timeout");',
+        '    const checks = Math.ceil(delay / 0.2);',
+        '    for (let check = 0; check < checks && !condition(); check++) {',
+        '        const interval = Math.min(0.2, delay - check * 0.2);',
+        '        await mod.Wait(interval);',
+        '    }',
+        '}',
         '',
         '/**',
         ' * Edge triggered rule state. A Portal rule fires its actions on the tick its',
@@ -8174,6 +8192,17 @@
      * Public surface
      * ================================================================== */
 
+    function nativeImportProblems(report) {
+        if (!report) return ['The converter returned no report.'];
+        var problems = [], counts = report.counts || {};
+        if ((report.unconvertible || []).length) problems.push('Some script constructs cannot be represented by native blocks.');
+        if (counts.frameUnsafeForBlocks || counts.localsSharedAcrossInvocations)
+            problems.push('Overlapping invocations can overwrite local variables while a handler waits.');
+        if (counts.frameCyclic)
+            problems.push('Recursive functions require per-invocation storage that this native conversion cannot preserve.');
+        return problems;
+    }
+
     return {
         VERSION: VERSION,
         setBlockChecks: setBlockChecks,
@@ -8183,6 +8212,7 @@
 
         blocksToTs: blocksToTs,
         tsToBlocks: tsToBlocks,
+        nativeImportProblems: nativeImportProblems,
         packForPortal: packForPortal,
 
         blocksToIr: function (ws) { return blocksToIr(ws, newReport('ir')); },

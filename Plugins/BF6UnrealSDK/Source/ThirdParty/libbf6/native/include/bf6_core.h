@@ -121,7 +121,8 @@ typedef struct {
     const float*    tangents;    /* xyzw * vertex_count, or NULL            */
     const float*    uv0;         /* uv * vertex_count, primary channel      */
     const float*    uv1;         /* uv * vertex_count, secondary, or NULL   */
-    const uint32_t* colors;      /* rgba8 * vertex_count, or NULL           */
+    const uint32_t* colors;      /* linear RGBA8 (R in low byte), vertex_count;
+                                   multiply by material.base_color; NULL = white */
     const uint32_t* indices;
     int32_t         vertex_count;
     int32_t         index_count;
@@ -386,6 +387,21 @@ struct bf6_material_desc {
     int32_t                       shader_texture_count;
 };
 
+/* Optional extended surface data. All pointers share the mesh handle's lifetime.
+ * Additional export, so existing ABI-5 consumers keep their struct strides. */
+typedef struct {
+    uint32_t struct_size;
+    int32_t profile;            /* 0 generic, 1 whitebox, 2 backdrop facade */
+    int32_t complete;           /* exact required constant/texture inputs */
+    const float* uv[5];         /* authored TC0..4; absent channels alias TC0 */
+    const float* color0;        /* raw normalized authored RGBA, or NULL */
+    const uint8_t* submaterial; /* raw selector, or NULL (zero) */
+    float material[52];        /* exact raster BindingSet cbuffer, 13 vec4s */
+    int32_t textures[4];        /* exact shader bindings 32..35, -1 absent */
+} bf6_surface_desc;
+BF6_API int bf6_mesh_surface(bf6_ctx*, const bf6_mesh*, int section,
+    bf6_surface_desc* out);
+
 /* ---------------------------------------------------------------- textures */
 typedef enum {
     BF6_FMT_RGBA8 = 0,
@@ -414,6 +430,9 @@ typedef struct {
 /* Textures are handed across COMPRESSED (BCn) so the engine uploads them as-is.
  * texture_id comes from a material's bf6_tex_binding. Owned by the ctx. */
 BF6_API const bf6_texture* bf6_texture_at(bf6_ctx*, int texture_id);
+/* Decode mip 0 without resampling or sRGB conversion. Caller allocates
+ * width*height*4 bytes using bf6_texture_at's dimensions. Returns 1 or 0. */
+BF6_API int bf6_texture_rgba(bf6_ctx*, int texture_id, uint8_t* out, int64_t capacity);
 
 /* Same exact texture resource and authored mip chain, capped for an on-screen
  * preview. For streamed textures this deliberately reads the embedded mip tail
@@ -426,6 +445,11 @@ BF6_API const bf6_texture* bf6_texture_at_max_dim(bf6_ctx*, int texture_id,
  * intermediate: consumers use it to select material behaviour from the
  * current install (for example road paint versus track wear) without shipping
  * a per-patch id table. */
+/* Release only the capped payload after the caller has copied it. Invalidates
+ * the borrowed bf6_texture_at_max_dim view for this id/cap; a later read decodes
+ * it again. Texture ids and other capped/uncapped views remain valid. */
+BF6_API void bf6_release_texture_payload(bf6_ctx*, int texture_id, int max_dim);
+
 BF6_API const char* bf6_texture_name_at(bf6_ctx*, int texture_id);
 
 /* --------------------------------------------------------------- placements */
@@ -5078,6 +5102,34 @@ typedef struct {
 
 BF6_API int bf6_card_layers(bf6_ctx*, const char* hiao_partition,
                             bf6_card_layer* out, int out_max);
+
+/* Authored card layout, without name matching or fitted placement offsets.
+ * Only entries referenced by the layout root are returned, in authored order.
+ * This describes layout data, not a guarantee of pixel parity with Portal.
+ * kind: 0 base, 1 muzzle, 2 barrel, 3 canted, 4 scope, -1 unknown.
+ * flags: bit 0 has secondary anchor; bit 1 scope-mounted canted sight;
+ * bit 2 duplicate sprite key (all candidates retained; no winner inferred).
+ * secondary_anchor is the barrel's muzzle anchor or scope's reflex anchor.
+ * An unrecognised entry remains explicit; callers must not treat it as base.
+ * Returns -1 for a missing/malformed layout; never substitutes a factory part. */
+typedef struct {
+    uint32_t sprite_hash;
+    int32_t kind;
+    uint32_t flags;
+    float offset[2];
+    float secondary_anchor[2];
+} bf6_card_layout_entry;
+BF6_API int bf6_card_layout(bf6_ctx*, const char* hiao_partition,
+                            bf6_card_layout_entry* out, int out_max);
+
+/* Receiver artwork reached through UIWeaponAbilityMetadata's typed references.
+ * No filename-derived atlas index. Returns 1, 0 missing, -1 ambiguous/bad input. */
+typedef struct {
+    char atlas[256];
+    char layout[256];
+    int32_t index;
+} bf6_card_receiver;
+BF6_API int bf6_weapon_card_receiver(bf6_ctx*, const char* weapon, bf6_card_receiver* out);
 
 /* One drawable part of a weapon: its mesh, and the bundle that owns it.
  *

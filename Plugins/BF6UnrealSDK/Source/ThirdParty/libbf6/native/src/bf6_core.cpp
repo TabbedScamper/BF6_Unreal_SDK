@@ -31,6 +31,7 @@
 #include "decals.h"
 #include "destruction.h"
 #include "terrain.h"
+#include "terrainshader.h"
 #include "terraincomposite.h"
 #include "stdio_compat.h"
 #include "groundsplat.h"
@@ -71,6 +72,7 @@ struct bf6_rime_binding_cache {
 
 struct bf6_ctx {
     bf6::Source      src;
+    std::map<int, std::vector<bf6::TerrainShaderBindingRecord>> surface_schemas;
     // Backing store for the slot names bf6_armory_slots hands out as
     // char*. Owned by the context, like every other string in this ABI.
     std::vector<std::string> armory_slot_names;
@@ -312,6 +314,7 @@ struct bf6_ctx {
     //
     // So the names and their ids survive and only the pixels are dropped.
     void forget_texture_decodes() {
+        capped_textures.clear();
         for (TexHold& h : textures) {
             h.img = bf6::TextureImage();
             h.abi = bf6_texture{};
@@ -619,6 +622,70 @@ static void resolve_colour(const bf6::MaterialBinding& mb, bf6_material_desc& md
     }
 }
 
+// Opaque architecture palettes use SubMaterialIndex, not one colour for the
+// whole section. Preserve the existing C ABI: linear RGBA8 vertex multipliers
+// and a shared scale in base_color retain values above one without clipping.
+// Glass transmission and tile-paint blending are different shader paths.
+static std::vector<uint32_t> resolve_layer_colours(const bf6::MaterialBinding& mb,
+    const bf6::MeshGeomSection& section, bf6_material_desc& md)
+{
+    if (section.layer_lanes.empty() || md.translucent || mb.constants.count(0xF1CEE56D)) return {};
+    if (mb.textures.count(0xA11011B8) && !mb.textures.count(0x54BBCD30) &&
+        !mb.textures.count(0x54BBCD36) && mb.constants.count(0xDD0512FA)) return {};
+    float paint[3];
+    if (const_c3(mb, 0x8A369BB2, 0, paint) && !near3(paint, 1.f)) return {};
+    float palette[8][3]{};
+    int count = 0;
+    const uint32_t trio[3] = {0x888A432A, 0x888A432B, 0x888A4328};
+    bool trio_complete = true, trio_tinted = false;
+    for (int k = 0; k < 3; ++k) {
+        if (!const_c3(mb, trio[k], 0, palette[k])) { trio_complete = false; break; }
+        trio_tinted |= !near3(palette[k], .5f);
+    }
+    if (!trio_complete && trio_tinted) return {};
+    if (trio_complete && trio_tinted) count = 3;
+    else {
+        for (int k = 0; k < 8; ++k) {
+            if (!const_c3(mb, 0xC2BB295A, (size_t)k * 16, palette[k])) return {};
+        }
+        count = 8;
+    }
+    for (int k = 0; k < count; ++k) {
+        const bool neutral = near3(palette[k], .5f);
+        for (float& c : palette[k]) {
+            if (!std::isfinite(c) || c < 0.f) return {};
+            c = neutral ? 1.f : 2.f * c;
+        }
+    }
+    // Only used entries matter. In particular, an unused blue palette entry
+    // must not recolour geometry that exclusively selects the white entry.
+    const int first = std::min((int)section.layer_lanes[0], count - 1);
+    float scale = 1.f;
+    bool uniform = true;
+    for (uint8_t lane : section.layer_lanes) {
+        const int k = std::min((int)lane, count - 1);
+        for (int j = 0; j < 3; ++j) {
+            scale = std::max(scale, palette[k][j]);
+            uniform &= std::fabs(palette[k][j] - palette[first][j]) < 1e-6f;
+        }
+    }
+    if (uniform) {
+        std::copy(palette[first], palette[first] + 3, md.base_color);
+        return {};
+    }
+    std::vector<uint32_t> colours;
+    colours.reserve(section.layer_lanes.size());
+    for (uint8_t lane : section.layer_lanes) {
+        const int k = std::min((int)lane, count - 1);
+        uint32_t rgba = 0xff000000u;
+        for (int j = 0; j < 3; ++j)
+            rgba |= (uint32_t)std::lround(palette[k][j] / scale * 255.f) << (j * 8);
+        colours.push_back(rgba);
+    }
+    md.base_color[0] = md.base_color[1] = md.base_color[2] = scale;
+    return colours;
+}
+
 // AND CAR PAINT IS THE COUNTER-EXAMPLE THAT ALMOST BROKE THIS.
 //
 // "Binds the wrap slot and no base colour" is NOT enough. A carpaint record
@@ -836,6 +903,82 @@ void bf6__animclip_delete(void*);
 void bf6__psd_delete(void*);
 void bf6__psdmap_delete(void*);
 
+struct MaterialScope {
+    bf6::Depot* depot = nullptr;
+    const std::vector<uint8_t>* bytes = nullptr;
+};
+
+// Rendering and variation grouping must consult the identical bounded scope chain.
+static std::vector<MaterialScope> material_scopes(bf6_ctx* c, const std::string& res_name,
+    const std::string& placing, const std::string& fallback = {})
+{
+    std::vector<MaterialScope> scopes;
+    auto add_scope = [&](const std::string& bundle) {
+        if (bundle.empty()) return;
+        const std::string depotName = c->src.depot_for_bundle(bundle);
+        if (depotName.empty()) return;
+        const std::vector<uint8_t>* bytes = nullptr;
+        bf6::Depot* depot = c->depot_named(depotName, &bytes);
+        if (!depot || !bytes) return;
+        for (const MaterialScope& existing : scopes)
+            if (existing.depot == depot) return;
+        scopes.push_back({ depot, bytes });
+    };
+    add_scope(placing);
+    // A nested front-end content bundle is a material DELTA, not a closed
+    // world.  Its unresolved section keys continue in the depots owned by its
+    // graph ancestors.  `depot_for_bundle` deliberately returns the nearest
+    // depot, so collect the remaining exact ancestor owners here and merge
+    // them below with first-wins semantics.  Never search siblings: a state
+    // key is only unique inside one scope chain.
+    //
+    // Explicit layered armory reads already provide their ordered base scope;
+    // inserting an inferred ancestor between the override and that base could
+    // mask a legitimate base slot, so this continuation is only for the
+    // ordinary one-scope placement path.
+    if (!placing.empty() && fallback.empty())
+    {
+        std::string parent = placing;
+        std::replace(parent.begin(), parent.end(), '\\', '/');
+        std::transform(parent.begin(), parent.end(), parent.begin(),
+            [](unsigned char ch) { return (char)std::tolower(ch); });
+        if (parent.rfind("win32/", 0) == 0) parent.erase(0, 6);
+        const auto& owners = c->src.depots_by_bundle();
+        for (;;)
+        {
+            const size_t slash = parent.find_last_of('/');
+            if (slash == std::string::npos) break;
+            parent.resize(slash);
+            const size_t parentSlash = parent.find_last_of('/');
+            const std::string repeated = parent + "/" +
+                (parentSlash == std::string::npos
+                    ? parent : parent.substr(parentSlash + 1));
+            if (owners.find(repeated) != owners.end()) add_scope(repeated);
+            if (owners.find(parent) != owners.end()) add_scope(parent);
+        }
+    }
+    add_scope(fallback);
+    // Placement depots can contain only a material delta (or unrelated
+    // records). Complete it from this mesh's own authored scope, preserving
+    // placement-first precedence. Never search arbitrary sibling depots.
+    {
+        const std::string& twin = c->src.bundle_of_ebx(res_name);
+        if (!twin.empty()) add_scope(twin);
+    }
+    if (scopes.empty())
+    {
+        const std::string depotName = c->src.depot_for_res(res_name);
+        if (!depotName.empty())
+        {
+            const std::vector<uint8_t>* bytes = nullptr;
+            bf6::Depot* depot = c->depot_named(depotName, &bytes);
+            if (depot && bytes) scopes.push_back({ depot, bytes });
+        }
+    }
+
+    return scopes;
+}
+
 struct MeshHandle {
     bf6_mesh                            mesh{};
     std::vector<bf6_section>            sections;
@@ -859,8 +1002,68 @@ struct MeshHandle {
     std::vector<std::vector<float>>     skin_w;
     std::vector<int>                    skin_n;
     std::vector<std::vector<uint32_t>>  idx;
+    std::vector<std::vector<uint32_t>>  colours;
+    struct Surface {
+        bf6_surface_desc desc{};
+        std::vector<float> uv[5], color0, tangents;
+        std::vector<uint8_t> lanes;
+    };
+    std::vector<Surface> surfaces;
     std::vector<uint16_t>               palette;   // mesh-wide bone palette
 };
+
+static void fill_surface_profile(bf6_ctx* c, const bf6::MaterialBinding& mb,
+    const std::vector<bf6_shader_tex_binding>& textures, const bf6_material_desc& generic, bf6_surface_desc& out)
+{
+    bool has_albedo = false;
+    for (int i = 0; i < generic.texture_count; ++i)
+        has_albedo |= generic.textures[i].slot == BF6_TEX_ALBEDO && generic.textures[i].texture >= 0;
+    // Roof materials share these utility constants with the procedural facade.
+    // A usable ordinary albedo keeps them on their authored textured path.
+    const bool whitebox = !has_albedo && mb.constants.count(0x3C4777D3) && mb.constants.count(0xCF3B7A2F) &&
+        mb.constants.count(0x27EBB6BB) && mb.constants.count(0x2077DB06);
+    const bool backdrop = mb.textures.count(0x31EBABA9) && mb.textures.count(0xA141CF1C) &&
+        mb.textures.count(0x62DFB21A) && mb.textures.count(0xC8C9370A) && mb.constants.count(0xECABAAD6);
+    out.profile = backdrop ? 2 : whitebox ? 1 : 0;
+    if (!out.profile) return;
+    const uint32_t slots[2][4] = {{0x5DEB688E,0x416B0E23,0xBA5B7844,0},
+        {0x31EBABA9,0xA141CF1C,0x62DFB21A,0xC8C9370A}};
+    bool ready = true;
+    for (int i=0;i<(backdrop?4:3);++i) {
+        out.textures[i] = -1;
+        for (const auto& t : textures) if(t.name32==slots[out.profile-1][i]) out.textures[i]=t.texture;
+        ready &= out.textures[i]>=0;
+    }
+    auto found = c->surface_schemas.find(out.profile);
+    if (found == c->surface_schemas.end() || found->second.empty()) {
+        std::vector<bf6::TerrainShaderBindingRecord> rows;
+        std::string err;
+        // Identified program ids, not database-local slot numbers. Require
+        // the installed program and its current binding schema to exist.
+        bf6::load_raster_bindings(c->src, backdrop ? 0xE0AF1530A069027Full : 0xAF450EB8DC72BE15ull, rows, err);
+        // A subsequent map mount can make a previously absent program available.
+        c->surface_schemas[out.profile] = std::move(rows);
+        found = c->surface_schemas.find(out.profile);
+    }
+    bool material = false;
+    const uint32_t minimum = backdrop ? 196 : 24, maximum = backdrop ? 208 : 32;
+    for (const auto& row : found->second) {
+        if (row.destination_span < minimum || row.destination_span > maximum) continue;
+        float candidate[52]{};
+        bool complete = !row.declarations.empty();
+        int copied = 0;
+        for (const auto& d : row.declarations) {
+            const auto value = mb.constants.find(d.name32());
+            if(value==mb.constants.end() || value->second.empty() ||
+                d.destination + value->second.size() > row.destination_span) {complete=false;break;}
+            std::memcpy(reinterpret_cast<uint8_t*>(candidate)+d.destination,
+                value->second.data(),value->second.size());
+            ++copied;
+        }
+        if (complete && copied) { std::memcpy(out.material,candidate,sizeof(candidate)); material=true; break; }
+    }
+    out.complete = ready && material;
+}
 
 extern "C" {
 
@@ -1065,26 +1268,17 @@ static bf6_mesh* bf6__read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod
     // _ZOnly twin's key (reference: _candidate_keys, SHADERS.md 5.2), and the
     // twin is exactly what the filter is about to remove.
     std::map<std::string, uint64_t> twin_keys;
-    for (const auto& g : secs) twin_keys.emplace(g.material, g.state_key);
+    // Read keys from the cheap section headers, including skipped pass twins.
+    // Their vertex buffers do not need to be decoded to resolve materials.
+    for (const auto& g : ms.lods[lod].sections) twin_keys.emplace(g.material, g.state_key);
 
-    // SHADOW GEOMETRY IS NOT VISUAL GEOMETRY. A section named *_Shadow or
-    // *_ZOnly is the game's dedicated shadow caster or depth-prepass twin -
-    // its depot record binds an alpha mask and NO colour, because the main
-    // pass never draws it. Rendered anyway it is a white card floating in the
-    // tree that draws it correctly right beside it, which is exactly how the
-    // bug read. The reference pipeline skips both families (depot_join.py):
-    // the visual sections carry the look, and in an engine that shadows its
-    // own visible geometry the shadow twin has no job at all.
+    // Pass membership is authoritative. A backdrop's visible opaque material
+    // can be named M_Shadow; discarding it by name removes the whole building.
+    // Suppress dedicated depth/shadow twins only when no visual pass uses them.
     {
         auto shadow_only = [](const bf6::MeshGeomSection& g)
         {
-            const std::string& m = g.material;
-            auto ends = [&m](const char* s)
-            {
-                const size_t n = strlen(s);
-                return m.size() >= n && m.compare(m.size() - n, n, s) == 0;
-            };
-            return ends("_Shadow") || ends("_ZOnly");
+            return !(g.category_flags & 7) && (g.category_flags & 24);
         };
         secs.erase(std::remove_if(secs.begin(), secs.end(), shadow_only), secs.end());
         if (secs.empty()) return nullptr;
@@ -1150,6 +1344,8 @@ static bf6_mesh* bf6__read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod
         mh->idx.push_back(std::move(s.indices));
     }
     mh->sections.resize(n);
+    mh->colours.resize(n);
+    mh->surfaces.resize(n);
     float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
     for (size_t i = 0; i < n; i++) {
         bf6_section& sec = mh->sections[i];
@@ -1159,6 +1355,19 @@ static bf6_mesh* bf6__read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod
         sec.normals      = mh->nrm[i].empty() ? nullptr : mh->nrm[i].data();
         sec.uv0          = mh->uv[i].empty()  ? nullptr : mh->uv[i].data();
         sec.uv1          = mh->uv1[i].empty() ? nullptr : mh->uv1[i].data();
+        auto& surface = mh->surfaces[i];
+        surface.desc.struct_size = sizeof(bf6_surface_desc);
+        std::fill(std::begin(surface.desc.textures),std::end(surface.desc.textures),-1);
+        for(int ch=0;ch<5;++ch) {
+            surface.uv[ch] = secs[i].uv[ch];
+            surface.desc.uv[ch] = surface.uv[ch].empty() ? nullptr : surface.uv[ch].data();
+        }
+        surface.color0 = std::move(secs[i].color0);
+        surface.lanes = secs[i].layer_lanes;
+        surface.tangents = std::move(secs[i].tangent_sign);
+        surface.desc.color0 = surface.color0.empty() ? nullptr : surface.color0.data();
+        surface.desc.submaterial = surface.lanes.empty() ? nullptr : surface.lanes.data();
+        sec.tangents = surface.tangents.empty() ? nullptr : surface.tangents.data();
         sec.bones        = mh->bones[i].empty() ? nullptr : mh->bones[i].data();
         // The palette is not decoded yet - see meshset.cpp. Reported as absent
         // rather than as an empty-but-present list, so a consumer can tell the
@@ -1213,73 +1422,7 @@ static bf6_mesh* bf6__read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod
     // bundle_of_ebx is the documented rule for materials. So try that first
     // and keep the resource's own bundle as the fallback, which is right for
     // meshes that genuinely carry their material beside them.
-    struct MaterialScope {
-        bf6::Depot* depot = nullptr;
-        const std::vector<uint8_t>* bytes = nullptr;
-    };
-    std::vector<MaterialScope> scopes;
-    auto add_scope = [&](const std::string& bundle) {
-        if (bundle.empty()) return;
-        const std::string depotName = c->src.depot_for_bundle(bundle);
-        if (depotName.empty()) return;
-        const std::vector<uint8_t>* bytes = nullptr;
-        bf6::Depot* depot = c->depot_named(depotName, &bytes);
-        if (!depot || !bytes) return;
-        for (const MaterialScope& existing : scopes)
-            if (existing.depot == depot) return;
-        scopes.push_back({ depot, bytes });
-    };
-    add_scope(placing);
-    // A nested front-end content bundle is a material DELTA, not a closed
-    // world.  Its unresolved section keys continue in the depots owned by its
-    // graph ancestors.  `depot_for_bundle` deliberately returns the nearest
-    // depot, so collect the remaining exact ancestor owners here and merge
-    // them below with first-wins semantics.  Never search siblings: a state
-    // key is only unique inside one scope chain.
-    //
-    // Explicit layered armory reads already provide their ordered base scope;
-    // inserting an inferred ancestor between the override and that base could
-    // mask a legitimate base slot, so this continuation is only for the
-    // ordinary one-scope placement path.
-    if (!placing.empty() && fallback.empty())
-    {
-        std::string parent = placing;
-        std::replace(parent.begin(), parent.end(), '\\', '/');
-        std::transform(parent.begin(), parent.end(), parent.begin(),
-            [](unsigned char ch) { return (char)std::tolower(ch); });
-        if (parent.rfind("win32/", 0) == 0) parent.erase(0, 6);
-        const auto& owners = c->src.depots_by_bundle();
-        for (;;)
-        {
-            const size_t slash = parent.find_last_of('/');
-            if (slash == std::string::npos) break;
-            parent.resize(slash);
-            const size_t parentSlash = parent.find_last_of('/');
-            const std::string repeated = parent + "/" +
-                (parentSlash == std::string::npos
-                    ? parent : parent.substr(parentSlash + 1));
-            if (owners.find(repeated) != owners.end()) add_scope(repeated);
-            if (owners.find(parent) != owners.end()) add_scope(parent);
-        }
-    }
-    add_scope(fallback);
-    // Placement depots can contain only a material delta (or unrelated
-    // records). Complete it from this mesh's own authored scope, preserving
-    // placement-first precedence. Never search arbitrary sibling depots.
-    {
-        const std::string& twin = c->src.bundle_of_ebx(res_name);
-        if (!twin.empty()) add_scope(twin);
-    }
-    if (scopes.empty())
-    {
-        const std::string depotName = c->src.depot_for_res(res_name);
-        if (!depotName.empty())
-        {
-            const std::vector<uint8_t>* bytes = nullptr;
-            bf6::Depot* depot = c->depot_named(depotName, &bytes);
-            if (depot && bytes) scopes.push_back({ depot, bytes });
-        }
-    }
+    const auto scopes = material_scopes(c, res_name, placing, fallback);
 
     mh->materials.resize((size_t)n);
     mh->bindings.resize((size_t)n);
@@ -1449,6 +1592,8 @@ static bf6_mesh* bf6__read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod
         }
 
         resolve_colour(mb, md);
+        mh->colours[i] = resolve_layer_colours(mb, secs[i], md);
+        mh->sections[i].colors = mh->colours[i].empty() ? nullptr : mh->colours[i].data();
         // A PLACEHOLDER IS NOT AN ALBEDO, AND THE CHAIN HAS TO KNOW THAT WHILE
         // IT IS WALKING. The same guard is applied again in the binding loop
         // below - that one stops a placeholder reaching the caller, this one
@@ -1534,12 +1679,23 @@ static bf6_mesh* bf6__read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod
         md.shader_textures = mh->shader_bindings[i].empty()
             ? nullptr : mh->shader_bindings[i].data();
         md.shader_texture_count = (int32_t)mh->shader_bindings[i].size();
+        fill_surface_profile(c,mb,mh->shader_bindings[i],md,mh->surfaces[i].desc);
     }
     mh->mesh.materials      = mh->materials.data();
     mh->mesh.material_count = (int32_t)n;
     for (int k = 0; k < 3; k++) { mh->mesh.aabb_min[k] = lo[k]; mh->mesh.aabb_max[k] = hi[k]; }
     c->handles[&mh->mesh] = bf6_ctx::HK_MESH;
     return &mh->mesh;
+}
+int bf6_mesh_surface(bf6_ctx* c, const bf6_mesh* mesh, int section, bf6_surface_desc* out)
+{
+    if(!c || !mesh || !out || out->struct_size!=sizeof(bf6_surface_desc)) return 0;
+    const auto owned=c->handles.find(const_cast<bf6_mesh*>(mesh));
+    if(owned==c->handles.end() || owned->second!=bf6_ctx::HK_MESH) return 0;
+    const auto* handle=reinterpret_cast<const MeshHandle*>(mesh);
+    if(section<0 || (size_t)section>=handle->surfaces.size()) return 0;
+    *out=handle->surfaces[(size_t)section].desc;
+    return 1;
 }
 bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
                                const char* placing_bundle, const char* variation) {
@@ -1695,6 +1851,12 @@ const bf6_texture* bf6_texture_at_max_dim(bf6_ctx* c, int texture_id, int max_di
         }
     }
     return h.ok ? &h.abi : nullptr;
+}
+
+void bf6_release_texture_payload(bf6_ctx* c, int texture_id, int max_dim) {
+    if (!c || texture_id < 0 || max_dim <= 0) return;
+    const uint64_t key = ((uint64_t)(uint32_t)texture_id << 32) | (uint32_t)max_dim;
+    c->capped_textures.erase(key);
 }
 
 const char* bf6_texture_name_at(bf6_ctx* c, int texture_id) {
@@ -1938,12 +2100,8 @@ int bf6_variation_live(bf6_ctx* c, const char* res_name,
     int& slot = c->var_live[ck];
     slot = 0;
 
-    const std::string dname = place.empty()
-        ? c->src.depot_for_res(res)
-        : c->src.depot_for_bundle(place);
-    const std::vector<uint8_t>* dbytes = nullptr;
-    bf6::Depot* dep = c->depot_named(dname, &dbytes);
-    if (!dep) return 0;
+    const auto scopes = material_scopes(c, res, place);
+    if (scopes.empty()) return 0;
 
     std::string err;
     std::vector<uint8_t> mres = c->src.get_res(res, err);
@@ -1955,7 +2113,10 @@ int bf6_variation_live(bf6_ctx* c, const char* res_name,
     {
         if (!s.state_key) continue;
         const uint64_t vk = variation_key(s.state_key, var);
-        if (vk != s.state_key && dep->has_key(vk)) { slot = 1; break; }
+        if (vk != s.state_key)
+            for (const MaterialScope& scope : scopes)
+                if (scope.depot->has_key(vk)) { slot = 1; break; }
+        if (slot) break;
     }
     return slot;
 }
@@ -2126,6 +2287,35 @@ static bool ensure_mounted(bf6_ctx* c, const char* level, std::string& err)
 }
 
 static bool ensure_types(bf6_ctx* c, std::string& err);
+
+int bf6_texture_rgba(bf6_ctx* c, int texture_id, uint8_t* out, int64_t capacity)
+{
+    if (!c || !out || capacity <= 0) return 0;
+    const bf6_texture* tx = bf6_texture_at(c, texture_id);
+    if (!tx || !tx->data || tx->width <= 0 || tx->height <= 0) return 0;
+    const int64_t need = (int64_t)tx->width * tx->height * 4;
+    if (need > capacity) return 0;
+    if (tx->format == BF6_FMT_RGBA8)
+    {
+        if (tx->data_len < need) return 0;
+        std::memcpy(out, tx->data, (size_t)need);
+        return 1;
+    }
+    int dxgi = 0;
+    switch (tx->format) {
+    case BF6_FMT_BC1: dxgi=71; break;
+    case BF6_FMT_BC3: dxgi=77; break;
+    case BF6_FMT_BC4: dxgi=80; break;
+    case BF6_FMT_BC5: dxgi=83; break;
+    case BF6_FMT_BC7: dxgi=98; break;
+    default: return 0;
+    }
+    std::vector<uint8_t> rgba;
+    std::string error;
+    if (!bf6::bcn_to_rgba8(tx->data, (size_t)tx->data_len, tx->width, tx->height, dxgi, rgba, error) || (int64_t)rgba.size() != need) return 0;
+    std::memcpy(out, rgba.data(), (size_t)need);
+    return 1;
+}
 
 int bf6_layer_sheet(bf6_ctx* c, const char* res_name, int size,
                     uint8_t* out, char* err, int err_len)
