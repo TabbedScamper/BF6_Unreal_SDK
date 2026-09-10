@@ -115,6 +115,7 @@ namespace BF6PortalWeb
 
 	// The address the page is on, or empty before the first load.
 	FString CurrentUrl();
+	bool IsLoading();
 
 	// Hand the current page (or the Portal front door, if there is none) to the
 	// user's real browser. Always available, CEF or not.

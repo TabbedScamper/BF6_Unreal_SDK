@@ -84,8 +84,11 @@ class Workflow:
         self.write("workflow.json", self.result)
         self.event("failed" if error else "completed", error=error)
         unreal.unregister_slate_post_tick_callback(self.handle)
-        # Never save the source project. The launcher copied Content, Config and Saves.
-        unreal.SystemLibrary.quit_editor()
+        # Let -ExecutePythonScript finish its own notification and defer exit.
+        # Direct QUIT_EDITOR bypasses that cleanup while keep-alive is true,
+        # leaving a Slate text widget to be destroyed after ICU has shut down.
+        # The launcher copied Content, Config and Saves into this project.
+        unreal.EditorPythonScripting.set_keep_python_script_alive(False)
 
     def check(self, label, condition):
         record = next((r for r in self.result["checks"] if r.get("cycle") == self.cycle and r["name"] == label), None)
@@ -353,4 +356,4 @@ except BaseException:
     config = json.loads(Path(os.environ["BF6_STABILITY_CONFIG"]).read_text())
     Path(config["output"], "workflow.json").write_text(json.dumps(dict(
         completed=False, finished=True, error=traceback.format_exc(), opens=[], flights=[], checks=[])))
-    unreal.SystemLibrary.quit_editor()
+    unreal.EditorPythonScripting.set_keep_python_script_alive(False)

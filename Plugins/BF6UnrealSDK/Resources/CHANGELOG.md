@@ -1,10 +1,37 @@
 # BF6 Unreal SDK version history
 
-## Unreleased
+## 0.8.3 (2026-09-10)
+
+Personal block colors, reliable discovery and import of newly copied Portal experiences, and lower memory use with the matching High Poly add-on.
+
+**Make the block editor your own**
 
 - Right-click a block to customize its category with a hue wheel. Also available under More > Block colors. Preview before applying, reset one category or the complete palette, and retain choices after reloading the editor.
 - Toolbox colors, selected-block explanations and What things mean follow the personal palette. Existing red-variable preferences migrate automatically. Workspace and Portal exports retain the same program.
 - Fixed captured renderer color caches overriding the active theme. Color selection previews without repeatedly repainting large workspaces; changes apply once when confirmed.
+
+- Customize Mod, Rules, Conditions, Actions, Values, Variables, Subroutines, Control and Comments independently. Control's alternate shade follows its category. Keyboard controls and a conventional slider accompany the wheel.
+- Colors stay in your editor preferences, separate from experiences and exported programs. Portal still uses its own palette. Help continues to explain block names, shapes and socket symbols alongside your colors.
+- Verified category preferences through Unreal's browser and regression checks with 5,088 and 10,176 blocks.
+
+**Portal experiences without reconnecting**
+
+- Added **Refresh experiences** beside the experience search. The visible grid also refreshes periodically while idle, so experiences created or copied on the site can appear without unlinking your account.
+- Refresh recreates a hidden browser when needed and recovers when the current document has not observed the site's list request yet. Requests remembered by an earlier page no longer masquerade as available calls.
+- Fixed imports clicking Modify just before a redundant page reload returned them to the experiences list. Reuse the current page, wait for navigation to finish, and verify the requested experience identity before continuing.
+- Preserve the exact byte range of captured request buffers when replaying the list request.
+- Verified a previously failing six-map Rush template import through the linked site, including 25 rules, 20 subroutines and 76 variables, with zero unconvertible blocks.
+
+**Memory and installation**
+
+- Release hidden SDK terrain and map-object drawing buffers after High Poly takes over. Keep placement-ray geometry and object transforms; reconstruct the SDK drawing sections when returning to Low Poly.
+- Avoid rebuilding those buffers while a map is closing. Failed background restoration retries are limited so a missing source file does not trigger repeated work every tick.
+- Startup game discovery now reads the current High Poly install record as well as the legacy record, and recognizes a Battlefield 6 folder directly under a drive root.
+- Together with High Poly 0.8.3's exact generated-texture backing, one matched MP_Isolated test reduced median flight-time private memory by about 1.4 GiB. Build-peak savings were smaller. This is not a 16 GB compatibility or 60 FPS guarantee.
+- Extended the local stability harness with memory comparison controls, repeated Low Poly restoration checks and UTF-8/UTF-16 export validation.
+- Fixed the stability runner quitting while Unreal still considered its Python script active. It now finishes through the script runner's normal lifecycle, allowing its notification to close before engine shutdown.
+
+Update both components together. **NEW FEATURES** includes these notes and the matching add-on notes. Saved experiences and block recovery files remain outside the plugin installation folders. Users updating from 0.8.1 or earlier should save/export unsaved Blocks edits first; Script and UI panels require their normal saves.
 
 ## 0.8.2 (2026-09-10)
 

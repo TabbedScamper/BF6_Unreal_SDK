@@ -1287,6 +1287,10 @@ namespace
 	{
 		if (GPlace == EPlace::Hidden) AttachOffscreen();
 		if (!EnsureWindow()) return;
+		// Reusing the current document preserves captured requests and avoids
+		// racing a card click against a redundant full-page reload.
+		if (GWindow->GetUrl() == Url) return;
+		GLoading = true; // before CEF can answer probes from the outgoing page
 		GWindow->LoadURL(Url);
 	}
 
@@ -1817,7 +1821,7 @@ void BF6PortalWeb::OpenQuiet(const FString& Url)
 	{
 		FString U = Url; U.TrimStartAndEndInline();
 		if (!U.Contains(TEXT("://"))) U = TEXT("https://") + U;
-		GWindow->LoadURL(U);
+		Navigate(U);
 	}
 }
 
@@ -1851,7 +1855,7 @@ void BF6PortalWeb::Open(const FString& Url)
 	{
 		FString U = Url; U.TrimStartAndEndInline();
 		if (!U.Contains(TEXT("://"))) U = TEXT("https://") + U;
-		GWindow->LoadURL(U);
+		Navigate(U);
 	}
 }
 
@@ -2003,6 +2007,7 @@ void BF6PortalWeb::SignOut()
 bool BF6PortalWeb::IsAvailable() { return WebAvailable(); }
 
 FString BF6PortalWeb::CurrentUrl() { return GUrl; }
+bool BF6PortalWeb::IsLoading() { return !GWindow.IsValid() || GLoading || GWindow->IsLoading(); }
 
 void BF6PortalWeb::OpenInSystemBrowser()
 {

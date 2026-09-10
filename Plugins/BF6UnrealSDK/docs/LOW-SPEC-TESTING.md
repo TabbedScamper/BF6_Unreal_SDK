@@ -108,6 +108,13 @@ ray preservation is covered separately by the native automation test
 checks exact texture bytes, including GPU readback when run with a real RHI.
 Experience-export checks accept Unreal's UTF-8 and UTF-16 JSON output.
 
+The driver ends by clearing `set_keep_python_script_alive`, allowing Unreal's
+`-ExecutePythonScript` runner to finish its notification and defer editor exit.
+Do not replace this with an immediate `quit_editor()` while keep-alive is true:
+that bypasses runner cleanup and reproduced a late Slate text teardown crash
+with both the published 0.8.2 binaries and the 0.8.3 candidate. Exit codes remain
+part of acceptance; a completed workflow alone does not pass stability.
+
 Run `Tools/stability/test_stability.py` with Unreal's bundled Python. It verifies real descendant job membership, physical-core affinity, allocation failure under a commit ceiling, worker teardown, CPU quota installation, and strict report verdicts. Rebuild both plugins after changing their test-state console commands.
 
 Run folders include a `project/Plugins` junction to your installation. Remove that junction itself before recursively deleting the remaining disposable project. The harness deliberately performs no automatic recursive cleanup.

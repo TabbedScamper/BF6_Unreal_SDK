@@ -76,12 +76,33 @@ UTF-16 bug. It is not a full-workflow acceptance run.
 - The final run without an attached debugger again passed the editing and
   restoration checks but reproduced the late shutdown access violation. Its
   peak job commit was 24.60 GiB. The clean debugged run does not clear this
-  failure: publication remains pending shutdown diagnosis.
+  failure. Publication was held pending shutdown diagnosis; see the resolution below.
 - Hidden viewport runs do not certify FPS. Fresh High Poly cache does not mean
   cold OS cache or cold engine DDC. The 10-second opening target was not met.
 - Remaining memory is still too high to certify the 16 GB hardware target.
 - The original Night Ops Blocks workspace SHA-256 remained unchanged throughout
   these tests; all experience opens used disposable project copies.
+
+## Shutdown diagnosis resolved for the release workflow
+
+The shutdown-only failure also reproduced using the published 0.8.2 packages.
+The dump shows a deferred Slate notification being destroyed during static
+teardown. The test driver called `quit_editor()` while the
+`-ExecutePythonScript` runner still had its keep-alive flag set. In Unreal 5.8,
+that bypasses `FExecuterTickable::RequestExit`, which normally completes the
+runner notification before deferring exit.
+
+The driver now clears `set_keep_python_script_alive(False)` and lets the runner
+finish. Both the populated Low Poly workflow and the full High Poly workflow
+then returned exit code 0 without an attached debugger. The latter included
+both populated-map restoration cycles, export, undo, save and reopen. This
+clears the reproduced harness shutdown failure; it is not a claim that every
+possible editor-exit crash is fixed. A regression check ensures completion
+releases the runner instead of calling quit directly.
+
+The High Poly release workflow still failed the 10-second opening and 6 GiB
+GPU-budget targets. Functional stability and performance acceptance remain
+separate results.
 
 ## Suggestions not adopted wholesale
 

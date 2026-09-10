@@ -15,11 +15,13 @@ class Driver(unittest.TestCase):
             config = Path(directory, 'config.json')
             config.write_text(json.dumps(dict(output=directory, flight_seconds=30, flight_radius_m=0)))
             frame = [100]
+            lifecycle = []
             vector = lambda x, y, z: NS(x=x, y=y, z=z)
-            unreal = NS(EditorPythonScripting=NS(set_keep_python_script_alive=lambda _: None),
-                SystemLibrary=NS(get_frame_count=lambda: frame[0], quit_editor=lambda: None),
+            unreal = NS(EditorPythonScripting=NS(set_keep_python_script_alive=lambda value: lifecycle.append(('alive', value))),
+                SystemLibrary=NS(get_frame_count=lambda: frame[0], quit_editor=lambda: lifecycle.append(('quit', True))),
                 get_editor_subsystem=lambda _: None, EditorActorSubsystem=object,
                 EditorLoadingAndSavingUtils=NS(), register_slate_post_tick_callback=lambda _: 1,
+                unregister_slate_post_tick_callback=lambda handle: lifecycle.append(('unregister', handle)),
                 log=lambda _: None, Vector=vector, Rotator=lambda **kw: NS(**kw))
             with patch.dict(sys.modules, unreal=unreal), patch.dict(os.environ, BF6_STABILITY_CONFIG=str(config)):
                 module = runpy.run_path(str(Path(__file__).with_name('editor_workflow.py')))
@@ -93,5 +95,8 @@ class Driver(unittest.TestCase):
                     w.command = lambda _, payload=raw: Path(directory, 'experience-export.json').write_bytes(payload)
                     module['Workflow'].finish_scene(w)
                 self.assertEqual(finishes, [True, True, True])
+                module['Workflow'].finish(w)
+                self.assertEqual(lifecycle, [('alive', True), ('unregister', 1), ('alive', False)])
+                self.assertTrue(json.loads(Path(directory, 'workflow.json').read_text())['completed'])
 
 if __name__ == '__main__': unittest.main(verbosity=2)

@@ -149,7 +149,7 @@
     try {
       var body = (init && init.body) || (input && input.body) || null;
       if (body instanceof ArrayBuffer) lastBody[m] = new Uint8Array(body.slice(0));
-      else if (body && body.buffer instanceof ArrayBuffer) lastBody[m] = new Uint8Array(body.buffer.slice(0));
+      else if (ArrayBuffer.isView(body)) lastBody[m] = new Uint8Array(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength));
     } catch (e) {}
   }
 
@@ -510,10 +510,29 @@
   // gets a fresh list from wherever the panel happens to be standing, with no
   // navigation and nothing invented. No remembered request means no replay, and
   // the tool is told so rather than being given a guess.
+  var listRemountPending = false;
   function getOwnedList() {
     var rec = lastInit['getOwnedPlayElementsV2'];
     var body = lastBody['getOwnedPlayElementsV2'];
     if (!rec || !body) {
+      // A restored document can finish fetching before our hook is ready.
+      // Remount only the list, through the site's router, once per attempt.
+      // This never navigates away from an open experience editor.
+      if (/^\/bf6\/experiences\/?$/.test(location.pathname) && ownedListShown()) {
+        if (listRemountPending) return true;
+        listRemountPending = true;
+        var back = location.pathname + location.search;
+        history.pushState({}, '', '/bf6');
+        window.dispatchEvent(new PopStateEvent('popstate'));
+        setTimeout(function () {
+          if (location.pathname === '/bf6') {
+            history.pushState({}, '', back);
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          }
+          listRemountPending = false;
+        }, 400);
+        return true;
+      }
       console.log('BF6CAPTURE cannot refresh the list: the site has not asked for it yet this session');
       send('pagestate', {
         v: V, kind: pageKind(location.pathname), url: location.href,

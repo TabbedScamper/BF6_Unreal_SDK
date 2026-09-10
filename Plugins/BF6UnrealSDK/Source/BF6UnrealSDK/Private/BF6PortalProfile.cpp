@@ -364,6 +364,7 @@ namespace
 	// that is not is the one case where the site's own pages still have to be
 	// driven. Reported by the page probe, never inferred.
 	TSet<FString>           GApiSeen;
+	double                 GNextListRefresh = 0.0;
 	FString                 GApiNote;
 	// Signing in. The panel covers the editor while it happens and gets out of
 	// the way the moment it is done. This flag is what makes the page reports
@@ -1181,6 +1182,7 @@ namespace
 	struct FExpect
 	{
 		FString Key;
+		FString ExperienceId;
 		double  Deadline = 0.0;
 		bool    bActive = false;
 		TFunction<void(bool, const FString&)> Done;
@@ -1202,6 +1204,7 @@ namespace
 	{
 		ResolveExpect(false, TEXT("superseded by another page check"));
 		GExpect.Key = Key;
+		GExpect.ExperienceId = NavUrl.Contains(TEXT("/experience/")) ? FindUuid(NavUrl) : FString();
 		GExpect.Deadline = FPlatformTime::Seconds() + Timeout;
 		GExpect.bActive = true;
 		GExpect.Done = MoveTemp(Done);
@@ -1331,6 +1334,8 @@ namespace
 			for (int32 i = 0; i < GExps.Num(); i++) GExpIdx.Add(GExps[i].Id, i);
 		}
 		UE_LOG(LogBF6Portal, Display, TEXT("Portal profile: getOwnedPlayElementsV2 parsed, %d experience(s)"), Order.Num());
+		GNextListRefresh = FPlatformTime::Seconds() + 60.0;
+		if (!BF6PortalProfile::IsBusy()) GWorkStatus = FString::Printf(TEXT("Experiences refreshed: %d on the site."), Order.Num());
 		Bump();
 	}
 
@@ -3520,6 +3525,10 @@ public:
 					.OnTextCommitted_Lambda([](const FText& T, ETextCommit::Type){ BF6PortalProfile::SetSearchText(T.ToString()); })
 				]
 			]
+			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left).Padding(0, 0, 0, 8)
+			[ SNew(SBox).IsEnabled_Lambda([]{ return GState == BF6PortalProfile::EState::Linked && !GJob.bActive && !GExpect.bActive && !SyncSuspended(); })
+				[ Btn(TEXT("Refresh experiences"), []{ BF6PortalProfile::RefreshList(); },
+					TEXT("Read newly created or copied experiences from Portal without unlinking your account.")) ] ]
 			+ SVerticalBox::Slot().AutoHeight()[ SAssignNew(Host, SBox) ]
 		];
 		Rebuild();
@@ -3530,6 +3539,13 @@ public:
 		SCompoundWidget::Tick(G, T, D);
 		const uint32 Now = BF6PortalProfile::ListFingerprint();
 		if (Now != Sig) { Sig = Now; Rebuild(); }
+		// Only a visible experience grid polls. Never interrupt an editor or a
+		// transfer to navigate in the background; replay is safe on any page.
+		const double Seconds = FPlatformTime::Seconds();
+		if (GState == BF6PortalProfile::EState::Linked && Seconds >= GNextListRefresh
+			&& Seconds >= GBusyUntil && !GJob.bActive && !GExpect.bActive && !SyncSuspended()
+			&& CanReplay(TEXT("getOwnedPlayElementsV2")) && !BF6PortalWeb::IsLoading())
+			BF6PortalProfile::RefreshList();
 	}
 
 private:
@@ -4118,7 +4134,14 @@ namespace BF6PortalProfile
 
 	void RefreshList()
 	{
-		if (CanReplay(TEXT("getOwnedPlayElementsV2")))
+		if (GJob.bActive || GExpect.bActive || SyncSuspended())
+		{
+			BF6Api::Toast(TEXT("Finish the current Portal operation before refreshing experiences."));
+			return;
+		}
+		GNextListRefresh = FPlatformTime::Seconds() + 60.0;
+		BF6PortalWeb::OpenQuiet(); // recreate a hidden browser before asking it
+		if (!BF6PortalWeb::IsLoading() && CanReplay(TEXT("getOwnedPlayElementsV2")))
 		{
 			GWorkStatus = TEXT("Asking the site for your experiences...");
 			NoteWorking();
@@ -4134,7 +4157,8 @@ namespace BF6PortalProfile
 		ExpectPage(TEXT("experiences"), BF6PortalWeb::BaseUrl() + TEXT("/experiences"), 20.f,
 			[](bool bOk, const FString& What)
 			{
-				if (!bOk) UE_LOG(LogBF6Portal, Warning, TEXT("Portal profile: the experiences list did not open (%s)"), *What);
+				if (!bOk) { UE_LOG(LogBF6Portal, Warning, TEXT("Portal profile: the experiences list did not open (%s)"), *What); }
+				else BF6PortalWeb::Exec(TEXT("try { window.BF6PortalCapture.getOwnedList(); } catch (e) { console.log('BF6CAPTURE list error ' + e); }"));
 			});
 		Bump();
 	}
@@ -5683,6 +5707,8 @@ void UBF6PortalBridge::pagestate(FString Json)
 		if (Root->TryGetArrayField(TEXT("api"), Api))
 		{
 			const int32 Was = GApiSeen.Num();
+			// Requests belong to this document, not to every page ever visited.
+			GApiSeen.Reset();
 			for (const auto& AV : *Api)
 			{
 				const FString M = AV->AsString();
@@ -5889,7 +5915,12 @@ void UBF6PortalBridge::pagestate(FString Json)
 		{
 			UE_LOG(LogBF6Portal, Display, TEXT("Portal list refresh: %s"), *ListState);
 			if (ListState == TEXT("no-request-observed"))
-				GWorkStatus = TEXT("The site has not asked for your list yet this session. Opening the experiences page once is enough.");
+			{
+				GApiSeen.Remove(TEXT("getOwnedPlayElementsV2"));
+				if (!GJob.bActive && !GExpect.bActive && !SyncSuspended()) BF6PortalProfile::RefreshList();
+			}
+			else if (ListState.StartsWith(TEXT("failed:")) || !ListState.Equals(TEXT("replayed:200")))
+				GWorkStatus = TEXT("Could not refresh experiences. Check the Portal connection and try Refresh experiences again.");
 			Bump();
 			return;
 		}
@@ -6186,9 +6217,11 @@ void UBF6PortalBridge::pagestate(FString Json)
 		UE_LOG(LogBF6Portal, Warning, TEXT("Portal import: the page is the login screen, stopping the run."));
 	}
 
-	if (GExpect.bActive)
+	if (GExpect.bActive && !BF6PortalWeb::IsLoading())
 	{
-		if (PageAgrees(GExpect.Key, Kind, Url, bBlockly))
+		if (PageAgrees(GExpect.Key, Kind, Url, bBlockly)
+			&& (GExpect.ExperienceId.IsEmpty() || FindUuid(Url) == GExpect.ExperienceId)
+			&& (GExpect.Key != TEXT("experiences") || bOwnedListShown))
 		{
 			GPageStatus = FString::Printf(TEXT("On %s."), *GExpect.Key);
 			ResolveExpect(true, Url);
